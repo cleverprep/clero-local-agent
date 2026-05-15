@@ -105,6 +105,14 @@ export function defaultRuntimeConfigPath(): string {
 }
 
 export function capabilityOptionsFromConfig(config: LocalRuntimeConfig): LocalRuntimeCapabilityOptions {
+  const codexSandbox = config.capabilities?.codex?.default_sandbox;
+  const codexAllowWorkspaceWrite =
+    config.capabilities?.codex?.allow_workspace_write === true ||
+    codexSandbox === "workspace-write" ||
+    codexSandbox === "danger-full-access";
+  const codexAllowDangerFullAccess =
+    config.capabilities?.codex?.allow_danger_full_access === true || codexSandbox === "danger-full-access";
+
   return {
     browser: {
       enabled: config.capabilities?.browser?.enabled
@@ -123,8 +131,8 @@ export function capabilityOptionsFromConfig(config: LocalRuntimeConfig): LocalRu
       claudeReasoningEffort: config.capabilities?.codex?.claude_reasoning_effort,
       claudePermissionMode: config.capabilities?.codex?.claude_permission_mode,
       defaultSandbox: config.capabilities?.codex?.default_sandbox,
-      allowWorkspaceWrite: config.capabilities?.codex?.allow_workspace_write,
-      allowDangerFullAccess: config.capabilities?.codex?.allow_danger_full_access
+      allowWorkspaceWrite: codexAllowWorkspaceWrite,
+      allowDangerFullAccess: codexAllowDangerFullAccess
     },
     git: {
       readEnabled: config.capabilities?.git?.read_enabled,

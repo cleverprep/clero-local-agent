@@ -413,7 +413,8 @@ pre {
 }
 
 .runtime-screen,
-.developer-screen {
+.developer-screen,
+.task-screen {
   display: grid;
   align-content: start;
   gap: 16px;
@@ -442,17 +443,31 @@ pre {
   font-size: clamp(1.6rem, 3vw, 2.65rem);
 }
 
-.activity-card {
+button.activity-card {
   display: flex;
   align-items: center;
+  justify-content: flex-start;
   gap: 12px;
+  width: 100%;
+  min-height: auto;
   border: 1px solid #dce2e8;
   border-radius: 16px;
   background: #f5f7f8;
   padding: 14px;
+  text-align: left;
+  font-weight: inherit;
 }
 
-.activity-card > span,
+button.activity-card:hover {
+  border-color: #14181f;
+  background: #eef2f4;
+}
+
+button.activity-card:active {
+  transform: none;
+}
+
+button.activity-card > span,
 .connection-chip span {
   width: 10px;
   height: 10px;
@@ -461,12 +476,12 @@ pre {
   background: #b8433f;
 }
 
-.activity-card[data-state="ready"] > span {
+button.activity-card[data-state="ready"] > span {
   background: #2bb886;
   box-shadow: 0 0 0 5px rgba(43, 184, 134, 0.13);
 }
 
-.activity-card[data-state="running"] > span {
+button.activity-card[data-state="running"] > span {
   background: #d18b28;
   box-shadow: 0 0 0 5px rgba(209, 139, 40, 0.13);
 }
@@ -863,6 +878,114 @@ button.capability-toggle:focus-visible {
   border-radius: inherit;
   background: #2bb886;
   transition: width 160ms ease;
+}
+
+.task-stack {
+  display: grid;
+  gap: 12px;
+}
+
+.task-card {
+  display: grid;
+  gap: 12px;
+  border: 1px solid #dce2e8;
+  border-radius: 18px;
+  background: #ffffff;
+  padding: 16px;
+}
+
+.task-card[data-status="running"],
+.task-card[data-status="requested"] {
+  border-color: rgba(209, 139, 40, 0.48);
+}
+
+.task-card[data-status="completed"] {
+  border-color: rgba(43, 184, 134, 0.44);
+}
+
+.task-card[data-status="failed"],
+.task-card[data-status="blocked"],
+.task-card[data-status="error"] {
+  border-color: rgba(184, 67, 63, 0.4);
+}
+
+.task-card-header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.task-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  border-radius: 999px;
+  background: #edf1f4;
+  padding: 0 10px;
+  color: #53606d;
+  font-size: 0.72rem;
+  font-weight: 850;
+  text-transform: capitalize;
+}
+
+.task-status[data-status="running"],
+.task-status[data-status="requested"] {
+  background: #fff3df;
+  color: #8a5b18;
+}
+
+.task-status[data-status="completed"] {
+  background: #e7f8f1;
+  color: #136346;
+}
+
+.task-status[data-status="failed"],
+.task-status[data-status="blocked"],
+.task-status[data-status="error"] {
+  background: #fdecea;
+  color: #943934;
+}
+
+.task-detail-row {
+  display: grid;
+  gap: 5px;
+  color: #6a7785;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 0.72rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.task-text-section,
+.task-event-list {
+  display: grid;
+  gap: 8px;
+}
+
+pre.task-text-block {
+  max-height: 230px;
+  border-color: #dce2e8;
+  border-radius: 14px;
+  background: #f7f9fa;
+  color: #23303b;
+  white-space: pre-wrap;
+}
+
+pre.task-text-block.response {
+  border-color: #d7ece4;
+  background: #f4fbf7;
+}
+
+.task-event-list p:not(.eyebrow) {
+  margin: 0;
+  border-left: 2px solid #dce2e8;
+  padding-left: 10px;
+  color: #4e5c68;
+  font-size: 0.82rem;
+  font-weight: 650;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .config-panel summary {

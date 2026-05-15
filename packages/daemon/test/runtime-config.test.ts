@@ -50,6 +50,14 @@ test("maps runtime config to daemon capability options", () => {
   });
 });
 
+test("workspace-write default sandbox enables Codex write permission", () => {
+  const config = defaultRuntimeConfig();
+  config.capabilities!.codex!.default_sandbox = "workspace-write";
+  config.capabilities!.codex!.allow_workspace_write = false;
+
+  assert.equal(capabilityOptionsFromConfig(config).codex?.allowWorkspaceWrite, true);
+});
+
 test("maps custom Claude model selection to daemon options", () => {
   const config = defaultRuntimeConfig();
   config.capabilities!.codex!.provider = "claude-code";

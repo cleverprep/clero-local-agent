@@ -10,7 +10,8 @@ import {
   type CodingAgentProvider,
   type CodexReasoningEffort,
   type CodexSandbox,
-  type CodingTask
+  type CodingTask,
+  type CodingTaskEvent
 } from "@clero-local-agent/coding-agents";
 import { GitTools } from "@clero-local-agent/git-tools";
 import { ToolRegistry, toolCallArguments, toolCallRunContext } from "@clero-local-agent/mcp-runtime";
@@ -193,7 +194,7 @@ export class LocalRuntimeDaemon {
     const message = {
       type: "hello",
       platform: process.platform,
-      daemon_version: this.options.daemonVersion ?? "0.1.6",
+      daemon_version: this.options.daemonVersion ?? "0.1.7",
       capabilities: { tools: this.registry.capabilities() }
     } as const;
     this.logger.info("sending local runtime capabilities hello", {
@@ -269,6 +270,27 @@ export class LocalRuntimeDaemon {
   }
 
   private sendCodingTaskCompletion(task: CodingTask): void {
+    this.auditLogger.record({
+      at: new Date().toISOString(),
+      event: "coding_task_completed",
+      requestId: task.request_id,
+      agentId: task.agent_id,
+      taskId: task.local_task_id,
+      eventRunId: task.event_run_id,
+      tool: "coding_agent.start_task",
+      metadata: {
+        local_task_id: task.task_id,
+        provider: task.provider,
+        status: task.status,
+        cwd: task.cwd
+      },
+      result: {
+        final_message: task.final_message,
+        exit_code: task.exit_code,
+        output_tail: tailText(task.output)
+      }
+    });
+
     const message: LocalTaskCompletedMessage = {
       type: "local_task_completed",
       request_id: task.request_id,
@@ -413,6 +435,34 @@ export class LocalRuntimeDaemon {
           this.leaseManager.heartbeatLease(task.lease_id);
         }
       },
+      onTaskEvent: (task: CodingTask, event: CodingTaskEvent) => {
+        const text = codingTaskEventText(event);
+        if (!text && event.source !== "process") {
+          return;
+        }
+        this.auditLogger.record({
+          at: event.at,
+          event: "coding_task_event",
+          requestId: task.request_id,
+          agentId: task.agent_id,
+          taskId: task.local_task_id,
+          eventRunId: task.event_run_id,
+          tool: "coding_agent.start_task",
+          metadata: {
+            local_task_id: task.task_id,
+            provider: task.provider,
+            status: task.status,
+            cwd: task.cwd,
+            event_index: event.index,
+            event_type: event.type,
+            source: event.source
+          },
+          result: {
+            text: text ?? processEventLabel(event),
+            event_type: event.type
+          }
+        });
+      },
       onTaskTerminal: (task: CodingTask) => {
         if (task.lease_id) {
           this.leaseManager.releaseLease(task.lease_id);
@@ -496,6 +546,66 @@ function tailText(value: string, maxChars = 8_000): string {
     return value;
   }
   return value.slice(value.length - maxChars);
+}
+
+function codingTaskEventText(event: CodingTaskEvent): string | undefined {
+  if (event.text?.trim()) {
+    return tailText(event.text.trim(), 4_000);
+  }
+
+  const data = event.data;
+  if (!data) {
+    return undefined;
+  }
+
+  if (typeof data.result === "string" && data.result.trim()) {
+    return tailText(data.result.trim(), 4_000);
+  }
+  if (typeof data.text === "string" && data.text.trim()) {
+    return tailText(data.text.trim(), 4_000);
+  }
+  if (typeof data.message === "string" && data.message.trim()) {
+    return tailText(data.message.trim(), 4_000);
+  }
+
+  if (isJsonObject(data.item)) {
+    if (typeof data.item.text === "string" && data.item.text.trim()) {
+      return tailText(data.item.text.trim(), 4_000);
+    }
+    if (typeof data.item.output === "string" && data.item.output.trim()) {
+      return tailText(data.item.output.trim(), 4_000);
+    }
+  }
+
+  if (isJsonObject(data.message) && Array.isArray(data.message.content)) {
+    const text = data.message.content
+      .map((part) => (isJsonObject(part) && typeof part.text === "string" ? part.text : ""))
+      .filter(Boolean)
+      .join("\n")
+      .trim();
+    if (text) {
+      return tailText(text, 4_000);
+    }
+  }
+
+  return undefined;
+}
+
+function processEventLabel(event: CodingTaskEvent): string {
+  if (event.type === "process.started") {
+    return "Started local coding task.";
+  }
+  if (event.type === "process.closed") {
+    const status = isJsonObject(event.data) && typeof event.data.status === "string" ? event.data.status : "finished";
+    return `Local coding task ${status}.`;
+  }
+  if (event.type === "process.error" && isJsonObject(event.data) && typeof event.data.message === "string") {
+    return event.data.message;
+  }
+  if (event.type === "process.cancelled") {
+    return "Local coding task cancelled.";
+  }
+  return event.type;
 }
 
 export function createDaemon(options: LocalRuntimeDaemonOptions): LocalRuntimeDaemon {

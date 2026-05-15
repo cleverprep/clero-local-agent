@@ -521,7 +521,7 @@ where
 fn push_log_tail(logs: &Arc<Mutex<Vec<String>>>, line: String) {
     if let Ok(mut log_tail) = logs.lock() {
         log_tail.push(line);
-        while log_tail.len() > 200 {
+        while log_tail.len() > 600 {
             log_tail.remove(0);
         }
     }
@@ -800,6 +800,31 @@ fn normalize_runtime_config(config: &mut RuntimeConfig) -> bool {
     if config.allowed_directories.is_empty() {
         config.allowed_directories = default_allowed_directories();
         changed = true;
+    }
+
+    if config.capabilities.codex.provider == "codex" {
+        if config.capabilities.codex.allow_workspace_write
+            && config.capabilities.codex.default_sandbox == "read-only"
+        {
+            config.capabilities.codex.default_sandbox = "workspace-write".to_string();
+            changed = true;
+        }
+        if config.capabilities.codex.default_sandbox == "workspace-write"
+            && !config.capabilities.codex.allow_workspace_write
+        {
+            config.capabilities.codex.allow_workspace_write = true;
+            changed = true;
+        }
+        if config.capabilities.codex.default_sandbox == "danger-full-access" {
+            if !config.capabilities.codex.allow_workspace_write {
+                config.capabilities.codex.allow_workspace_write = true;
+                changed = true;
+            }
+            if !config.capabilities.codex.allow_danger_full_access {
+                config.capabilities.codex.allow_danger_full_access = true;
+                changed = true;
+            }
+        }
     }
 
     changed

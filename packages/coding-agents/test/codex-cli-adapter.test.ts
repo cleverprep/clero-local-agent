@@ -15,11 +15,15 @@ test("runs codex exec as an async JSONL task", async (t) => {
   t.after(() => rm(workspace, { recursive: true, force: true }));
   const fakeCodex = await createFakeCodex(workspace, 0);
   const terminalTasks: Array<{ agent_id?: string; event_run_id?: string }> = [];
+  const streamedEvents: string[] = [];
   const adapter = new CodexCliAdapter({
     workspacePolicy: new WorkspacePolicy({ allowedDirectories: [workspace] }),
     command: fakeCodex,
     defaultModel: "gpt-5.3-codex",
     defaultReasoningEffort: "high",
+    onTaskEvent: (_task, event) => {
+      streamedEvents.push(event.type);
+    },
     onTaskTerminal: (task) => {
       terminalTasks.push(task);
     }
@@ -46,6 +50,7 @@ test("runs codex exec as an async JSONL task", async (t) => {
   assert.equal(status.final_message, "done: inspect repo");
   assert.equal(terminalTasks[0]?.agent_id, "agent_1");
   assert.equal(terminalTasks[0]?.event_run_id, "201");
+  assert.equal(streamedEvents.includes("item.completed"), true);
 
   const output = await adapter.getOutput(taskId);
   assert.equal(output.final_message, "done: inspect repo");

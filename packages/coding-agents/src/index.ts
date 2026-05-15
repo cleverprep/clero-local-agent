@@ -104,6 +104,7 @@ export type CodexCliAdapterOptions = {
   maxEvents?: number;
   maxOutputBytes?: number;
   onTaskHeartbeat?: (task: CodingTask) => void;
+  onTaskEvent?: (task: CodingTask, event: CodingTaskEvent) => void;
   onTaskTerminal?: (task: CodingTask) => void;
 };
 
@@ -118,6 +119,7 @@ export type ClaudeCodeAdapterOptions = {
   maxEvents?: number;
   maxOutputBytes?: number;
   onTaskHeartbeat?: (task: CodingTask) => void;
+  onTaskEvent?: (task: CodingTask, event: CodingTaskEvent) => void;
   onTaskTerminal?: (task: CodingTask) => void;
 };
 
@@ -464,6 +466,7 @@ export class CodexCliAdapter implements CodingAgentAdapter {
     task.events.push(indexedEvent);
     task.events_count = task.nextEventIndex;
     task.last_event_type = indexedEvent.type;
+    this.options.onTaskEvent?.(task, indexedEvent);
 
     while (task.events.length > this.maxEvents) {
       task.events.shift();
@@ -820,6 +823,7 @@ export class ClaudeCodeAdapter implements CodingAgentAdapter {
     task.events.push(indexedEvent);
     task.events_count = task.nextEventIndex;
     task.last_event_type = indexedEvent.type;
+    this.options.onTaskEvent?.(task, indexedEvent);
 
     while (task.events.length > this.maxEvents) {
       task.events.shift();

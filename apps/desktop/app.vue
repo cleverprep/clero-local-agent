@@ -40,7 +40,59 @@
       </div>
     </header>
 
-    <section v-if="developerMode" class="developer-screen">
+    <section v-if="taskActivityMode" class="task-screen">
+      <div class="screen-heading">
+        <div>
+          <p class="eyebrow">Activity</p>
+          <h2>Coding tasks</h2>
+        </div>
+        <button class="secondary" type="button" @click="refreshStatus">Refresh</button>
+      </div>
+
+      <section v-if="latestCodingTasks.length" class="task-stack">
+        <article v-for="task in latestCodingTasks" :key="task.key" class="task-card" :data-status="task.status">
+          <header class="task-card-header">
+            <div>
+              <p class="eyebrow">{{ task.provider || "Coding agent" }}</p>
+              <h3>{{ task.cwd ? folderName(task.cwd) : "Local task" }}</h3>
+            </div>
+            <span class="task-status" :data-status="task.status">{{ task.status }}</span>
+          </header>
+
+          <div class="task-detail-row">
+            <span>{{ task.cwd || "Allowed workspace" }}</span>
+            <span v-if="task.localTaskId">{{ task.localTaskId }}</span>
+          </div>
+
+          <section v-if="task.prompt" class="task-text-section">
+            <p class="eyebrow">Request</p>
+            <pre class="task-text-block">{{ task.prompt }}</pre>
+          </section>
+
+          <section v-if="task.response || task.outputTail" class="task-text-section">
+            <p class="eyebrow">Response</p>
+            <pre class="task-text-block response">{{ task.response || task.outputTail }}</pre>
+          </section>
+
+          <section v-if="task.changedFiles.length" class="task-event-list">
+            <p class="eyebrow">Files</p>
+            <p v-for="file in task.changedFiles" :key="file">{{ file }}</p>
+          </section>
+
+          <section v-if="task.events.length" class="task-event-list">
+            <p class="eyebrow">Recent text</p>
+            <p v-for="(event, index) in task.events.slice(-4)" :key="`${task.key}-${index}`">{{ event }}</p>
+          </section>
+        </article>
+      </section>
+
+      <section v-else class="empty-state">
+        <strong>No coding task activity yet.</strong>
+        <span>Started Codex or Claude Code tasks will appear here.</span>
+      </section>
+    </section>
+
+    <section v-else-if="developerMode" class="developer-screen">
       <div class="screen-heading">
         <div>
           <p class="eyebrow">For developers</p>
@@ -164,13 +216,13 @@
           <p>{{ connectionHost }}</p>
         </div>
 
-        <div class="activity-card" :data-state="activityState">
+        <button class="activity-card" :data-state="activityState" type="button" @click="showTaskActivity">
           <span></span>
           <div>
             <strong>{{ taskActivityLabel }}</strong>
             <small>{{ taskActivityDetail }}</small>
           </div>
-        </div>
+        </button>
       </section>
 
       <section class="capability-stack" aria-label="Local capabilities">
@@ -288,7 +340,7 @@
               </label>
               <label>
                 Sandbox
-                <select v-model="config.capabilities.codex.default_sandbox">
+                <select v-model="codexSandbox">
                   <option value="read-only">Read only</option>
                   <option value="workspace-write">Workspace write</option>
                   <option value="danger-full-access">Danger full access</option>
@@ -348,7 +400,7 @@
             </template>
 
             <label class="check wide">
-              <input v-model="config.capabilities.codex.allow_danger_full_access" type="checkbox" />
+              <input v-model="fullLocalAccessEnabled" type="checkbox" />
               Allow full local access
             </label>
 
@@ -433,8 +485,8 @@
       </div>
     </section>
 
-    <button class="developer-link" type="button" @click="developerMode = !developerMode">
-      {{ developerMode ? "Back" : "For developers" }}
+    <button class="developer-link" type="button" @click="toggleDeveloperMode">
+      {{ developerMode || taskActivityMode ? "Back" : "For developers" }}
     </button>
 
     <Transition name="toast">
@@ -447,6 +499,7 @@
 type ConnectionState = "offline" | "connected" | "pairing";
 type CapabilityPanel = "browser" | "coding" | "git";
 type UpdateState = "idle" | "checking" | "available" | "current" | "installing" | "restarting" | "error";
+type CodingTaskActivityStatus = "requested" | "running" | "completed" | "failed" | "blocked" | "cancelled" | "error";
 
 const PRODUCTION_BACKEND_URL = "https://clero.so";
 
@@ -511,6 +564,22 @@ type DependencyStatus = {
   claude: DependencyCheck;
 };
 
+type CodingTaskActivity = {
+  key: string;
+  requestId: string;
+  localTaskId: string;
+  provider: string;
+  status: CodingTaskActivityStatus;
+  cwd: string;
+  prompt: string;
+  response: string;
+  outputTail: string;
+  startedAt: string;
+  finishedAt: string;
+  events: string[];
+  changedFiles: string[];
+};
+
 const connectionState = ref<ConnectionState>("offline");
 const pairingCode = ref("");
 const manualFolder = ref("");
@@ -521,6 +590,7 @@ const dependencyStatus = reactive<DependencyStatus>(defaultDependencyStatus());
 const dependenciesChecked = ref(false);
 const advancedConnectionOpen = ref(false);
 const developerMode = ref(false);
+const taskActivityMode = ref(false);
 const activeCapability = ref<CapabilityPanel | null>("browser");
 const updateState = ref<UpdateState>("idle");
 const updateVersion = ref("");
@@ -615,12 +685,50 @@ const writeAccessEnabled = computed({
         config.capabilities.codex.default_sandbox = "workspace-write";
       }
     } else {
-      if (config.capabilities.codex.default_sandbox === "workspace-write") {
+      if (
+        config.capabilities.codex.default_sandbox === "workspace-write" ||
+        config.capabilities.codex.default_sandbox === "danger-full-access"
+      ) {
         config.capabilities.codex.default_sandbox = "read-only";
       }
+      config.capabilities.codex.allow_danger_full_access = false;
       if (config.capabilities.codex.claude_permission_mode === "acceptEdits") {
         config.capabilities.codex.claude_permission_mode = "default";
       }
+    }
+  }
+});
+
+const codexSandbox = computed({
+  get: () => config.capabilities.codex.default_sandbox,
+  set: (sandbox: RuntimeConfig["capabilities"]["codex"]["default_sandbox"]) => {
+    config.capabilities.codex.default_sandbox = sandbox;
+    if (sandbox === "workspace-write") {
+      config.capabilities.codex.enabled = true;
+      config.capabilities.codex.allow_workspace_write = true;
+    }
+    if (sandbox === "danger-full-access") {
+      config.capabilities.codex.enabled = true;
+      config.capabilities.codex.allow_workspace_write = true;
+      config.capabilities.codex.allow_danger_full_access = true;
+    }
+    if (sandbox === "read-only") {
+      config.capabilities.codex.allow_workspace_write = false;
+    }
+  }
+});
+
+const fullLocalAccessEnabled = computed({
+  get: () => config.capabilities.codex.allow_danger_full_access,
+  set: (enabled: boolean) => {
+    config.capabilities.codex.allow_danger_full_access = enabled;
+    if (enabled) {
+      config.capabilities.codex.enabled = true;
+      config.capabilities.codex.allow_workspace_write = true;
+      return;
+    }
+    if (config.capabilities.codex.default_sandbox === "danger-full-access") {
+      config.capabilities.codex.default_sandbox = "workspace-write";
     }
   }
 });
@@ -662,7 +770,14 @@ const gitStatusText = computed(() => {
 
 const recentDaemonLog = computed(() => daemonStatus.log_tail.slice(-80).join("\n"));
 
+const codingTaskActivities = computed(() => parseCodingTaskActivities(daemonStatus.log_tail));
+
+const latestCodingTasks = computed(() => [...codingTaskActivities.value].reverse());
+
 const taskRunning = computed(() => {
+  if (codingTaskActivities.value.length) {
+    return codingTaskActivities.value.some((task) => task.status === "requested" || task.status === "running");
+  }
   if (!daemonStatus.running) return false;
   const text = recentDaemonLog.value;
   const lastStart = lastIndexOfAny(text, [
@@ -781,20 +896,42 @@ onBeforeUnmount(() => {
 });
 
 async function saveConfig(showNotice = true): Promise<void> {
+  forceProductionConnectionConfig();
+  reconcileCodingPermissionSettings();
+  applyDependencyAvailability(true);
+
+  let saved: RuntimeConfig;
   try {
-    forceProductionConnectionConfig();
-    applyDependencyAvailability(true);
-    const saved = await invokeTauri<RuntimeConfig>("save_config", { config: toRaw(config) });
-    applyRuntimeConfig(saved);
-    if (showNotice) {
-      notice.value = "Settings saved.";
-    }
+    saved = await invokeTauri<RuntimeConfig>("save_config", { config: toRaw(config) });
   } catch {
-    forceProductionConnectionConfig();
     localStorage.setItem("clero-local-agent-config", JSON.stringify(toRaw(config)));
     if (showNotice) {
       notice.value = "Settings saved in browser storage.";
     }
+    return;
+  }
+
+  applyRuntimeConfig(saved);
+
+  if (daemonStatus.running) {
+    try {
+      const stopped = await invokeTauri<DaemonStatus>("stop_daemon");
+      applyDaemonStatus(stopped);
+      const restarted = await invokeTauri<DaemonStatus>("start_daemon", { config: toRaw(config) });
+      applyDaemonStatus(restarted);
+      if (showNotice) {
+        notice.value = "Settings saved and runtime restarted.";
+      }
+    } catch (error) {
+      if (showNotice) {
+        notice.value = `Settings saved, but runtime restart failed: ${errorMessage(error)}`;
+      }
+    }
+    return;
+  }
+
+  if (showNotice) {
+    notice.value = "Settings saved.";
   }
 }
 
@@ -854,6 +991,22 @@ async function checkForUpdates(install: boolean, options: CheckForUpdatesOptions
 }
 
 function showUpdates(): void {
+  taskActivityMode.value = false;
+  developerMode.value = true;
+}
+
+function showTaskActivity(): void {
+  developerMode.value = false;
+  taskActivityMode.value = true;
+}
+
+function toggleDeveloperMode(): void {
+  if (developerMode.value || taskActivityMode.value) {
+    developerMode.value = false;
+    taskActivityMode.value = false;
+    return;
+  }
+
   developerMode.value = true;
 }
 
@@ -936,6 +1089,7 @@ async function removeConnection(): Promise<void> {
   config.websocket_url = "";
   pairingCode.value = "";
   developerMode.value = false;
+  taskActivityMode.value = false;
   connectionState.value = "offline";
   await saveConfig();
   notice.value = "Connection removed.";
@@ -1038,6 +1192,7 @@ function folderName(folder: string): string {
 
 function applyRuntimeConfig(nextConfig: RuntimeConfig): void {
   Object.assign(config, normalizeLoadedConfig(nextConfig));
+  reconcileCodingPermissionSettings();
 }
 
 function normalizeLoadedConfig(nextConfig: RuntimeConfig): RuntimeConfig {
@@ -1064,6 +1219,23 @@ function forceProductionConnectionConfig(): void {
   if (backendWasLocal || isLocalEndpoint(config.websocket_url)) {
     config.websocket_url = "";
     config.device_token = "";
+  }
+}
+
+function reconcileCodingPermissionSettings(): void {
+  if (config.capabilities.codex.provider !== "codex") {
+    return;
+  }
+
+  if (config.capabilities.codex.allow_workspace_write && config.capabilities.codex.default_sandbox === "read-only") {
+    config.capabilities.codex.default_sandbox = "workspace-write";
+  }
+  if (config.capabilities.codex.default_sandbox === "workspace-write") {
+    config.capabilities.codex.allow_workspace_write = true;
+  }
+  if (config.capabilities.codex.default_sandbox === "danger-full-access") {
+    config.capabilities.codex.allow_workspace_write = true;
+    config.capabilities.codex.allow_danger_full_access = true;
   }
 }
 
@@ -1164,6 +1336,202 @@ function defaultDependencyStatus(): DependencyStatus {
       message: "Claude Code availability has not been checked."
     }
   };
+}
+
+function parseCodingTaskActivities(lines: string[]): CodingTaskActivity[] {
+  const tasks = new Map<string, CodingTaskActivity>();
+  const aliases = new Map<string, string>();
+
+  const upsertTask = (key: string, requestId = ""): CodingTaskActivity => {
+    const resolvedKey = aliases.get(key) ?? key;
+    if (tasks.has(resolvedKey)) {
+      return tasks.get(resolvedKey)!;
+    }
+
+    if (requestId && requestId !== key && tasks.has(requestId)) {
+      const task = tasks.get(requestId)!;
+      tasks.delete(requestId);
+      task.key = key;
+      task.localTaskId = key;
+      aliases.set(requestId, key);
+      tasks.set(key, task);
+      return task;
+    }
+
+    const task: CodingTaskActivity = {
+      key,
+      requestId,
+      localTaskId: key.startsWith("lrt_") ? "" : key,
+      provider: "",
+      status: "requested",
+      cwd: "",
+      prompt: "",
+      response: "",
+      outputTail: "",
+      startedAt: "",
+      finishedAt: "",
+      events: [],
+      changedFiles: []
+    };
+    tasks.set(key, task);
+    return task;
+  };
+
+  for (const line of lines) {
+    const parsed = parseDaemonJsonLine(line);
+    if (!parsed) continue;
+
+    const inbound = recordValue(parsed, "inbound");
+    if (stringValue(inbound?.type) === "tool_call" && stringValue(inbound?.tool) === "coding_agent.start_task") {
+      const requestId = stringValue(inbound.request_id) ?? "";
+      if (!requestId) continue;
+      const task = upsertTask(requestId, requestId);
+      const args = recordValue(inbound, "arguments");
+      task.requestId = requestId;
+      task.prompt ||= stringValue(args?.prompt) ?? "";
+      task.cwd ||= stringValue(args?.cwd) ?? "";
+      continue;
+    }
+
+    const audit = recordValue(parsed, "audit");
+    if (!audit || stringValue(audit.tool) !== "coding_agent.start_task") {
+      continue;
+    }
+
+    const eventName = stringValue(audit.event);
+    const requestId = stringValue(audit.requestId) ?? "";
+    const metadata = recordValue(audit, "metadata");
+    const result = recordValue(audit, "result");
+    const localTaskId =
+      stringValue(metadata?.local_task_id) ??
+      stringValue(recordValue(result, "result")?.task_id) ??
+      requestId;
+    const task = upsertTask(localTaskId, requestId);
+    task.requestId ||= requestId;
+    task.localTaskId ||= localTaskId === requestId ? "" : localTaskId;
+    task.cwd ||= stringValue(metadata?.cwd) ?? "";
+    task.provider ||= stringValue(metadata?.provider) ?? "";
+
+    if (eventName === "tool_call") {
+      const toolResult = recordValue(result, "result");
+      task.prompt ||= stringValue(metadata?.prompt) ?? "";
+      task.cwd = stringValue(toolResult?.cwd) ?? task.cwd;
+      task.provider = stringValue(toolResult?.provider) ?? task.provider;
+      task.status =
+        stringValue(result?.status) === "error"
+          ? "error"
+          : codingTaskStatusValue(stringValue(toolResult?.status)) ?? task.status;
+      task.response ||= stringValue(result?.message) ?? "";
+      task.startedAt ||= stringValue(audit.at) ?? "";
+      appendChangedFiles(task, task.response);
+      continue;
+    }
+
+    if (eventName === "coding_task_event") {
+      task.provider = stringValue(metadata?.provider) ?? task.provider;
+      task.cwd = stringValue(metadata?.cwd) ?? task.cwd;
+      task.status = codingTaskStatusValue(stringValue(metadata?.status)) ?? task.status;
+      const text = stringValue(result?.text);
+      if (text) {
+        appendTaskEvent(task, text);
+        appendChangedFiles(task, text);
+      }
+      continue;
+    }
+
+    if (eventName === "coding_task_completed") {
+      task.provider = stringValue(metadata?.provider) ?? task.provider;
+      task.cwd = stringValue(metadata?.cwd) ?? task.cwd;
+      task.status = codingTaskStatusValue(stringValue(metadata?.status)) ?? task.status;
+      task.response = stringValue(result?.final_message) ?? task.response;
+      task.outputTail = stringValue(result?.output_tail) ?? task.outputTail;
+      task.finishedAt = stringValue(audit.at) ?? "";
+      appendChangedFiles(task, task.response);
+      appendChangedFiles(task, task.outputTail);
+    }
+  }
+
+  return [...tasks.values()]
+    .filter((task) => task.prompt || task.response || task.events.length || task.outputTail)
+    .sort((left, right) => taskSortTime(left).localeCompare(taskSortTime(right)))
+    .slice(-8);
+}
+
+function parseDaemonJsonLine(line: string): Record<string, unknown> | null {
+  const raw = line.replace(/^(stdout|stderr):\s*/, "").trim();
+  if (!raw.startsWith("{")) return null;
+  try {
+    const value = JSON.parse(raw) as unknown;
+    return isRecord(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function recordValue(record: Record<string, unknown> | undefined, key: string): Record<string, unknown> | undefined {
+  const value = record?.[key];
+  return isRecord(value) ? value : undefined;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function codingTaskStatusValue(value: string | undefined): CodingTaskActivityStatus | undefined {
+  if (
+    value === "requested" ||
+    value === "running" ||
+    value === "completed" ||
+    value === "failed" ||
+    value === "blocked" ||
+    value === "cancelled" ||
+    value === "error"
+  ) {
+    return value;
+  }
+  return undefined;
+}
+
+function appendTaskEvent(task: CodingTaskActivity, text: string): void {
+  const normalized = text.trim();
+  if (!normalized || task.events.at(-1) === normalized) return;
+  task.events.push(normalized);
+  while (task.events.length > 10) {
+    task.events.shift();
+  }
+}
+
+function appendChangedFiles(task: CodingTaskActivity, text: string): void {
+  if (!text) return;
+  for (const file of changedFilesFromText(text)) {
+    if (!task.changedFiles.includes(file)) {
+      task.changedFiles.push(file);
+    }
+  }
+}
+
+function changedFilesFromText(text: string): string[] {
+  const files = new Set<string>();
+  for (const line of text.split(/\r?\n/)) {
+    const statusMatch = line.match(/^([ MARCUD?!]{1,2})\s+(.+\.[A-Za-z0-9]{1,10})$/);
+    if (statusMatch) {
+      files.add(`${statusMatch[1].trim() || "changed"} ${statusMatch[2].trim()}`);
+      continue;
+    }
+    const pathMatches = line.matchAll(/\b((?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,10})\b/g);
+    for (const match of pathMatches) {
+      files.add(match[1]);
+    }
+  }
+  return [...files].slice(0, 8);
+}
+
+function taskSortTime(task: CodingTaskActivity): string {
+  return task.finishedAt || task.startedAt || task.requestId || task.key;
 }
 
 function errorMessage(error: unknown): string {
