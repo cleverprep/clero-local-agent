@@ -167,7 +167,10 @@ export function mergeRuntimeConfig(base: LocalRuntimeConfig, override: LocalRunt
   return {
     ...base,
     ...override,
-    allowed_directories: override.allowed_directories ?? base.allowed_directories,
+    allowed_directories:
+      override.allowed_directories && override.allowed_directories.length > 0
+        ? override.allowed_directories
+        : base.allowed_directories,
     capabilities: {
       browser: {
         ...base.capabilities?.browser,

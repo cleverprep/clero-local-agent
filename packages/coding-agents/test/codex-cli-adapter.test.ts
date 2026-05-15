@@ -26,7 +26,7 @@ test("runs codex exec as an async JSONL task", async (t) => {
   });
 
   const start = await adapter.startTask(
-    { prompt: "inspect repo", cwd: workspace },
+    { prompt: "inspect repo" },
     {
       requestId: "req_1",
       leaseId: "lease_1",

@@ -41,7 +41,7 @@ CLOUDFLARE_R2_BUCKET
 1. Update the desktop version in `apps/desktop/package.json` and `apps/desktop/src-tauri/tauri.conf.json`.
 2. Commit the version change.
 3. Push `main`.
-4. Create and push a tag such as `desktop-v0.1.4`.
+4. Create and push a tag such as `desktop-v0.1.5`.
 5. Let `.github/workflows/desktop-release.yml` build the app, create the draft GitHub Release, prepare website assets, and upload them to R2.
 6. Review and publish the GitHub draft release.
 7. Verify the public DMG and updater metadata from `media.clero.so`.

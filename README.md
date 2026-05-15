@@ -145,8 +145,8 @@ This workflow does not require Apple Developer ID signing. `TAURI_SIGNING_PRIVAT
 3. Push a release tag:
 
 ```bash
-git tag desktop-v0.1.4
-git push origin desktop-v0.1.4
+git tag desktop-v0.1.5
+git push origin desktop-v0.1.5
 ```
 
 4. `.github/workflows/desktop-release.yml` builds the app, creates a draft GitHub Release, prepares website assets, and uploads them to R2.
@@ -237,7 +237,7 @@ On every WebSocket session establishment, the daemon also sends the backend-supp
 {
   "type": "hello",
   "platform": "darwin",
-  "daemon_version": "0.1.4",
+  "daemon_version": "0.1.5",
   "capabilities": {
     "tools": []
   }

@@ -7,6 +7,7 @@ import {
   capabilitiesFromConfig,
   capabilityOptionsFromConfig,
   defaultRuntimeConfig,
+  mergeRuntimeConfig,
   saveRuntimeConfig,
   loadRuntimeConfig
 } from "../src/runtime-config.ts";
@@ -56,6 +57,13 @@ test("maps custom Claude model selection to daemon options", () => {
   config.capabilities!.codex!.claude_model_custom = "claude-sonnet-4-5";
 
   assert.equal(capabilityOptionsFromConfig(config).codex?.claudeModel, "claude-sonnet-4-5");
+});
+
+test("empty allowed directories keep the default projects root", () => {
+  const base = defaultRuntimeConfig();
+  const merged = mergeRuntimeConfig(base, { allowed_directories: [] });
+
+  assert.deepEqual(merged.allowed_directories, base.allowed_directories);
 });
 
 test("saves and loads runtime config", async (t) => {

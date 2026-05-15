@@ -2,7 +2,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { readdir, readFile } from "node:fs/promises";
 import type { Dirent } from "node:fs";
-import type { ToolDefinition } from "@clero-local-agent/mcp-runtime";
+import { ToolExecutionError, type ToolDefinition } from "@clero-local-agent/mcp-runtime";
 import type { JsonObject } from "@clero-local-agent/protocol";
 
 export type WorkspacePolicyOptions = {
@@ -13,17 +13,26 @@ export class WorkspacePolicy {
   private readonly allowedDirectories: string[];
 
   constructor(options: WorkspacePolicyOptions) {
-    if (options.allowedDirectories.length === 0) {
+    const allowedDirectories = options.allowedDirectories.filter((directory) => directory.trim().length > 0);
+    if (allowedDirectories.length === 0) {
       throw new Error("At least one allowed directory is required");
     }
 
-    this.allowedDirectories = options.allowedDirectories.map((directory) => path.resolve(directory));
+    this.allowedDirectories = allowedDirectories.map((directory) => path.resolve(directory));
   }
 
-  resolveAllowedDirectory(candidate: string): string {
+  resolveAllowedDirectory(candidate?: string): string {
+    if (!candidate || candidate.trim() === "." || candidate.trim() === "") {
+      return this.defaultDirectory();
+    }
+
     const resolved = path.resolve(candidate);
     if (!this.isAllowed(resolved)) {
-      throw new Error(`Path is outside allowed workspaces: ${candidate}`);
+      throw new ToolExecutionError(
+        "invalid_arguments",
+        `Path is outside allowed workspaces: ${candidate}. Allowed roots: ${this.allowedDirectories.join(", ")}`,
+        { allowed_roots: this.listAllowedDirectories() }
+      );
     }
 
     return resolved;
@@ -36,6 +45,10 @@ export class WorkspacePolicy {
 
   listAllowedDirectories(): string[] {
     return [...this.allowedDirectories];
+  }
+
+  defaultDirectory(): string {
+    return this.allowedDirectories[0]!;
   }
 }
 

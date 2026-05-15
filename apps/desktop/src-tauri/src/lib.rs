@@ -269,7 +269,7 @@ async fn pair_runtime(app: AppHandle, code: String, mut config: RuntimeConfig) -
         "pairing_code": pairing_code,
         "device_name": config.device_name,
         "platform": std::env::consts::OS,
-        "daemon_version": "0.1.4",
+        "daemon_version": "0.1.5",
         "capabilities": { "tools": capabilities }
     });
     let response = reqwest::Client::new()
@@ -794,6 +794,11 @@ fn normalize_runtime_config(config: &mut RuntimeConfig) -> bool {
     if config.capabilities.browser.provider == "mcp-chrome" {
         config.capabilities.browser.provider = default_browser_provider();
         config.capabilities.browser.mcp_url = None;
+        changed = true;
+    }
+
+    if config.allowed_directories.is_empty() {
+        config.allowed_directories = default_allowed_directories();
         changed = true;
     }
 

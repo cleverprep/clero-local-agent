@@ -15,6 +15,15 @@ test("lists allowed workspace roots", async (t) => {
   assert.deepEqual(result.roots, [{ path: root, name: path.basename(root) }]);
 });
 
+test("uses the first allowed root as the default directory", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "clero-workspace-test-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const policy = new WorkspacePolicy({ allowedDirectories: [root] });
+
+  assert.equal(policy.resolveAllowedDirectory(), root);
+  assert.equal(policy.resolveAllowedDirectory("."), root);
+});
+
 test("discovers projects under allowed roots", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "clero-workspace-test-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -70,7 +79,10 @@ test("rejects project descriptions outside allowed roots", async (t) => {
   t.after(() => rm(root, { recursive: true, force: true }));
   const tools = new WorkspaceTools(new WorkspacePolicy({ allowedDirectories: [root] }));
 
-  await assert.rejects(() => tools.describeProject({ path: os.tmpdir() }), /outside allowed workspaces/);
+  await assert.rejects(
+    () => tools.describeProject({ path: os.tmpdir() }),
+    (error: unknown) => error instanceof Error && error.message.includes(root)
+  );
 });
 
 function jsonArray(value: unknown): Array<Record<string, unknown>> {

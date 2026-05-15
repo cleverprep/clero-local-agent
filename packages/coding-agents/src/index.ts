@@ -166,7 +166,7 @@ export class CodexCliAdapter implements CodingAgentAdapter {
 
   async startTask(args: JsonObject, context: ToolExecutionContext): Promise<JsonObject> {
     const prompt = requiredString(args, "prompt");
-    const cwd = this.options.workspacePolicy.resolveAllowedDirectory(optionalString(args, "cwd") ?? process.cwd());
+    const cwd = this.options.workspacePolicy.resolveAllowedDirectory(optionalString(args, "cwd"));
     await ensureExistingDirectory(cwd);
     const sandbox = sandboxArg(args, "sandbox") ?? this.options.defaultSandbox ?? "read-only";
     const approval = await this.ensureSandboxApproval(sandbox, cwd, prompt);
@@ -537,7 +537,7 @@ export class ClaudeCodeAdapter implements CodingAgentAdapter {
 
   async startTask(args: JsonObject, context: ToolExecutionContext): Promise<JsonObject> {
     const prompt = requiredString(args, "prompt");
-    const cwd = this.options.workspacePolicy.resolveAllowedDirectory(optionalString(args, "cwd") ?? process.cwd());
+    const cwd = this.options.workspacePolicy.resolveAllowedDirectory(optionalString(args, "cwd"));
     await ensureExistingDirectory(cwd);
     const permissionMode = claudePermissionModeArg(args, "permission_mode") ?? this.options.permissionMode ?? "default";
     const approval = await this.ensurePermissionApproval(permissionMode, cwd, prompt);
