@@ -64,6 +64,10 @@ jobs:
           test -n "$CLOUDFLARE_ACCOUNT_ID"
           test -n "$CLOUDFLARE_API_TOKEN"
           test -n "$CLOUDFLARE_R2_BUCKET"
+          if [[ ! "$CLOUDFLARE_R2_BUCKET" =~ ^[a-z0-9]([a-z0-9-]{1,61}[a-z0-9])$ ]]; then
+            echo "::error::CLOUDFLARE_R2_BUCKET must be the R2 bucket name only: lowercase letters, numbers, and hyphens, 3-63 characters, starting and ending with a letter or number. Do not use an API token, URL, endpoint, or object path here."
+            exit 1
+          fi
 
       - name: Upload release assets to R2
         run: |
