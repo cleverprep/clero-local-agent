@@ -990,11 +990,14 @@ export class McpChromeBrowserAdapter implements BrowserAdapter {
   private readonly client: McpToolClient;
 
   constructor(options: McpChromeBrowserAdapterOptions = {}) {
-    this.client =
-      options.client ??
-      new StreamableHttpMcpClient({
-        endpointUrl: options.endpointUrl ?? "http://127.0.0.1:12306/mcp"
-      });
+    if (options.client) {
+      this.client = options.client;
+      return;
+    }
+    if (!options.endpointUrl) {
+      throw new Error("mcp-chrome endpointUrl is required.");
+    }
+    this.client = new StreamableHttpMcpClient({ endpointUrl: options.endpointUrl });
   }
 
   async listTools(): Promise<JsonObject> {

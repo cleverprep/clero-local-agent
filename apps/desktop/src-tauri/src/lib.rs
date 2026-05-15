@@ -11,6 +11,8 @@ use std::{
 };
 use tauri::{AppHandle, Manager, State};
 
+const PRODUCTION_BACKEND_URL: &str = "https://clero.so";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RuntimeConfig {
     #[serde(default = "default_backend_url")]
@@ -216,11 +218,16 @@ fn load_config(app: AppHandle) -> Result<RuntimeConfig, String> {
     }
 
     let raw = fs::read_to_string(path).map_err(|error| error.to_string())?;
-    serde_json::from_str(&raw).map_err(|error| error.to_string())
+    let mut config = serde_json::from_str::<RuntimeConfig>(&raw).map_err(|error| error.to_string())?;
+    if normalize_runtime_config(&mut config) {
+        write_config(&app, &config)?;
+    }
+    Ok(config)
 }
 
 #[tauri::command]
-fn save_config(app: AppHandle, config: RuntimeConfig) -> Result<RuntimeConfig, String> {
+fn save_config(app: AppHandle, mut config: RuntimeConfig) -> Result<RuntimeConfig, String> {
+    normalize_runtime_config(&mut config);
     write_config(&app, &config)?;
     Ok(config)
 }
@@ -241,7 +248,8 @@ fn write_config(app: &AppHandle, config: &RuntimeConfig) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn pair_runtime(app: AppHandle, code: String, config: RuntimeConfig) -> Result<RuntimeConfig, String> {
+async fn pair_runtime(app: AppHandle, code: String, mut config: RuntimeConfig) -> Result<RuntimeConfig, String> {
+    normalize_runtime_config(&mut config);
     let pairing_code = code.trim();
     if pairing_code.is_empty() {
         return Err("Pairing code is required".to_string());
@@ -261,7 +269,7 @@ async fn pair_runtime(app: AppHandle, code: String, config: RuntimeConfig) -> Re
         "pairing_code": pairing_code,
         "device_name": config.device_name,
         "platform": std::env::consts::OS,
-        "daemon_version": "0.1.3",
+        "daemon_version": "0.1.4",
         "capabilities": { "tools": capabilities }
     });
     let response = reqwest::Client::new()
@@ -284,6 +292,9 @@ async fn pair_runtime(app: AppHandle, code: String, config: RuntimeConfig) -> Re
         .json::<PairingClaimResponse>()
         .await
         .map_err(|error| error.to_string())?;
+    if is_local_endpoint(&claim.websocket_url) {
+        return Err("Clero returned a local WebSocket URL. Use a production Clero connection code.".to_string());
+    }
     let mut next_config = config;
     next_config.device_token = claim.device_token;
     next_config.websocket_url = claim.websocket_url;
@@ -294,8 +305,9 @@ async fn pair_runtime(app: AppHandle, code: String, config: RuntimeConfig) -> Re
 fn start_daemon(
     app: AppHandle,
     state: State<'_, DaemonSupervisor>,
-    config: RuntimeConfig,
+    mut config: RuntimeConfig,
 ) -> Result<DaemonProcessStatus, String> {
+    normalize_runtime_config(&mut config);
     if config.device_token.trim().is_empty() || config.websocket_url.trim().is_empty() {
         return Err("Pair the runtime before starting the daemon.".to_string());
     }
@@ -744,9 +756,48 @@ fn command_version(command: &Path, flag: &str) -> Option<(String, Option<String>
 }
 
 fn default_backend_url() -> String {
-    option_env!("CLERO_BACKEND_URL")
-        .unwrap_or("https://api.clero.so")
-        .to_string()
+    match option_env!("CLERO_BACKEND_URL").map(str::trim) {
+        Some(url) if !url.is_empty() && !is_local_endpoint(url) => url.trim_end_matches('/').to_string(),
+        _ => PRODUCTION_BACKEND_URL.to_string(),
+    }
+}
+
+fn is_local_endpoint(value: &str) -> bool {
+    let normalized = value.trim().to_ascii_lowercase();
+    normalized.contains("localhost")
+        || normalized.contains("127.0.0.1")
+        || normalized.contains("0.0.0.0")
+        || normalized.contains("[::1]")
+}
+
+fn normalize_runtime_config(config: &mut RuntimeConfig) -> bool {
+    let mut changed = false;
+    let backend = config.backend_url.trim().trim_end_matches('/').to_string();
+    let backend_was_local = is_local_endpoint(&backend);
+
+    if backend.is_empty() || backend_was_local || backend == "https://api.clero.so" {
+        config.backend_url = default_backend_url();
+        changed = true;
+    } else if backend != config.backend_url {
+        config.backend_url = backend;
+        changed = true;
+    }
+
+    if backend_was_local || is_local_endpoint(&config.websocket_url) {
+        if !config.websocket_url.is_empty() || !config.device_token.is_empty() {
+            config.websocket_url.clear();
+            config.device_token.clear();
+            changed = true;
+        }
+    }
+
+    if config.capabilities.browser.provider == "mcp-chrome" {
+        config.capabilities.browser.provider = default_browser_provider();
+        config.capabilities.browser.mcp_url = None;
+        changed = true;
+    }
+
+    changed
 }
 
 fn default_device_name() -> String {

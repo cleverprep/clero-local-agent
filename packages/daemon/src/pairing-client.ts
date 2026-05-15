@@ -28,7 +28,7 @@ export class PairingClient {
   constructor(options: PairingClientOptions) {
     this.backendUrl = normalizeBackendOrigin(options.backendUrl);
     this.claimPath = options.claimPath ?? "/api/v1/integrations/local-runtime/claim/";
-    this.daemonVersion = options.daemonVersion ?? "0.1.3";
+    this.daemonVersion = options.daemonVersion ?? "0.1.4";
   }
 
   async pair(input: PairDeviceInput): Promise<PairDeviceResult> {

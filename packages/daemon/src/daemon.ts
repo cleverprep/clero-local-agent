@@ -193,7 +193,7 @@ export class LocalRuntimeDaemon {
     const message = {
       type: "hello",
       platform: process.platform,
-      daemon_version: this.options.daemonVersion ?? "0.1.3",
+      daemon_version: this.options.daemonVersion ?? "0.1.4",
       capabilities: { tools: this.registry.capabilities() }
     } as const;
     this.logger.info("sending local runtime capabilities hello", {
@@ -370,7 +370,7 @@ export class LocalRuntimeDaemon {
     const browserAdapter =
       this.options.browserProvider === "mcp-chrome"
         ? new McpChromeBrowserAdapter({
-            endpointUrl: this.options.browserMcpUrl ?? "http://127.0.0.1:12306/mcp"
+            endpointUrl: this.options.browserMcpUrl
           })
         : new ManagedBrowserAdapter({
             userDataDir: this.options.browserProfileDir,

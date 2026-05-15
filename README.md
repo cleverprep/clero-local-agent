@@ -145,8 +145,8 @@ This workflow does not require Apple Developer ID signing. `TAURI_SIGNING_PRIVAT
 3. Push a release tag:
 
 ```bash
-git tag desktop-v0.1.3
-git push origin desktop-v0.1.3
+git tag desktop-v0.1.4
+git push origin desktop-v0.1.4
 ```
 
 4. `.github/workflows/desktop-release.yml` builds the app, creates a draft GitHub Release, prepares website assets, and uploads them to R2.
@@ -195,7 +195,7 @@ Pair the device once the backend endpoint is available:
 
 ```bash
 pnpm dev:cli pair \
-  --backend-url http://localhost:8000 \
+  --backend-url https://clero.so \
   --code LRA-FFBD-4222-7DA1
 ```
 
@@ -211,14 +211,14 @@ Expected backend response:
 {
   "connection_id": 45,
   "device_token": "clrt_...",
-  "websocket_url": "ws://localhost:8000/ws/local-runtime/"
+  "websocket_url": "wss://clero.so/ws/local-runtime/"
 }
 ```
 
 Then start the daemon with the returned values:
 
 ```bash
-CLERO_LOCAL_RUNTIME_WS_URL="ws://localhost:8000/ws/local-runtime/" \
+CLERO_LOCAL_RUNTIME_WS_URL="wss://clero.so/ws/local-runtime/" \
 CLERO_LOCAL_RUNTIME_TOKEN="clrt_..." \
 pnpm dev:cli daemon
 ```
@@ -237,7 +237,7 @@ On every WebSocket session establishment, the daemon also sends the backend-supp
 {
   "type": "hello",
   "platform": "darwin",
-  "daemon_version": "0.1.3",
+  "daemon_version": "0.1.4",
   "capabilities": {
     "tools": []
   }
@@ -278,16 +278,6 @@ Verify the managed browser without the Clero backend:
 
 ```bash
 npm run smoke:browser
-```
-
-`mcp-chrome` is still supported as an optional advanced provider for users who explicitly want to connect their existing Chrome profile through an extension:
-
-```bash
-pnpm dev:cli daemon \
-  --ws-url wss://app.clero.example/local-runtime/ws \
-  --token "$CLERO_LOCAL_RUNTIME_TOKEN" \
-  --browser-provider mcp-chrome \
-  --browser-mcp-url http://127.0.0.1:12306/mcp
 ```
 
 ## Supported Control Messages

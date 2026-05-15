@@ -134,20 +134,8 @@
         <Transition name="expand">
           <div v-if="advancedConnectionOpen" class="advanced-connection">
             <label>
-              Backend URL
-              <input v-model="config.backend_url" spellcheck="false" />
-            </label>
-            <label>
               Device name
               <input v-model="config.device_name" />
-            </label>
-            <label class="wide">
-              Runtime token
-              <input v-model="config.device_token" type="password" spellcheck="false" />
-            </label>
-            <label class="wide">
-              WebSocket URL
-              <input v-model="config.websocket_url" spellcheck="false" />
             </label>
           </div>
         </Transition>
@@ -207,13 +195,6 @@
                   <option value="chromium">Chromium</option>
                   <option value="chrome-beta">Chrome Beta</option>
                   <option value="msedge">Edge</option>
-                </select>
-              </label>
-              <label>
-                Provider
-                <select v-model="config.capabilities.browser.provider">
-                  <option value="managed">Managed Chrome</option>
-                  <option value="mcp-chrome">mcp-chrome</option>
                 </select>
               </label>
               <label class="wide">
@@ -453,6 +434,8 @@ type ConnectionState = "offline" | "connected" | "pairing";
 type CapabilityPanel = "browser" | "coding" | "git";
 type UpdateState = "idle" | "checking" | "available" | "current" | "installing" | "restarting" | "error";
 
+const PRODUCTION_BACKEND_URL = "https://clero.so";
+
 type RuntimeConfig = {
   backend_url: string;
   websocket_url: string;
@@ -563,11 +546,7 @@ const powerButtonLabel = computed(() => {
 });
 
 const connectionHost = computed(() => {
-  try {
-    return new URL(config.backend_url).host;
-  } catch {
-    return config.backend_url || "Unknown backend";
-  }
+  return new URL(PRODUCTION_BACKEND_URL).host;
 });
 
 const browserUnavailable = computed(() => dependenciesChecked.value && !dependencyStatus.browser.available);
@@ -739,9 +718,10 @@ const updateDetail = computed(() => {
 onMounted(async () => {
   try {
     const loaded = await invokeTauri<RuntimeConfig>("load_config");
-    Object.assign(config, loaded);
+    applyRuntimeConfig(loaded);
   } catch {
     notice.value = "Using local defaults.";
+    forceProductionConnectionConfig();
   }
   await refreshDependencyStatus();
   applyDependencyAvailability();
@@ -759,13 +739,15 @@ onBeforeUnmount(() => {
 
 async function saveConfig(showNotice = true): Promise<void> {
   try {
+    forceProductionConnectionConfig();
     applyDependencyAvailability(true);
     const saved = await invokeTauri<RuntimeConfig>("save_config", { config: toRaw(config) });
-    Object.assign(config, saved);
+    applyRuntimeConfig(saved);
     if (showNotice) {
       notice.value = "Settings saved.";
     }
   } catch {
+    forceProductionConnectionConfig();
     localStorage.setItem("clero-local-agent-config", JSON.stringify(toRaw(config)));
     if (showNotice) {
       notice.value = "Settings saved in browser storage.";
@@ -834,10 +816,11 @@ async function pairRuntime(): Promise<void> {
 
   connectionState.value = "pairing";
   try {
+    forceProductionConnectionConfig();
     await refreshDependencyStatus();
     applyDependencyAvailability(true);
     const paired = await invokeTauri<RuntimeConfig>("pair_runtime", { code, config: toRaw(config) });
-    Object.assign(config, paired);
+    applyRuntimeConfig(paired);
     pairingCode.value = "";
     advancedConnectionOpen.value = false;
     connectionState.value = "connected";
@@ -999,11 +982,52 @@ function folderName(folder: string): string {
   return folder.split(/[\\/]/).filter(Boolean).at(-1) ?? folder;
 }
 
+function applyRuntimeConfig(nextConfig: RuntimeConfig): void {
+  Object.assign(config, normalizeLoadedConfig(nextConfig));
+}
+
+function normalizeLoadedConfig(nextConfig: RuntimeConfig): RuntimeConfig {
+  const normalized = nextConfig;
+  const backendWasLocal = isLocalEndpoint(normalized.backend_url);
+  normalized.backend_url = PRODUCTION_BACKEND_URL;
+  normalized.capabilities.browser.provider = "managed";
+  normalized.capabilities.browser.mcp_url = undefined;
+
+  if (backendWasLocal || isLocalEndpoint(normalized.websocket_url)) {
+    normalized.websocket_url = "";
+    normalized.device_token = "";
+  }
+
+  return normalized;
+}
+
+function forceProductionConnectionConfig(): void {
+  const backendWasLocal = isLocalEndpoint(config.backend_url);
+  config.backend_url = PRODUCTION_BACKEND_URL;
+  config.capabilities.browser.provider = "managed";
+  config.capabilities.browser.mcp_url = undefined;
+
+  if (backendWasLocal || isLocalEndpoint(config.websocket_url)) {
+    config.websocket_url = "";
+    config.device_token = "";
+  }
+}
+
+function isLocalEndpoint(value: string | undefined): boolean {
+  const normalized = (value ?? "").trim().toLowerCase();
+  return (
+    normalized.includes("localhost") ||
+    normalized.includes("127.0.0.1") ||
+    normalized.includes("0.0.0.0") ||
+    normalized.includes("[::1]")
+  );
+}
+
 async function invokeTauri<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (!("__TAURI_INTERNALS__" in window)) {
     const saved = localStorage.getItem("clero-local-agent-config");
     if (command === "load_config" && saved) {
-      return JSON.parse(saved) as T;
+      return normalizeLoadedConfig(JSON.parse(saved) as RuntimeConfig) as T;
     }
     throw new Error("Tauri runtime is not available");
   }
@@ -1014,7 +1038,7 @@ async function invokeTauri<T>(command: string, args?: Record<string, unknown>): 
 
 function defaultConfig(): RuntimeConfig {
   return {
-    backend_url: "https://api.clero.so",
+    backend_url: PRODUCTION_BACKEND_URL,
     websocket_url: "",
     device_token: "",
     device_name: "Local Mac",

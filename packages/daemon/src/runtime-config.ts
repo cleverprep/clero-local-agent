@@ -53,7 +53,7 @@ export type LocalRuntimeConfig = {
 
 export function defaultRuntimeConfig(): LocalRuntimeConfig {
   return {
-    backend_url: process.env.CLERO_BACKEND_URL ?? "https://api.clero.so",
+    backend_url: process.env.CLERO_BACKEND_URL ?? "https://clero.so",
     device_name: os.hostname(),
     allowed_directories: [path.join(os.homedir(), "Projects")],
     capabilities: {

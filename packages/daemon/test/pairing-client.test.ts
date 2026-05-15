@@ -17,7 +17,7 @@ test("claims a local runtime pairing code against the backend claim endpoint", a
   try {
     const client = new PairingClient({
       backendUrl: "http://localhost:8000/api/v1/integrations/local-runtime/pairing-codes/",
-      daemonVersion: "0.1.3"
+      daemonVersion: "0.1.4"
     });
     const result = await client.pair({
       code: "LRA-FFBD-4222-7DA1",
@@ -36,7 +36,7 @@ test("claims a local runtime pairing code against the backend claim endpoint", a
       pairing_code: "LRA-FFBD-4222-7DA1",
       device_name: "Local Mac",
       platform: process.platform,
-      daemon_version: "0.1.3",
+      daemon_version: "0.1.4",
       capabilities: { tools: [] }
     });
   } finally {
