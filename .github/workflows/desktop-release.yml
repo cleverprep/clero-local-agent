@@ -23,8 +23,8 @@ jobs:
       APPLE_ID: ${{ secrets.APPLE_ID }}
       APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-      CLERO_DOWNLOAD_BASE_URL: https://clero.so/downloads/local-agent
-      CLERO_UPDATER_ENDPOINT: https://clero.so/downloads/local-agent/latest/latest.json
+      CLERO_DOWNLOAD_BASE_URL: https://media.clero.so/local-agent
+      CLERO_UPDATER_ENDPOINT: https://media.clero.so/local-agent/latest/latest.json
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_R2_BUCKET: ${{ secrets.CLOUDFLARE_R2_BUCKET }}

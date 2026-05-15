@@ -7,7 +7,7 @@ const outputPath = resolve(repoRoot, "apps/desktop/src-tauri/tauri.updater.gener
 
 const endpoint =
   process.env.CLERO_UPDATER_ENDPOINT ||
-  "https://clero.so/downloads/local-agent/latest/latest.json";
+  "https://media.clero.so/local-agent/latest/latest.json";
 const publicKey = (await readFile(publicKeyPath, "utf8")).trim();
 
 if (!publicKey) {

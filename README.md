@@ -4,6 +4,17 @@
 
 The MVP targets macOS first and keeps the code portable for Windows. The CLI daemon remains the execution engine; the desktop app is the setup and control surface.
 
+## License And Trust
+
+This project is licensed under Apache-2.0. See [LICENSE](LICENSE).
+
+Because Clero Local Agent can control local browser, coding, workspace, and git tools, the trust model is documented explicitly:
+
+- [Security policy](SECURITY.md)
+- [Contribution guide](CONTRIBUTING.md)
+- [Local security model](docs/security.md)
+- [Official builds and releases](docs/official-builds.md)
+
 ## What Is Included
 
 - TypeScript monorepo scaffold.
@@ -67,7 +78,7 @@ The desktop shell can start and stop the local daemon. In development it launche
 
 ## Desktop Releases And Updates
 
-The desktop app uses Tauri's signed updater. GitHub Releases remains the release audit trail, but the website and installed app should fetch builds from `https://clero.so`, backed by Cloudflare R2.
+The desktop app uses Tauri's signed updater. GitHub Releases remains the release audit trail, but the website and installed app should fetch builds from `https://media.clero.so`, backed by Cloudflare R2.
 
 One-time setup:
 
@@ -83,10 +94,10 @@ Cloudflare R2 setup:
 2. Add a Cloudflare route or Worker so these URLs resolve from that bucket:
 
 ```text
-https://clero.so/downloads/local-agent/latest/clero-local-agent-macos-aarch64.dmg
-https://clero.so/downloads/local-agent/latest/latest.json
-https://clero.so/downloads/local-agent/latest/install.json
-https://clero.so/downloads/local-agent/releases/<version>/*
+https://media.clero.so/local-agent/latest/clero-local-agent-macos-aarch64.dmg
+https://media.clero.so/local-agent/latest/latest.json
+https://media.clero.so/local-agent/latest/install.json
+https://media.clero.so/local-agent/releases/<version>/*
 ```
 
 3. Add these GitHub secrets:
@@ -110,7 +121,7 @@ Local signed release build:
 ```bash
 export TAURI_SIGNING_PRIVATE_KEY="$(cat /private/tmp/clero-local-agent-updater.key)"
 export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
-export CLERO_UPDATER_ENDPOINT="https://clero.so/downloads/local-agent/latest/latest.json"
+export CLERO_UPDATER_ENDPOINT="https://media.clero.so/local-agent/latest/latest.json"
 pnpm tauri:build:release
 pnpm build:r2-release-assets
 ```
@@ -167,13 +178,13 @@ git push origin desktop-v0.1.0
 By default the app checks:
 
 ```text
-https://clero.so/downloads/local-agent/latest/latest.json
+https://media.clero.so/local-agent/latest/latest.json
 ```
 
 The frontend download button should use the stable macOS URL:
 
 ```text
-https://clero.so/downloads/local-agent/latest/clero-local-agent-macos-aarch64.dmg
+https://media.clero.so/local-agent/latest/clero-local-agent-macos-aarch64.dmg
 ```
 
 Prefer returning that URL from the backend `local-runtime/install-url/` response as `download_url`, so the frontend does not hardcode release infrastructure. `install.json` is also uploaded for website/backend metadata if needed.

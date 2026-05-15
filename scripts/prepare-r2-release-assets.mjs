@@ -7,7 +7,7 @@ const bundleDir = join(repoRoot, "apps/desktop/src-tauri/target/release/bundle")
 const outputDir = join(repoRoot, "dist/local-agent-release");
 const downloadBaseUrl =
   process.env.CLERO_DOWNLOAD_BASE_URL ||
-  "https://clero.so/downloads/local-agent";
+  "https://media.clero.so/local-agent";
 
 const tauriConfig = JSON.parse(await readFile(tauriConfigPath, "utf8"));
 const version = String(process.env.CLERO_RELEASE_VERSION || tauriConfig.version || "").trim();
