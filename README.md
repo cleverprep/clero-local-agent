@@ -132,12 +132,6 @@ GitHub Release flow:
 
 ```text
 TAURI_SIGNING_PRIVATE_KEY
-APPLE_CERTIFICATE
-APPLE_CERTIFICATE_PASSWORD
-APPLE_SIGNING_IDENTITY
-APPLE_ID
-APPLE_PASSWORD
-APPLE_TEAM_ID
 CLOUDFLARE_ACCOUNT_ID
 CLOUDFLARE_API_TOKEN
 CLOUDFLARE_R2_BUCKET
@@ -145,34 +139,17 @@ CLOUDFLARE_R2_BUCKET
 
 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` is optional. GitHub does not allow empty secret values; leave the secret missing when the updater key has no password.
 
-The Apple secrets are required for public macOS releases. `TAURI_SIGNING_PRIVATE_KEY` signs Tauri updater bundles only; it does not satisfy macOS Gatekeeper. Use a paid Apple Developer Program account, create a `Developer ID Application` certificate, export it from Keychain as a password-protected `.p12`, then base64 encode it:
-
-```bash
-openssl base64 -A -in /path/to/developer-id-application.p12 -out apple-certificate-base64.txt
-```
-
-Set:
-
-```text
-APPLE_CERTIFICATE=<contents of apple-certificate-base64.txt>
-APPLE_CERTIFICATE_PASSWORD=<p12 export password>
-APPLE_SIGNING_IDENTITY=Developer ID Application: Your Company (TEAMID)
-APPLE_ID=<apple developer account email>
-APPLE_PASSWORD=<app-specific password>
-APPLE_TEAM_ID=<team id>
-```
-
-Without these, macOS will show: `Apple could not verify "Clero Local Agent" is free of malware...`.
+This workflow does not require Apple Developer ID signing. `TAURI_SIGNING_PRIVATE_KEY` signs Tauri updater bundles only; it does not satisfy macOS Gatekeeper. Without Apple notarization, macOS may show: `Apple could not verify "Clero Local Agent" is free of malware...`.
 
 2. Update the desktop version in `apps/desktop/package.json` and `apps/desktop/src-tauri/tauri.conf.json`.
 3. Push a release tag:
 
 ```bash
-git tag desktop-v0.1.0
-git push origin desktop-v0.1.0
+git tag desktop-v0.1.2
+git push origin desktop-v0.1.2
 ```
 
-4. `.github/workflows/desktop-release.yml` builds the signed app, creates a draft GitHub Release, prepares website assets, and uploads them to R2.
+4. `.github/workflows/desktop-release.yml` builds the app, creates a draft GitHub Release, prepares website assets, and uploads them to R2.
 5. Review the draft release, then publish it.
 
 By default the app checks:
@@ -260,7 +237,7 @@ On every WebSocket session establishment, the daemon also sends the backend-supp
 {
   "type": "hello",
   "platform": "darwin",
-  "daemon_version": "0.1.0",
+  "daemon_version": "0.1.2",
   "capabilities": {
     "tools": []
   }

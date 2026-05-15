@@ -100,6 +100,6 @@ Do not log secrets, full tokens, private keys, or hidden credential files.
 
 ## Official Builds
 
-Official macOS builds must be Developer ID signed and notarized. Unsigned or ad-hoc signed builds are for development only and will trigger Gatekeeper warnings.
+Official macOS builds are distributed through the release workflow. Builds without Apple Developer ID notarization may trigger Gatekeeper warnings.
 
 See [official-builds.md](official-builds.md).
