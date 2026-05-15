@@ -17,6 +17,8 @@ export type AcquireLeaseInput = {
   ttlSeconds?: number;
 };
 
+type LeaseScope = "browser" | "workspace" | "global";
+
 export type AcquireLeaseResult =
   | { status: "granted"; lease: ActiveLease }
   | { status: "busy"; activeLease: ActiveLease }
@@ -36,10 +38,10 @@ export class LeaseManager {
   private readonly now: () => number;
   private readonly leaseIdFactory: () => string;
   private readonly sessions: AgentSessionRegistry;
-  private activeLeaseValue: ActiveLease | null = null;
+  private readonly activeLeases = new Map<LeaseScope, ActiveLease>();
 
   constructor(options: LeaseManagerOptions = {}) {
-    this.maxAgentSlots = options.maxAgentSlots ?? 1;
+    this.maxAgentSlots = options.maxAgentSlots ?? 3;
     this.defaultTtlSeconds = options.defaultTtlSeconds ?? 60;
     this.now = options.now ?? Date.now;
     this.leaseIdFactory = options.leaseIdFactory ?? (() => `lease_${randomUUID()}`);
@@ -53,92 +55,101 @@ export class LeaseManager {
     }
 
     this.expireLeaseIfNeeded();
-    if (this.activeLeaseValue) {
-      if (this.activeLeaseValue.agent_id === input.agentId) {
-        this.activeLeaseValue = {
-          ...this.activeLeaseValue,
+    const scope = leaseScopeForTools(input.requestedTools);
+    const activeLease = this.activeLeases.get(scope);
+    if (activeLease) {
+      if (activeLease.agent_id === input.agentId) {
+        const refreshed = {
+          ...activeLease,
           task_id: input.taskId,
           requested_tools: input.requestedTools,
           expires_at: this.expiresAt(ttlSeconds)
         };
-        return { status: "granted", lease: this.activeLeaseValue };
+        this.activeLeases.set(scope, refreshed);
+        this.sessions.touch(input.agentId);
+        return { status: "granted", lease: refreshed };
       }
 
-      return { status: "busy", activeLease: this.activeLeaseValue };
+      return { status: "busy", activeLease };
     }
 
-    if (this.maxAgentSlots === 1) {
-      this.sessions.clear();
-    }
     const registration = this.sessions.register(input.agentId);
     if (registration.status === "slot_limit") {
       return { status: "slot_limit", maxAgentSlots: registration.maxAgentSlots };
     }
 
-    this.activeLeaseValue = {
+    const lease = {
       lease_id: this.leaseIdFactory(),
       agent_id: input.agentId,
       task_id: input.taskId,
       requested_tools: input.requestedTools,
       expires_at: this.expiresAt(ttlSeconds)
     };
+    this.activeLeases.set(scope, lease);
 
-    return { status: "granted", lease: this.activeLeaseValue };
+    return { status: "granted", lease };
   }
 
   heartbeatLease(leaseId: string, ttlSeconds = this.defaultTtlSeconds): HeartbeatLeaseResult {
     this.expireLeaseIfNeeded();
-    if (!this.activeLeaseValue || this.activeLeaseValue.lease_id !== leaseId) {
+    const active = this.findLease(leaseId);
+    if (!active) {
       return { status: "not_found" };
     }
+    const { scope, lease } = active;
 
-    if (this.isExpired(this.activeLeaseValue)) {
-      this.activeLeaseValue = null;
+    if (this.isExpired(lease)) {
+      this.activeLeases.delete(scope);
+      this.unregisterAgentIfIdle(lease.agent_id);
       return { status: "expired" };
     }
 
-    this.activeLeaseValue = {
-      ...this.activeLeaseValue,
+    const refreshed = {
+      ...lease,
       expires_at: this.expiresAt(ttlSeconds)
     };
-    this.sessions.touch(this.activeLeaseValue.agent_id);
-    return { status: "ok", lease: this.activeLeaseValue };
+    this.activeLeases.set(scope, refreshed);
+    this.sessions.touch(refreshed.agent_id);
+    return { status: "ok", lease: refreshed };
   }
 
   releaseLease(leaseId: string): ReleaseLeaseResult {
     this.expireLeaseIfNeeded();
-    if (!this.activeLeaseValue || this.activeLeaseValue.lease_id !== leaseId) {
+    const active = this.findLease(leaseId);
+    if (!active) {
       return { status: "not_found" };
     }
 
-    this.sessions.unregister(this.activeLeaseValue.agent_id);
-    this.activeLeaseValue = null;
+    this.activeLeases.delete(active.scope);
+    this.unregisterAgentIfIdle(active.lease.agent_id);
     return { status: "released" };
   }
 
   hasActiveLease(leaseId: string): boolean {
     this.expireLeaseIfNeeded();
-    return Boolean(this.activeLeaseValue && this.activeLeaseValue.lease_id === leaseId);
+    return Boolean(this.findLease(leaseId));
   }
 
   ensureLeaseForToolCall(input: EnsureLeaseForToolCallInput): EnsureLeaseForToolCallResult {
     this.expireLeaseIfNeeded();
 
-    if (input.leaseId && this.activeLeaseValue?.lease_id === input.leaseId) {
+    if (input.leaseId && this.findLease(input.leaseId)) {
       const heartbeat = this.heartbeatLease(input.leaseId);
       if (heartbeat.status === "ok") {
         return { status: "ok", leaseId: heartbeat.lease.lease_id };
       }
     }
 
-    if (this.activeLeaseValue) {
+    const scope = leaseScopeForTools([input.requestedActionKey ?? input.toolName]);
+    const activeLease = this.activeLeases.get(scope);
+    if (activeLease) {
       const requestedAgentId = input.agentId;
-      const sameOwner = requestedAgentId === this.activeLeaseValue.agent_id;
+      const sameOwner = requestedAgentId === activeLease.agent_id;
 
       if (sameOwner && !input.leaseId) {
         const refreshed = this.acquireLease({
-          agentId: input.agentId ?? this.activeLeaseValue.agent_id,
-          taskId: input.taskId ?? this.activeLeaseValue.task_id,
+          agentId: input.agentId ?? activeLease.agent_id,
+          taskId: input.taskId ?? activeLease.task_id,
           requestedTools: [input.requestedActionKey ?? input.toolName]
         });
         if (refreshed.status === "granted") {
@@ -149,8 +160,8 @@ export class LeaseManager {
       return {
         status: "error",
         errorCode: "busy",
-        message: "Local runtime is busy.",
-        details: this.busyDetails(this.activeLeaseValue)
+        message: `${leaseScopeLabel(scope)} is busy.`,
+        details: this.busyDetails(activeLease, scope)
       };
     }
 
@@ -170,8 +181,8 @@ export class LeaseManager {
       return {
         status: "error",
         errorCode: "busy",
-        message: "Local runtime is busy.",
-        details: this.busyDetails(acquired.activeLease)
+        message: `${leaseScopeLabel(scope)} is busy.`,
+        details: this.busyDetails(acquired.activeLease, scope)
       };
     }
 
@@ -192,11 +203,13 @@ export class LeaseManager {
 
   getStatus(): DaemonStatus {
     this.expireLeaseIfNeeded();
+    const activeLeases = [...this.activeLeases.values()];
     return {
       status: "online",
       max_agent_slots: this.maxAgentSlots,
       connected_agents: this.sessions.size(),
-      active_lease: this.activeLeaseValue
+      active_lease: activeLeases[0] ?? null,
+      active_leases: activeLeases
     };
   }
 
@@ -205,8 +218,10 @@ export class LeaseManager {
   }
 
   unregisterAgent(agentId: string): void {
-    if (this.activeLeaseValue?.agent_id === agentId) {
-      this.activeLeaseValue = null;
+    for (const [scope, lease] of this.activeLeases) {
+      if (lease.agent_id === agentId) {
+        this.activeLeases.delete(scope);
+      }
     }
 
     this.sessions.unregister(agentId);
@@ -214,13 +229,15 @@ export class LeaseManager {
 
   clearActiveLease(): void {
     this.sessions.clear();
-    this.activeLeaseValue = null;
+    this.activeLeases.clear();
   }
 
   private expireLeaseIfNeeded(): void {
-    if (this.activeLeaseValue && this.isExpired(this.activeLeaseValue)) {
-      this.sessions.unregister(this.activeLeaseValue.agent_id);
-      this.activeLeaseValue = null;
+    for (const [scope, lease] of this.activeLeases) {
+      if (this.isExpired(lease)) {
+        this.activeLeases.delete(scope);
+        this.unregisterAgentIfIdle(lease.agent_id);
+      }
     }
   }
 
@@ -232,8 +249,28 @@ export class LeaseManager {
     return new Date(this.now() + ttlSeconds * 1000).toISOString();
   }
 
-  private busyDetails(lease: ActiveLease): JsonObject {
+  private findLease(leaseId: string): { scope: LeaseScope; lease: ActiveLease } | undefined {
+    for (const [scope, lease] of this.activeLeases) {
+      if (lease.lease_id === leaseId) {
+        return { scope, lease };
+      }
+    }
+    return undefined;
+  }
+
+  private agentHasLease(agentId: string): boolean {
+    return [...this.activeLeases.values()].some((lease) => lease.agent_id === agentId);
+  }
+
+  private unregisterAgentIfIdle(agentId: string): void {
+    if (!this.agentHasLease(agentId)) {
+      this.sessions.unregister(agentId);
+    }
+  }
+
+  private busyDetails(lease: ActiveLease, scope: LeaseScope): JsonObject {
     return {
+      lease_scope: scope,
       active_lease: {
         agent_id: lease.agent_id,
         task_id: lease.task_id,
@@ -241,4 +278,35 @@ export class LeaseManager {
       }
     };
   }
+}
+
+function leaseScopeForTools(tools: string[]): LeaseScope {
+  const scopes = new Set<LeaseScope>();
+  for (const tool of tools) {
+    scopes.add(leaseScopeForTool(tool));
+  }
+  if (scopes.size === 1) {
+    return [...scopes][0];
+  }
+  return "global";
+}
+
+function leaseScopeForTool(tool: string): LeaseScope {
+  if (tool.includes(".browser") || tool.startsWith("browser.")) {
+    return "browser";
+  }
+  if (tool.includes(".codex") || tool.startsWith("coding_agent.") || tool.startsWith("git.")) {
+    return "workspace";
+  }
+  return "global";
+}
+
+function leaseScopeLabel(scope: LeaseScope): string {
+  if (scope === "browser") {
+    return "Local browser";
+  }
+  if (scope === "workspace") {
+    return "Local workspace";
+  }
+  return "Local runtime";
 }

@@ -141,16 +141,18 @@ test("tool usage refreshes lease inactivity timeout", () => {
   assert.equal(status.active_lease?.expires_at, "2026-01-01T00:01:30.000Z");
 });
 
-test("defaults to one connected agent slot", () => {
+test("defaults to three connected agent slots", () => {
   const manager = new LeaseManager({ leaseIdFactory: () => "lease_1" });
 
   assert.equal(manager.registerAgent("agent_1"), true);
-  assert.equal(manager.registerAgent("agent_2"), false);
-  assert.equal(manager.getStatus().max_agent_slots, 1);
+  assert.equal(manager.registerAgent("agent_2"), true);
+  assert.equal(manager.registerAgent("agent_3"), true);
+  assert.equal(manager.registerAgent("agent_4"), false);
+  assert.equal(manager.getStatus().max_agent_slots, 3);
 });
 
-test("release frees the single connected agent slot", () => {
-  const manager = new LeaseManager({ leaseIdFactory: () => "lease_1" });
+test("release frees the connected agent slot", () => {
+  const manager = new LeaseManager({ maxAgentSlots: 1, leaseIdFactory: () => "lease_1" });
   const lease = manager.acquireLease({
     agentId: "agent_1",
     taskId: "task_1",
@@ -209,8 +211,9 @@ test("auto-acquire returns busy when another agent owns the lease", () => {
   assert.equal(result.status, "error");
   if (result.status === "error") {
     assert.equal(result.errorCode, "busy");
-    assert.equal(result.message, "Local runtime is busy.");
+    assert.equal(result.message, "Local browser is busy.");
     assert.deepEqual(result.details, {
+      lease_scope: "browser",
       active_lease: {
         agent_id: "agent_1",
         task_id: "task_1",
@@ -218,6 +221,33 @@ test("auto-acquire returns busy when another agent owns the lease", () => {
       }
     });
   }
+});
+
+test("different agents can use browser and coding scopes concurrently", () => {
+  let leaseNumber = 0;
+  const manager = new LeaseManager({
+    leaseIdFactory: () => `lease_${++leaseNumber}`
+  });
+
+  const browser = manager.ensureLeaseForToolCall({
+    requestId: "req_1",
+    agentId: "agent_browser",
+    taskId: "task_browser",
+    requestedActionKey: "local_runtime_45.browser",
+    toolName: "browser.open_url"
+  });
+  const coding = manager.ensureLeaseForToolCall({
+    requestId: "req_2",
+    agentId: "agent_coding",
+    taskId: "task_coding",
+    requestedActionKey: "local_runtime_45.codex",
+    toolName: "coding_agent.start_task"
+  });
+
+  assert.deepEqual(browser, { status: "ok", leaseId: "lease_1" });
+  assert.deepEqual(coding, { status: "ok", leaseId: "lease_2" });
+  assert.equal(manager.getStatus().connected_agents, 2);
+  assert.equal(manager.getStatus().active_leases?.length, 2);
 });
 
 test("same agent can reuse and extend the local lease across event runs without backend lease id", () => {
@@ -269,6 +299,6 @@ test("different agent gets busy while local lease is active", () => {
   assert.equal(result.status, "error");
   if (result.status === "error") {
     assert.equal(result.errorCode, "busy");
-    assert.equal(result.message, "Local runtime is busy.");
+    assert.equal(result.message, "Local browser is busy.");
   }
 });

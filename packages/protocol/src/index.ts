@@ -73,6 +73,7 @@ export type DaemonStatus = {
   max_agent_slots: number;
   connected_agents: number;
   active_lease: ActiveLease | null;
+  active_leases?: ActiveLease[];
 };
 
 export type ToolCallMessage = {
