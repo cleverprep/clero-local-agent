@@ -193,7 +193,7 @@ export class LocalRuntimeDaemon {
     const message = {
       type: "hello",
       platform: process.platform,
-      daemon_version: this.options.daemonVersion ?? "0.1.2",
+      daemon_version: this.options.daemonVersion ?? "0.1.3",
       capabilities: { tools: this.registry.capabilities() }
     } as const;
     this.logger.info("sending local runtime capabilities hello", {

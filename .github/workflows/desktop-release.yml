@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   macos:
-    name: macOS
+    name: macOS build
     runs-on: macos-latest
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -19,9 +19,6 @@ jobs:
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
       CLERO_DOWNLOAD_BASE_URL: https://media.clero.so/local-agent
       CLERO_UPDATER_ENDPOINT: https://media.clero.so/local-agent/latest/latest.json
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_R2_BUCKET: ${{ secrets.CLOUDFLARE_R2_BUCKET }}
     steps:
       - uses: actions/checkout@v4
 
@@ -35,6 +32,11 @@ jobs:
           cache: pnpm
 
       - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri -> target
+          cache-on-failure: true
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -59,6 +61,40 @@ jobs:
       - name: Prepare R2 website assets
         run: pnpm build:r2-release-assets
 
+      - name: Upload prepared R2 assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: local-agent-release-assets
+          path: dist/local-agent-release
+          if-no-files-found: error
+          retention-days: 7
+
+  upload-r2:
+    name: Upload R2 assets
+    runs-on: ubuntu-latest
+    needs: macos
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_R2_BUCKET: ${{ secrets.CLOUDFLARE_R2_BUCKET }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Download prepared R2 assets
+        uses: actions/download-artifact@v4
+        with:
+          name: local-agent-release-assets
+          path: dist/local-agent-release
+
       - name: Validate R2 configuration
         run: |
           test -n "$CLOUDFLARE_ACCOUNT_ID"
@@ -73,19 +109,44 @@ jobs:
         run: |
           set -euo pipefail
           source dist/local-agent-release/release.env
+          release_dir="${LOCAL_AGENT_RELEASE_DIR:-dist/local-agent-release}"
+
+          asset_path() {
+            local file="$1"
+
+            if [[ "$file" = /* ]]; then
+              printf "%s" "$file"
+            else
+              printf "%s/%s" "$release_dir" "$file"
+            fi
+          }
 
           upload_r2() {
             local file="$1"
             local key="$2"
             local content_type="$3"
             local cache_control="$4"
+            local attempt=1
+            local max_attempts=5
+            local delay=10
 
-            pnpm dlx wrangler@latest r2 object put "${CLOUDFLARE_R2_BUCKET}/${key}" \
-              --file "$file" \
-              --content-type "$content_type" \
-              --cache-control "$cache_control" \
-              --remote \
-              --force
+            until pnpm dlx wrangler@latest r2 object put "${CLOUDFLARE_R2_BUCKET}/${key}" \
+                --file "$(asset_path "$file")" \
+                --content-type "$content_type" \
+                --cache-control "$cache_control" \
+                --remote \
+                --force
+            do
+              if [[ "$attempt" -ge "$max_attempts" ]]; then
+                echo "::error::R2 upload failed after ${attempt} attempts: ${key}"
+                return 1
+              fi
+
+              echo "::warning::R2 upload failed for ${key}; retrying in ${delay}s (attempt $((attempt + 1))/${max_attempts})."
+              sleep "$delay"
+              attempt=$((attempt + 1))
+              delay=$((delay * 2))
+            done
           }
 
           upload_r2 "$LOCAL_AGENT_DMG" "local-agent/releases/${LOCAL_AGENT_VERSION}/${LOCAL_AGENT_DMG_NAME}" \

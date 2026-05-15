@@ -76,11 +76,12 @@ const installJson = {
 
 const releaseEnv = [
   `LOCAL_AGENT_VERSION=${version}`,
-  `LOCAL_AGENT_DMG=${releaseDmgPath}`,
-  `LOCAL_AGENT_UPDATER=${releaseUpdaterPath}`,
-  `LOCAL_AGENT_SIGNATURE=${releaseSignaturePath}`,
-  `LOCAL_AGENT_LATEST_JSON=${latestJsonPath}`,
-  `LOCAL_AGENT_INSTALL_JSON=${installJsonPath}`,
+  "LOCAL_AGENT_RELEASE_DIR=dist/local-agent-release",
+  `LOCAL_AGENT_DMG=${releaseDmgName}`,
+  `LOCAL_AGENT_UPDATER=${releaseUpdaterName}`,
+  `LOCAL_AGENT_SIGNATURE=${releaseSignatureName}`,
+  "LOCAL_AGENT_LATEST_JSON=latest.json",
+  "LOCAL_AGENT_INSTALL_JSON=install.json",
   `LOCAL_AGENT_DMG_NAME=${basename(releaseDmgPath)}`,
   `LOCAL_AGENT_UPDATER_NAME=${basename(releaseUpdaterPath)}`,
   `LOCAL_AGENT_SIGNATURE_NAME=${basename(releaseSignaturePath)}`
