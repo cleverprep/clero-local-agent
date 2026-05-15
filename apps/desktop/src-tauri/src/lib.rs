@@ -269,7 +269,7 @@ async fn pair_runtime(app: AppHandle, code: String, mut config: RuntimeConfig) -
         "pairing_code": pairing_code,
         "device_name": config.device_name,
         "platform": std::env::consts::OS,
-        "daemon_version": "0.1.5",
+        "daemon_version": "0.1.6",
         "capabilities": { "tools": capabilities }
     });
     let response = reqwest::Client::new()

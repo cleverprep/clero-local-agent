@@ -100,6 +100,35 @@ button.power-button[data-running="true"]:hover {
   background: #b8433f;
 }
 
+button.update-chip {
+  gap: 8px;
+  min-height: 38px;
+  border-color: #cfe2d9;
+  background: #f2fbf7;
+  color: #12382a;
+  padding: 0 12px;
+  white-space: nowrap;
+}
+
+button.update-chip:hover {
+  border-color: #2bb886;
+}
+
+button.update-chip span {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 99px;
+  background: #2bb886;
+  box-shadow: 0 0 0 5px rgba(43, 184, 134, 0.13);
+}
+
+button.update-chip[data-state="installing"] span,
+button.update-chip[data-state="restarting"] span {
+  background: #d18b28;
+  box-shadow: 0 0 0 5px rgba(209, 139, 40, 0.13);
+}
+
 button.text-link {
   min-height: auto;
   border: 0;
@@ -265,12 +294,18 @@ pre {
 }
 
 .brand,
+.topbar-actions,
 .runtime-control,
 .runtime-actions,
 .manual-folder {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.topbar-actions {
+  justify-content: flex-end;
+  min-width: 0;
 }
 
 .brand-icon {
@@ -893,6 +928,7 @@ button.capability-toggle:focus-visible {
   }
 
   .runtime-control,
+  .topbar-actions,
   .runtime-actions {
     justify-content: space-between;
   }
@@ -921,6 +957,11 @@ button.capability-toggle:focus-visible {
   }
 
   .runtime-control {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .topbar-actions {
     display: grid;
     grid-template-columns: 1fr;
   }

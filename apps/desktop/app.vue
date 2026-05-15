@@ -9,20 +9,34 @@
         </div>
       </div>
 
-      <div v-if="hasConnection" class="runtime-control">
-        <div class="connection-chip" :data-state="connectionPillState">
-          <span></span>
-          {{ connectionLabel }}
-        </div>
+      <div v-if="hasConnection || updateIndicatorVisible" class="topbar-actions">
         <button
-          class="power-button"
+          v-if="updateIndicatorVisible"
+          class="update-chip"
           type="button"
-          :data-running="daemonStatus.running"
-          :disabled="powerButtonDisabled"
-          @click="toggleDaemon"
+          :data-state="updateState"
+          :disabled="updateState === 'installing' || updateState === 'restarting'"
+          @click="showUpdates"
         >
-          {{ powerButtonLabel }}
+          <span></span>
+          {{ updateIndicatorLabel }}
         </button>
+
+        <div v-if="hasConnection" class="runtime-control">
+          <div class="connection-chip" :data-state="connectionPillState">
+            <span></span>
+            {{ connectionLabel }}
+          </div>
+          <button
+            class="power-button"
+            type="button"
+            :data-running="daemonStatus.running"
+            :disabled="powerButtonDisabled"
+            @click="toggleDaemon"
+          >
+            {{ powerButtonLabel }}
+          </button>
+        </div>
       </div>
     </header>
 
@@ -514,6 +528,7 @@ const updateMessage = ref("");
 const updateDownloaded = ref(0);
 const updateTotal = ref(0);
 let daemonStatusTimer: ReturnType<typeof setInterval> | undefined;
+let noticeTimer: ReturnType<typeof setTimeout> | undefined;
 
 const connectionLabel = computed(() => {
   if (connectionState.value === "pairing") return "Connecting";
@@ -707,6 +722,16 @@ const updateProgressLabel = computed(() => {
 
 const updateProgressPercent = computed(() => updateProgressLabel.value || "0%");
 
+const updateIndicatorVisible = computed(() =>
+  updateState.value === "available" || updateState.value === "installing" || updateState.value === "restarting"
+);
+
+const updateIndicatorLabel = computed(() => {
+  if (updateState.value === "installing") return "Installing update";
+  if (updateState.value === "restarting") return "Restarting";
+  return updateVersion.value ? `Update ${updateVersion.value}` : "Update available";
+});
+
 const updateDetail = computed(() => {
   if (updateMessage.value) return updateMessage.value;
   if (updateState.value === "available") return "Download and restart to apply the latest GitHub release.";
@@ -726,14 +751,32 @@ onMounted(async () => {
   await refreshDependencyStatus();
   applyDependencyAvailability();
   await refreshDaemonStatus();
+  void checkForUpdates(false, { silent: true });
   daemonStatusTimer = setInterval(() => {
     void refreshDaemonStatus();
   }, 2500);
 });
 
+watch(notice, (message) => {
+  if (noticeTimer) {
+    clearTimeout(noticeTimer);
+    noticeTimer = undefined;
+  }
+
+  if (!message) return;
+
+  noticeTimer = setTimeout(() => {
+    notice.value = "";
+    noticeTimer = undefined;
+  }, 3200);
+});
+
 onBeforeUnmount(() => {
   if (daemonStatusTimer) {
     clearInterval(daemonStatusTimer);
+  }
+  if (noticeTimer) {
+    clearTimeout(noticeTimer);
   }
 });
 
@@ -755,8 +798,15 @@ async function saveConfig(showNotice = true): Promise<void> {
   }
 }
 
-async function checkForUpdates(install: boolean): Promise<void> {
+type CheckForUpdatesOptions = {
+  silent?: boolean;
+};
+
+async function checkForUpdates(install: boolean, options: CheckForUpdatesOptions = {}): Promise<void> {
   if (!("__TAURI_INTERNALS__" in window)) {
+    if (options.silent) {
+      return;
+    }
     updateState.value = "error";
     updateMessage.value = "Updates are only available in the installed desktop app.";
     return;
@@ -773,7 +823,7 @@ async function checkForUpdates(install: boolean): Promise<void> {
     const update = await check();
     if (!update) {
       updateState.value = "current";
-      updateMessage.value = "No update is available.";
+      updateMessage.value = options.silent ? "" : "No update is available.";
       return;
     }
 
@@ -801,6 +851,10 @@ async function checkForUpdates(install: boolean): Promise<void> {
     updateState.value = "error";
     updateMessage.value = errorMessage(error);
   }
+}
+
+function showUpdates(): void {
+  developerMode.value = true;
 }
 
 async function pairRuntime(): Promise<void> {
