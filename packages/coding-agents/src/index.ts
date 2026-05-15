@@ -321,12 +321,26 @@ export class CodexCliAdapter implements CodingAgentAdapter {
         cwd
       });
     }
+    if (sandbox === "workspace-write" && this.options.allowWorkspaceWrite === true) {
+      return {
+        required: true,
+        approved: true,
+        reason: "Approved by local workspace-write setting"
+      };
+    }
 
     if (sandbox === "danger-full-access" && this.options.allowDangerFullAccess !== true) {
       throw new ToolExecutionError("approval_denied", "Codex danger-full-access sandbox is disabled in local settings.", {
         sandbox,
         cwd
       });
+    }
+    if (sandbox === "danger-full-access" && this.options.allowDangerFullAccess === true) {
+      return {
+        required: true,
+        approved: true,
+        reason: "Approved by local full-access setting"
+      };
     }
 
     if (!this.options.approvalProvider) {

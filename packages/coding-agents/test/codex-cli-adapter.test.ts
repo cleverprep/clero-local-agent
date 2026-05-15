@@ -91,6 +91,29 @@ test("requires approval before starting a writable codex exec task", async (t) =
   );
 });
 
+test("uses local workspace-write setting as Codex sandbox approval", async (t) => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "clero-codex-test-"));
+  t.after(() => rm(workspace, { recursive: true, force: true }));
+  const fakeCodex = await createFakeCodex(workspace, 0);
+  const adapter = new CodexCliAdapter({
+    workspacePolicy: new WorkspacePolicy({ allowedDirectories: [workspace] }),
+    approvalProvider: new StaticApprovalProvider(false, "not approved"),
+    command: fakeCodex,
+    allowWorkspaceWrite: true
+  });
+
+  const start = await adapter.startTask(
+    { prompt: "edit files", cwd: workspace, sandbox: "workspace-write" },
+    { requestId: "req_1", leaseId: "lease_1", agentId: "agent_1", taskId: "task_1" }
+  );
+
+  assert.equal(start.status, "running");
+  assert.equal(start.approved, true);
+  assert.equal(start.approval_reason, "Approved by local workspace-write setting");
+  const status = await waitForTerminalStatus(adapter, stringField(start, "task_id"));
+  assert.equal(status.status, "completed");
+});
+
 test("rejects a missing coding-agent working directory before spawning", async (t) => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "clero-coding-cwd-test-"));
   t.after(() => rm(workspace, { recursive: true, force: true }));
