@@ -9,9 +9,23 @@ const endpoint =
   process.env.CLERO_UPDATER_ENDPOINT ||
   "https://media.clero.so/local-agent/latest/latest.json";
 const publicKey = (await readFile(publicKeyPath, "utf8")).trim();
+const endpointUrl = new URL(endpoint);
 
 if (!publicKey) {
   throw new Error(`Updater public key is empty: ${publicKeyPath}`);
+}
+
+if (["localhost", "127.0.0.1", "0.0.0.0", "[::1]"].includes(endpointUrl.hostname)) {
+  throw new Error(`Updater endpoint must not be local: ${endpoint}`);
+}
+
+if (
+  endpointUrl.hostname === "clero.so" &&
+  (endpointUrl.pathname.startsWith("/downloads/local-agent") || endpointUrl.pathname.startsWith("/local-agent"))
+) {
+  throw new Error(
+    `Updater endpoint ${endpoint} is not served by the website. Use https://media.clero.so/local-agent/latest/latest.json.`
+  );
 }
 
 const config = {
