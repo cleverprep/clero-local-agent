@@ -1,0 +1,15 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./apps/cli" },
+    { "path": "./packages/approvals" },
+    { "path": "./packages/browser" },
+    { "path": "./packages/coding-agents" },
+    { "path": "./packages/daemon" },
+    { "path": "./packages/git-tools" },
+    { "path": "./packages/mcp-runtime" },
+    { "path": "./packages/protocol" },
+    { "path": "./packages/workspace" }
+  ]
+}
+

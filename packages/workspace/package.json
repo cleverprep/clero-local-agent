@@ -1,0 +1,13 @@
+{
+  "name": "@clero-local-agent/workspace",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@clero-local-agent/mcp-runtime": "workspace:*",
+    "@clero-local-agent/protocol": "workspace:*"
+  }
+}

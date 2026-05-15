@@ -1,0 +1,17 @@
+node_modules/
+dist/
+coverage/
+vendor/
+.env
+.env.local
+*.log
+*.tsbuildinfo
+.DS_Store
+.clero-local-agent/
+apps/desktop/.nuxt/
+apps/desktop/.output/
+apps/desktop/dist
+apps/desktop/src-tauri/binaries/clero-local-agent-daemon-*
+apps/desktop/src-tauri/resources/clero-local-agent-runtime/
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/tauri.updater.generated.json

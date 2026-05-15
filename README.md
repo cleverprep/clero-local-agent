@@ -67,7 +67,7 @@ The desktop shell can start and stop the local daemon. In development it launche
 
 ## Desktop Releases And Updates
 
-The desktop app uses Tauri's signed updater. GitHub Releases hosts the update manifest and updater bundles.
+The desktop app uses Tauri's signed updater. GitHub Releases remains the release audit trail, but the website and installed app should fetch builds from `https://clero.so`, backed by Cloudflare R2.
 
 One-time setup:
 
@@ -75,21 +75,85 @@ One-time setup:
 pnpm --filter @clero-local-agent/desktop exec tauri signer generate --ci -w /private/tmp/clero-local-agent-updater.key
 ```
 
-Commit only the public key in `apps/desktop/src-tauri/updater.public.key`. Store the private key contents in the GitHub secret `TAURI_SIGNING_PRIVATE_KEY`. If you generated the key with a password, store it in `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
+Commit only the public key in `apps/desktop/src-tauri/updater.public.key`. Store the private key contents in the GitHub secret `TAURI_SIGNING_PRIVATE_KEY`. If you generated the key with a password, store it in `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`; otherwise do not create that secret.
 
-Release builds use:
+Cloudflare R2 setup:
 
-```bash
-pnpm tauri:build:release
-```
-
-The GitHub Actions workflow `.github/workflows/desktop-release.yml` builds the app, uploads release assets, and publishes `latest.json` for the updater. By default the app checks:
+1. Create an R2 bucket for public release files.
+2. Add a Cloudflare route or Worker so these URLs resolve from that bucket:
 
 ```text
-https://github.com/<owner>/<repo>/releases/latest/download/latest.json
+https://clero.so/downloads/local-agent/latest/clero-local-agent-macos-aarch64.dmg
+https://clero.so/downloads/local-agent/latest/latest.json
+https://clero.so/downloads/local-agent/latest/install.json
+https://clero.so/downloads/local-agent/releases/<version>/*
 ```
 
-Override the release repository or endpoint with `CLERO_UPDATER_REPOSITORY` or `CLERO_UPDATER_ENDPOINT` before running `pnpm build:tauri-updater-config`.
+3. Add these GitHub secrets:
+
+```text
+CLOUDFLARE_ACCOUNT_ID
+CLOUDFLARE_API_TOKEN
+CLOUDFLARE_R2_BUCKET
+```
+
+The workflow uploads with Wrangler, so it uses a Cloudflare API token with R2 edit access. It does not need R2 S3 Access Key ID / Secret Access Key credentials.
+
+Automatic build checks:
+
+- `.github/workflows/desktop-build.yml` runs on pushes and pull requests that touch desktop/runtime files.
+- It builds an unsigned macOS app and uploads the DMG/app as a GitHub Actions artifact.
+- Use this for validation only; it is not the user-facing release channel.
+
+Local signed release build:
+
+```bash
+export TAURI_SIGNING_PRIVATE_KEY="$(cat /private/tmp/clero-local-agent-updater.key)"
+export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+export CLERO_UPDATER_ENDPOINT="https://clero.so/downloads/local-agent/latest/latest.json"
+pnpm tauri:build:release
+pnpm build:r2-release-assets
+```
+
+GitHub Release flow:
+
+1. Make sure these GitHub secrets exist:
+
+```text
+TAURI_SIGNING_PRIVATE_KEY
+CLOUDFLARE_ACCOUNT_ID
+CLOUDFLARE_API_TOKEN
+CLOUDFLARE_R2_BUCKET
+```
+
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` is optional. GitHub does not allow empty secret values; leave the secret missing when the updater key has no password.
+
+2. Update the desktop version in `apps/desktop/package.json` and `apps/desktop/src-tauri/tauri.conf.json`.
+3. Push a release tag:
+
+```bash
+git tag desktop-v0.1.0
+git push origin desktop-v0.1.0
+```
+
+4. `.github/workflows/desktop-release.yml` builds the signed app, creates a draft GitHub Release, prepares website assets, and uploads them to R2.
+5. Review the draft release, then publish it.
+
+By default the app checks:
+
+```text
+https://clero.so/downloads/local-agent/latest/latest.json
+```
+
+The frontend download button should use the stable macOS URL:
+
+```text
+https://clero.so/downloads/local-agent/latest/clero-local-agent-macos-aarch64.dmg
+```
+
+Prefer returning that URL from the backend `local-runtime/install-url/` response as `download_url`, so the frontend does not hardcode release infrastructure. `install.json` is also uploaded for website/backend metadata if needed.
+
+Override the updater endpoint with `CLERO_UPDATER_ENDPOINT` before running `pnpm build:tauri-updater-config`.
 
 ## CLI Usage
 

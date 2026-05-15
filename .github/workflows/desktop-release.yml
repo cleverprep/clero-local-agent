@@ -1,0 +1,107 @@
+name: Desktop Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "desktop-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    name: macOS
+    runs-on: macos-latest
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      CLERO_DOWNLOAD_BASE_URL: https://clero.so/downloads/local-agent
+      CLERO_UPDATER_ENDPOINT: https://clero.so/downloads/local-agent/latest/latest.json
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_R2_BUCKET: ${{ secrets.CLOUDFLARE_R2_BUCKET }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build daemon runtime
+        run: pnpm build:daemon-runtime
+
+      - name: Generate updater config
+        run: pnpm build:tauri-updater-config
+
+      - name: Build and publish desktop app
+        uses: tauri-apps/tauri-action@v0
+        with:
+          projectPath: apps/desktop
+          tauriScript: pnpm exec tauri
+          args: --bundles app,dmg --config src-tauri/tauri.updater.generated.json
+          tagName: desktop-v__VERSION__
+          releaseName: Clero Local Agent v__VERSION__
+          releaseDraft: true
+          prerelease: false
+
+      - name: Prepare R2 website assets
+        run: pnpm build:r2-release-assets
+
+      - name: Validate R2 configuration
+        run: |
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_R2_BUCKET"
+
+      - name: Upload release assets to R2
+        run: |
+          set -euo pipefail
+          source dist/local-agent-release/release.env
+
+          upload_r2() {
+            local file="$1"
+            local key="$2"
+            local content_type="$3"
+            local cache_control="$4"
+
+            pnpm dlx wrangler@latest r2 object put "${CLOUDFLARE_R2_BUCKET}/${key}" \
+              --file "$file" \
+              --content-type "$content_type" \
+              --cache-control "$cache_control" \
+              --remote \
+              --force
+          }
+
+          upload_r2 "$LOCAL_AGENT_DMG" "local-agent/releases/${LOCAL_AGENT_VERSION}/${LOCAL_AGENT_DMG_NAME}" \
+            "application/octet-stream" "public,max-age=31536000,immutable"
+          upload_r2 "$LOCAL_AGENT_UPDATER" "local-agent/releases/${LOCAL_AGENT_VERSION}/${LOCAL_AGENT_UPDATER_NAME}" \
+            "application/gzip" "public,max-age=31536000,immutable"
+          upload_r2 "$LOCAL_AGENT_SIGNATURE" "local-agent/releases/${LOCAL_AGENT_VERSION}/${LOCAL_AGENT_SIGNATURE_NAME}" \
+            "text/plain" "public,max-age=31536000,immutable"
+          upload_r2 "$LOCAL_AGENT_LATEST_JSON" "local-agent/releases/${LOCAL_AGENT_VERSION}/latest.json" \
+            "application/json" "public,max-age=31536000,immutable"
+          upload_r2 "$LOCAL_AGENT_INSTALL_JSON" "local-agent/releases/${LOCAL_AGENT_VERSION}/install.json" \
+            "application/json" "public,max-age=31536000,immutable"
+
+          upload_r2 "$LOCAL_AGENT_DMG" "local-agent/latest/clero-local-agent-macos-aarch64.dmg" \
+            "application/octet-stream" "public,max-age=60"
+          upload_r2 "$LOCAL_AGENT_UPDATER" "local-agent/latest/clero-local-agent-darwin-aarch64.app.tar.gz" \
+            "application/gzip" "public,max-age=60"
+          upload_r2 "$LOCAL_AGENT_SIGNATURE" "local-agent/latest/clero-local-agent-darwin-aarch64.app.tar.gz.sig" \
+            "text/plain" "public,max-age=60"
+          upload_r2 "$LOCAL_AGENT_LATEST_JSON" "local-agent/latest/latest.json" \
+            "application/json" "public,max-age=60"
+          upload_r2 "$LOCAL_AGENT_INSTALL_JSON" "local-agent/latest/install.json" \
+            "application/json" "public,max-age=60"

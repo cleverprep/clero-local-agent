@@ -1,0 +1,30 @@
+{
+  "name": "clero-local-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.33.0",
+  "bin": {
+    "clero-local-agent": "apps/cli/src/main.ts"
+  },
+  "scripts": {
+    "build:daemon-runtime": "node scripts/build-daemon-runtime.mjs",
+    "build:macos-dmg": "node scripts/create-macos-dmg.mjs",
+    "build:r2-release-assets": "node scripts/prepare-r2-release-assets.mjs",
+    "build:tauri-updater-config": "node scripts/create-tauri-updater-config.mjs",
+    "dev:cli": "node --experimental-strip-types apps/cli/src/main.ts",
+    "dev:desktop": "pnpm --filter @clero-local-agent/desktop dev",
+    "tauri:dev": "pnpm --filter @clero-local-agent/desktop tauri:dev",
+    "tauri:build": "pnpm build:daemon-runtime && pnpm --filter @clero-local-agent/desktop exec tauri build --bundles app && pnpm build:macos-dmg",
+    "tauri:build:release": "pnpm build:daemon-runtime && pnpm build:tauri-updater-config && pnpm --filter @clero-local-agent/desktop exec tauri build --bundles app --config src-tauri/tauri.updater.generated.json && pnpm build:macos-dmg",
+    "smoke:browser": "node --experimental-strip-types scripts/smoke-managed-browser.ts",
+    "smoke:browser:mcp-chrome": "node --experimental-strip-types scripts/smoke-mcp-chrome.ts",
+    "test": "node --experimental-strip-types --test packages/browser/test/mcp-chrome-adapter.test.ts packages/coding-agents/test/codex-cli-adapter.test.ts packages/daemon/test/lease-manager.test.ts packages/daemon/test/pairing-client.test.ts packages/daemon/test/runtime-config.test.ts packages/mcp-runtime/test/tool-registry.test.ts packages/workspace/test/workspace-tools.test.ts",
+    "typecheck": "tsc -p tsconfig.typecheck.json --pretty false"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.0",
+    "esbuild": "^0.28.0",
+    "typescript": "^5.8.3"
+  }
+}
