@@ -50,6 +50,13 @@ test("maps runtime config to daemon capability options", () => {
   });
 });
 
+test("enables managed browser session persistence by default", () => {
+  const config = defaultRuntimeConfig();
+
+  assert.equal(config.capabilities?.browser?.remember_session, true);
+  assert.match(config.capabilities?.browser?.browser_profile_dir ?? "", /\.clero-local-agent/);
+});
+
 test("workspace-write default sandbox enables Codex write permission", () => {
   const config = defaultRuntimeConfig();
   config.capabilities!.codex!.default_sandbox = "workspace-write";

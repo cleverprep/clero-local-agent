@@ -43,6 +43,11 @@ function getString(args: CliArgs, key: string): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
+function nonEmptyString(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
 function printHelp(): void {
   console.log(`clero-local-agent
 
@@ -130,9 +135,17 @@ async function main(): Promise<void> {
       ),
       browserMcpUrl: getString(args, "browser-mcp-url") ?? process.env.CLERO_BROWSER_MCP_URL ?? runtimeConfig?.capabilities?.browser?.mcp_url,
       browserProfileDir:
-        getString(args, "browser-profile-dir") ??
-        process.env.CLERO_BROWSER_PROFILE_DIR ??
-        runtimeConfig?.capabilities?.browser?.browser_profile_dir,
+        nonEmptyString(getString(args, "browser-profile-dir")) ??
+        nonEmptyString(process.env.CLERO_BROWSER_PROFILE_DIR) ??
+        nonEmptyString(runtimeConfig?.capabilities?.browser?.browser_profile_dir),
+      browserRememberSession:
+        args["no-browser-remember-session"] === true
+          ? false
+          : args["browser-remember-session"] === true || process.env.CLERO_BROWSER_REMEMBER_SESSION === "true"
+            ? true
+            : process.env.CLERO_BROWSER_REMEMBER_SESSION === "false"
+              ? false
+              : runtimeConfig?.capabilities?.browser?.remember_session !== false,
       browserHeadless:
         args["browser-headless"] === true ||
         process.env.CLERO_BROWSER_HEADLESS === "true" ||

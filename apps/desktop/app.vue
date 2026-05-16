@@ -263,14 +263,21 @@
                   <option value="msedge">Edge</option>
                 </select>
               </label>
-              <label class="wide">
-                Browser profile
-                <input
-                  v-model="config.capabilities.browser.browser_profile_dir"
-                  spellcheck="false"
-                  placeholder="Default managed profile"
-                />
+              <label class="check wide">
+                <input v-model="config.capabilities.browser.remember_session" type="checkbox" />
+                Remember browser session
               </label>
+              <div class="setting-action-row wide">
+                <span>Keeps cookies, sign-ins, and tabs for the managed browser.</span>
+                <button
+                  class="secondary compact"
+                  type="button"
+                  :disabled="!config.capabilities.browser.remember_session"
+                  @click.stop="resetBrowserSession"
+                >
+                  Reset session
+                </button>
+              </div>
             </div>
           </Transition>
         </article>
@@ -515,6 +522,7 @@ type RuntimeConfig = {
       provider: "managed" | "mcp-chrome";
       browser_channel: "chromium" | "chrome" | "chrome-beta" | "msedge";
       browser_profile_dir: string;
+      remember_session: boolean;
       browser_headless: boolean;
       mcp_url?: string;
     };
@@ -546,6 +554,8 @@ type RuntimeConfig = {
 type DaemonStatus = {
   running: boolean;
   pid: number | null;
+  backend_connected: boolean;
+  backend_last_seen_ms: number | null;
   last_exit_code: number | null;
   log_tail: string[];
 };
@@ -602,7 +612,8 @@ let noticeTimer: ReturnType<typeof setTimeout> | undefined;
 
 const connectionLabel = computed(() => {
   if (connectionState.value === "pairing") return "Connecting";
-  if (daemonStatus.running) return "Online";
+  if (daemonStatus.running && daemonStatus.backend_connected) return "Online";
+  if (daemonStatus.running) return "Reconnecting";
   if (config.device_token && config.websocket_url) return "Paired";
   if (connectionState.value === "connected") return "Connected";
   return "Offline";
@@ -610,7 +621,9 @@ const connectionLabel = computed(() => {
 
 const connectionPillState = computed(() => {
   if (connectionState.value === "pairing") return "pairing";
-  if (daemonStatus.running || (config.device_token && config.websocket_url)) return "connected";
+  if (daemonStatus.running && !daemonStatus.backend_connected) return "pairing";
+  if (daemonStatus.backend_connected) return "connected";
+  if (config.device_token && config.websocket_url) return "paired";
   return "offline";
 });
 
@@ -798,18 +811,21 @@ const taskRunning = computed(() => {
 
 const taskActivityLabel = computed(() => {
   if (taskRunning.value) return "Task running";
-  if (daemonStatus.running) return "Ready";
+  if (daemonStatus.running && daemonStatus.backend_connected) return "Ready";
+  if (daemonStatus.running) return "Reconnecting";
   return "Off";
 });
 
 const activityState = computed(() => {
   if (taskRunning.value) return "running";
-  if (daemonStatus.running) return "ready";
+  if (daemonStatus.running && daemonStatus.backend_connected) return "ready";
+  if (daemonStatus.running) return "running";
   return "off";
 });
 
 const taskActivityDetail = computed(() => {
   if (taskRunning.value) return "A local coding task is still active.";
+  if (daemonStatus.running && !daemonStatus.backend_connected) return "Waiting for Clero to reconnect.";
   if (daemonStatus.running) return enabledToolGroups.value.length ? `${enabledToolGroups.value.join(", ")} enabled` : "No capabilities enabled";
   return hasConnection.value ? "Turn on the runtime to accept requests." : "Connect this computer first.";
 });
@@ -1063,6 +1079,39 @@ async function stopDaemon(): Promise<void> {
   }
 }
 
+async function resetBrowserSession(): Promise<void> {
+  if (!config.capabilities.browser.remember_session) {
+    notice.value = "Browser session memory is turned off.";
+    return;
+  }
+
+  try {
+    const { ask } = await import("@tauri-apps/plugin-dialog");
+    const confirmed = await ask("This clears the managed browser cookies, sign-ins, and open tabs.", {
+      title: "Reset Browser Session",
+      kind: "warning"
+    });
+    if (!confirmed) return;
+  } catch {
+    if (!("__TAURI_INTERNALS__" in window)) {
+      notice.value = "Session reset is available inside the desktop app.";
+      return;
+    }
+  }
+
+  const wasRunning = daemonStatus.running;
+  try {
+    const status = await invokeTauri<DaemonStatus>("reset_browser_session", { config: toRaw(config) });
+    applyDaemonStatus(status);
+    notice.value = "Browser session reset.";
+    if (wasRunning && hasConnection.value) {
+      await startDaemon(false);
+    }
+  } catch (error) {
+    notice.value = errorMessage(error);
+  }
+}
+
 async function toggleDaemon(): Promise<void> {
   if (daemonStatus.running) {
     await stopDaemon();
@@ -1152,6 +1201,8 @@ function applyDaemonStatus(status: DaemonStatus): void {
   Object.assign(daemonStatus, {
     running: status.running,
     pid: status.pid ?? null,
+    backend_connected: status.backend_connected ?? false,
+    backend_last_seen_ms: status.backend_last_seen_ms ?? null,
     last_exit_code: status.last_exit_code ?? null,
     log_tail: status.log_tail ?? []
   });
@@ -1197,10 +1248,14 @@ function applyRuntimeConfig(nextConfig: RuntimeConfig): void {
 
 function normalizeLoadedConfig(nextConfig: RuntimeConfig): RuntimeConfig {
   const normalized = nextConfig;
+  normalized.capabilities ??= defaultConfig().capabilities;
+  normalized.capabilities.browser ??= defaultConfig().capabilities.browser;
   const backendWasLocal = isLocalEndpoint(normalized.backend_url);
   normalized.backend_url = PRODUCTION_BACKEND_URL;
   normalized.capabilities.browser.provider = "managed";
   normalized.capabilities.browser.mcp_url = undefined;
+  normalized.capabilities.browser.browser_profile_dir ??= "";
+  normalized.capabilities.browser.remember_session = normalized.capabilities.browser.remember_session !== false;
 
   if (backendWasLocal || isLocalEndpoint(normalized.websocket_url)) {
     normalized.websocket_url = "";
@@ -1275,6 +1330,7 @@ function defaultConfig(): RuntimeConfig {
         provider: "managed",
         browser_channel: "chrome",
         browser_profile_dir: "",
+        remember_session: true,
         browser_headless: false
       },
       workspace: {
@@ -1307,6 +1363,8 @@ function defaultDaemonStatus(): DaemonStatus {
   return {
     running: false,
     pid: null,
+    backend_connected: false,
+    backend_last_seen_ms: null,
     last_exit_code: null,
     log_tail: []
   };

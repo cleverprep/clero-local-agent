@@ -1,13 +1,13 @@
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
-    env,
-    fs,
+    env, fs,
     io::{BufRead, BufReader, Read},
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{Arc, Mutex},
     thread,
+    time::{SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Manager, State};
 
@@ -51,6 +51,8 @@ struct BrowserConfig {
     browser_channel: String,
     #[serde(default)]
     browser_profile_dir: String,
+    #[serde(default = "default_true")]
+    remember_session: bool,
     #[serde(default)]
     browser_headless: bool,
     #[serde(default)]
@@ -111,6 +113,8 @@ struct PairingClaimResponse {
 struct DaemonProcessStatus {
     running: bool,
     pid: Option<u32>,
+    backend_connected: bool,
+    backend_last_seen_ms: Option<u64>,
     last_exit_code: Option<i32>,
     log_tail: Vec<String>,
 }
@@ -135,7 +139,14 @@ struct DependencyCheck {
 struct DaemonSupervisor {
     child: Mutex<Option<Child>>,
     logs: Arc<Mutex<Vec<String>>>,
+    backend_connection: Arc<Mutex<BackendConnectionState>>,
     last_exit_code: Mutex<Option<i32>>,
+}
+
+#[derive(Default)]
+struct BackendConnectionState {
+    connected: bool,
+    last_seen_ms: Option<u64>,
 }
 
 impl Default for CapabilityConfig {
@@ -155,7 +166,8 @@ impl Default for BrowserConfig {
             enabled: true,
             provider: default_browser_provider(),
             browser_channel: default_browser_channel(),
-            browser_profile_dir: String::new(),
+            browser_profile_dir: default_browser_profile_dir().to_string_lossy().to_string(),
+            remember_session: true,
             browser_headless: false,
             mcp_url: None,
         }
@@ -218,7 +230,8 @@ fn load_config(app: AppHandle) -> Result<RuntimeConfig, String> {
     }
 
     let raw = fs::read_to_string(path).map_err(|error| error.to_string())?;
-    let mut config = serde_json::from_str::<RuntimeConfig>(&raw).map_err(|error| error.to_string())?;
+    let mut config =
+        serde_json::from_str::<RuntimeConfig>(&raw).map_err(|error| error.to_string())?;
     if normalize_runtime_config(&mut config) {
         write_config(&app, &config)?;
     }
@@ -248,7 +261,11 @@ fn write_config(app: &AppHandle, config: &RuntimeConfig) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn pair_runtime(app: AppHandle, code: String, mut config: RuntimeConfig) -> Result<RuntimeConfig, String> {
+async fn pair_runtime(
+    app: AppHandle,
+    code: String,
+    mut config: RuntimeConfig,
+) -> Result<RuntimeConfig, String> {
     normalize_runtime_config(&mut config);
     let pairing_code = code.trim();
     if pairing_code.is_empty() {
@@ -284,7 +301,11 @@ async fn pair_runtime(app: AppHandle, code: String, mut config: RuntimeConfig) -
         return Err(format!(
             "Pairing failed with HTTP {}{}",
             status.as_u16(),
-            if body.is_empty() { String::new() } else { format!(": {body}") }
+            if body.is_empty() {
+                String::new()
+            } else {
+                format!(": {body}")
+            }
         ));
     }
 
@@ -293,7 +314,10 @@ async fn pair_runtime(app: AppHandle, code: String, mut config: RuntimeConfig) -
         .await
         .map_err(|error| error.to_string())?;
     if is_local_endpoint(&claim.websocket_url) {
-        return Err("Clero returned a local WebSocket URL. Use a production Clero connection code.".to_string());
+        return Err(
+            "Clero returned a local WebSocket URL. Use a production Clero connection code."
+                .to_string(),
+        );
     }
     let mut next_config = config;
     next_config.device_token = claim.device_token;
@@ -321,18 +345,32 @@ fn start_daemon(
     let config_path = config_path(&app)?;
     let mut command = daemon_command(&config_path)?;
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    set_backend_connection(&state.backend_connection, false, None);
     let mut child = command.spawn().map_err(|error| error.to_string())?;
     let pid = child.id();
 
     if let Some(stdout) = child.stdout.take() {
-        collect_daemon_output("stdout", stdout, state.logs.clone());
+        collect_daemon_output(
+            "stdout",
+            stdout,
+            state.logs.clone(),
+            state.backend_connection.clone(),
+        );
     }
     if let Some(stderr) = child.stderr.take() {
-        collect_daemon_output("stderr", stderr, state.logs.clone());
+        collect_daemon_output(
+            "stderr",
+            stderr,
+            state.logs.clone(),
+            state.backend_connection.clone(),
+        );
     }
 
     push_log_tail(&state.logs, format!("process: daemon started pid={pid}"));
-    *state.last_exit_code.lock().map_err(|error| error.to_string())? = None;
+    *state
+        .last_exit_code
+        .lock()
+        .map_err(|error| error.to_string())? = None;
     *state.child.lock().map_err(|error| error.to_string())? = Some(child);
 
     current_daemon_status(&state)
@@ -340,11 +378,49 @@ fn start_daemon(
 
 #[tauri::command]
 fn stop_daemon(state: State<'_, DaemonSupervisor>) -> Result<DaemonProcessStatus, String> {
+    stop_daemon_process(&state)
+}
+
+#[tauri::command]
+fn reset_browser_session(
+    app: AppHandle,
+    state: State<'_, DaemonSupervisor>,
+    mut config: RuntimeConfig,
+) -> Result<DaemonProcessStatus, String> {
+    normalize_runtime_config(&mut config);
+    if !config.capabilities.browser.remember_session {
+        return Err("Turn on browser session memory before resetting it.".to_string());
+    }
+
+    let profile_dir = PathBuf::from(config.capabilities.browser.browser_profile_dir.clone());
+    validate_browser_profile_reset_path(&profile_dir)?;
+    save_config(app, config)?;
+    let _ = stop_daemon_process(&state)?;
+
+    if profile_dir.exists() {
+        fs::remove_dir_all(&profile_dir).map_err(|error| error.to_string())?;
+    }
+    push_log_tail(
+        &state.logs,
+        format!(
+            "process: browser session reset profile_dir={}",
+            profile_dir.display()
+        ),
+    );
+
+    current_daemon_status(&state)
+}
+
+fn stop_daemon_process(state: &State<'_, DaemonSupervisor>) -> Result<DaemonProcessStatus, String> {
     let mut child_guard = state.child.lock().map_err(|error| error.to_string())?;
     if let Some(mut child) = child_guard.take() {
         let _ = child.kill();
         let status = child.wait().map_err(|error| error.to_string())?;
-        *state.last_exit_code.lock().map_err(|error| error.to_string())? = status.code();
+        set_backend_connection(&state.backend_connection, false, None);
+        *state
+            .last_exit_code
+            .lock()
+            .map_err(|error| error.to_string())? = status.code();
         push_log_tail(
             &state.logs,
             format!(
@@ -378,6 +454,7 @@ pub fn run() {
             pair_runtime,
             start_daemon,
             stop_daemon,
+            reset_browser_session,
             daemon_status
         ])
         .run(tauri::generate_context!())
@@ -392,7 +469,9 @@ fn config_path(app: &AppHandle) -> Result<PathBuf, String> {
         .join("config.json"))
 }
 
-fn current_daemon_status(state: &State<'_, DaemonSupervisor>) -> Result<DaemonProcessStatus, String> {
+fn current_daemon_status(
+    state: &State<'_, DaemonSupervisor>,
+) -> Result<DaemonProcessStatus, String> {
     let mut child_guard = state.child.lock().map_err(|error| error.to_string())?;
     let mut running = false;
     let mut pid = None;
@@ -400,7 +479,11 @@ fn current_daemon_status(state: &State<'_, DaemonSupervisor>) -> Result<DaemonPr
     if let Some(child) = child_guard.as_mut() {
         match child.try_wait().map_err(|error| error.to_string())? {
             Some(status) => {
-                *state.last_exit_code.lock().map_err(|error| error.to_string())? = status.code();
+                set_backend_connection(&state.backend_connection, false, None);
+                *state
+                    .last_exit_code
+                    .lock()
+                    .map_err(|error| error.to_string())? = status.code();
                 push_log_tail(
                     &state.logs,
                     format!(
@@ -420,11 +503,31 @@ fn current_daemon_status(state: &State<'_, DaemonSupervisor>) -> Result<DaemonPr
         }
     }
 
-    let last_exit_code = *state.last_exit_code.lock().map_err(|error| error.to_string())?;
-    let log_tail = state.logs.lock().map_err(|error| error.to_string())?.clone();
+    let last_exit_code = *state
+        .last_exit_code
+        .lock()
+        .map_err(|error| error.to_string())?;
+    let connection = state
+        .backend_connection
+        .lock()
+        .map_err(|error| error.to_string())?;
+    let backend_recent = connection
+        .last_seen_ms
+        .and_then(|last_seen| now_ms().map(|now| now.saturating_sub(last_seen) <= 60_000))
+        .unwrap_or(false);
+    let backend_connected = running && connection.connected && backend_recent;
+    let backend_last_seen_ms = connection.last_seen_ms;
+    drop(connection);
+    let log_tail = state
+        .logs
+        .lock()
+        .map_err(|error| error.to_string())?
+        .clone();
     Ok(DaemonProcessStatus {
         running,
         pid,
+        backend_connected,
+        backend_last_seen_ms,
         last_exit_code,
         log_tail,
     })
@@ -506,13 +609,18 @@ fn runtime_path_env() -> String {
     }
 }
 
-fn collect_daemon_output<R>(source: &'static str, stream: R, logs: Arc<Mutex<Vec<String>>>)
-where
+fn collect_daemon_output<R>(
+    source: &'static str,
+    stream: R,
+    logs: Arc<Mutex<Vec<String>>>,
+    backend_connection: Arc<Mutex<BackendConnectionState>>,
+) where
     R: Read + Send + 'static,
 {
     thread::spawn(move || {
         let reader = BufReader::new(stream);
         for line in reader.lines().map_while(Result::ok) {
+            update_backend_connection_from_log(&backend_connection, &line);
             push_log_tail(&logs, format!("{source}: {line}"));
         }
     });
@@ -527,15 +635,63 @@ fn push_log_tail(logs: &Arc<Mutex<Vec<String>>>, line: String) {
     }
 }
 
+fn update_backend_connection_from_log(connection: &Arc<Mutex<BackendConnectionState>>, line: &str) {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+        return;
+    };
+
+    let message = value
+        .get("message")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let inbound_type = value
+        .get("inbound")
+        .and_then(|inbound| inbound.get("type"))
+        .and_then(serde_json::Value::as_str);
+
+    match (message, inbound_type) {
+        ("local runtime session established", _) | (_, Some(_)) => {
+            set_backend_connection(connection, true, now_ms());
+        }
+        ("local runtime websocket closed", _)
+        | ("local runtime websocket error", _)
+        | ("failed to send local runtime heartbeat", _) => {
+            set_backend_connection(connection, false, None);
+        }
+        _ => {}
+    }
+}
+
+fn set_backend_connection(
+    connection: &Arc<Mutex<BackendConnectionState>>,
+    connected: bool,
+    last_seen_ms: Option<u64>,
+) {
+    if let Ok(mut state) = connection.lock() {
+        state.connected = connected;
+        if let Some(last_seen_ms) = last_seen_ms {
+            state.last_seen_ms = Some(last_seen_ms);
+        } else if !connected {
+            state.last_seen_ms = None;
+        }
+    }
+}
+
 fn validate_enabled_dependencies(config: &RuntimeConfig) -> Result<(), String> {
     let status = dependency_status(config);
     if config.capabilities.browser.enabled && !status.browser.available {
         return Err(status.browser.message);
     }
-    if config.capabilities.codex.enabled && config.capabilities.codex.provider == "claude-code" && !status.claude.available {
+    if config.capabilities.codex.enabled
+        && config.capabilities.codex.provider == "claude-code"
+        && !status.claude.available
+    {
         return Err(status.claude.message);
     }
-    if config.capabilities.codex.enabled && config.capabilities.codex.provider != "claude-code" && !status.codex.available {
+    if config.capabilities.codex.enabled
+        && config.capabilities.codex.provider != "claude-code"
+        && !status.codex.available
+    {
         return Err(status.codex.message);
     }
     Ok(())
@@ -757,7 +913,9 @@ fn command_version(command: &Path, flag: &str) -> Option<(String, Option<String>
 
 fn default_backend_url() -> String {
     match option_env!("CLERO_BACKEND_URL").map(str::trim) {
-        Some(url) if !url.is_empty() && !is_local_endpoint(url) => url.trim_end_matches('/').to_string(),
+        Some(url) if !url.is_empty() && !is_local_endpoint(url) => {
+            url.trim_end_matches('/').to_string()
+        }
         _ => PRODUCTION_BACKEND_URL.to_string(),
     }
 }
@@ -794,6 +952,27 @@ fn normalize_runtime_config(config: &mut RuntimeConfig) -> bool {
     if config.capabilities.browser.provider == "mcp-chrome" {
         config.capabilities.browser.provider = default_browser_provider();
         config.capabilities.browser.mcp_url = None;
+        changed = true;
+    }
+
+    let browser_profile_dir = config
+        .capabilities
+        .browser
+        .browser_profile_dir
+        .trim()
+        .to_string();
+    if config.capabilities.browser.remember_session {
+        let normalized_profile_dir = if browser_profile_dir.is_empty() {
+            default_browser_profile_dir().to_string_lossy().to_string()
+        } else {
+            browser_profile_dir
+        };
+        if normalized_profile_dir != config.capabilities.browser.browser_profile_dir {
+            config.capabilities.browser.browser_profile_dir = normalized_profile_dir;
+            changed = true;
+        }
+    } else if browser_profile_dir != config.capabilities.browser.browser_profile_dir {
+        config.capabilities.browser.browser_profile_dir = browser_profile_dir;
         changed = true;
     }
 
@@ -841,6 +1020,41 @@ fn default_allowed_directories() -> Vec<String> {
     dirs::home_dir()
         .map(|home| vec![home.join("Projects").to_string_lossy().to_string()])
         .unwrap_or_default()
+}
+
+fn default_browser_profile_dir() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".clero-local-agent")
+        .join("browser-profile")
+}
+
+fn validate_browser_profile_reset_path(profile_dir: &Path) -> Result<(), String> {
+    if !profile_dir.is_absolute() {
+        return Err("Browser profile path must be absolute before it can be reset.".to_string());
+    }
+    if profile_dir
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err("Browser profile path cannot contain parent directory segments.".to_string());
+    }
+
+    let managed_root = dirs::home_dir()
+        .ok_or_else(|| "Could not resolve the home directory.".to_string())?
+        .join(".clero-local-agent");
+    if profile_dir == managed_root || !profile_dir.starts_with(&managed_root) {
+        return Err("Reset is limited to Clero managed browser profiles.".to_string());
+    }
+
+    Ok(())
+}
+
+fn now_ms() -> Option<u64> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| u64::try_from(duration.as_millis()).ok())
 }
 
 fn default_true() -> bool {

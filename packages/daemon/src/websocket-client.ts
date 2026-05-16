@@ -43,6 +43,16 @@ export class RuntimeWebSocketClient extends EventEmitter {
     this.socket = null;
   }
 
+  reconnect(): void {
+    const socket = this.socket;
+    this.socket = null;
+    socket?.close();
+    this.emit("close");
+    if (this.shouldReconnect) {
+      setTimeout(() => this.connect(), this.reconnectDelayMs);
+    }
+  }
+
   send(message: RuntimeMessage): void {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
       throw new Error("WebSocket is not connected");
@@ -54,14 +64,15 @@ export class RuntimeWebSocketClient extends EventEmitter {
   private connect(): void {
     const url = new URL(this.options.url);
     url.searchParams.set("token", this.options.token);
-    this.socket = new WebSocket(url.toString());
+    const socket = new WebSocket(url.toString());
+    this.socket = socket;
 
-    this.socket.addEventListener("open", () => {
+    socket.addEventListener("open", () => {
       this.options.logger.info("local runtime websocket connected");
       this.emit("open");
     });
 
-    this.socket.addEventListener("message", (event: { data: string }) => {
+    socket.addEventListener("message", (event: { data: string }) => {
       try {
         const message: unknown = JSON.parse(event.data);
         this.options.logger.info("received websocket message", { inbound: message });
@@ -72,7 +83,11 @@ export class RuntimeWebSocketClient extends EventEmitter {
       }
     });
 
-    this.socket.addEventListener("close", () => {
+    socket.addEventListener("close", () => {
+      if (this.socket !== socket) {
+        return;
+      }
+      this.socket = null;
       this.options.logger.warn("local runtime websocket closed");
       this.emit("close");
       if (this.shouldReconnect) {
@@ -80,7 +95,7 @@ export class RuntimeWebSocketClient extends EventEmitter {
       }
     });
 
-    this.socket.addEventListener("error", (event: unknown) => {
+    socket.addEventListener("error", (event: unknown) => {
       this.options.logger.error("local runtime websocket error", { event: String(event) });
     });
   }

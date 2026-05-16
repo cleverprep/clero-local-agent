@@ -520,6 +520,10 @@ button.activity-card[data-state="running"] > span {
   background: #2bb886;
 }
 
+.connection-chip[data-state="paired"] span {
+  background: #8f9aa6;
+}
+
 .connection-chip[data-state="pairing"] span {
   background: #d18b28;
 }
@@ -720,6 +724,24 @@ button.capability-toggle:focus-visible {
 .check input {
   width: 18px;
   min-height: 18px;
+}
+
+.setting-action-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid #e0e6ec;
+  border-radius: 14px;
+  background: #f8fafb;
+  padding: 12px;
+}
+
+.setting-action-row span {
+  color: #607080;
+  font-size: 0.82rem;
+  font-weight: 650;
+  line-height: 1.4;
 }
 
 .folder-tools {
@@ -1075,6 +1097,7 @@ pre.task-text-block.response {
 
   .pairing-form,
   .manual-folder,
+  .setting-action-row,
   .folder-list article {
     grid-template-columns: 1fr;
   }

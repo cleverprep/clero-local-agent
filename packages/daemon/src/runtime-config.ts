@@ -23,6 +23,7 @@ export type LocalRuntimeConfig = {
       provider?: "managed" | "mcp-chrome";
       browser_channel?: "chromium" | "chrome" | "chrome-beta" | "msedge";
       browser_profile_dir?: string;
+      remember_session?: boolean;
       browser_headless?: boolean;
       mcp_url?: string;
     };
@@ -62,6 +63,7 @@ export function defaultRuntimeConfig(): LocalRuntimeConfig {
         provider: "managed",
         browser_channel: "chrome",
         browser_profile_dir: path.join(os.homedir(), ".clero-local-agent", "browser-profile"),
+        remember_session: true,
         browser_headless: false
       },
       workspace: {

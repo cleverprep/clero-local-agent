@@ -1,5 +1,5 @@
 import { createDefaultApprovalProvider } from "@clero-local-agent/approvals";
-import { BrowserTools, ManagedBrowserAdapter, McpChromeBrowserAdapter, type BrowserAdapter } from "@clero-local-agent/browser";
+import { AgentScopedManagedBrowserAdapter, BrowserTools, McpChromeBrowserAdapter, type BrowserAdapter } from "@clero-local-agent/browser";
 import {
   ClaudeCodeAdapter,
   CodexCliAdapter,
@@ -41,6 +41,7 @@ export type LocalRuntimeDaemonOptions = {
   browserProvider?: "managed" | "mcp-chrome";
   browserMcpUrl?: string;
   browserProfileDir?: string;
+  browserRememberSession?: boolean;
   browserHeadless?: boolean;
   browserChannel?: "chromium" | "chrome" | "chrome-beta" | "msedge";
   logger?: Logger;
@@ -86,6 +87,7 @@ export class LocalRuntimeDaemon {
   private messageQueue: Promise<void> = Promise.resolve();
   private browserAdapter: BrowserAdapter | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private lastRuntimeMessageAtMs = 0;
   private readonly pendingRuntimeMessages: RuntimeMessage[] = [];
 
   constructor(options: LocalRuntimeDaemonOptions) {
@@ -106,6 +108,7 @@ export class LocalRuntimeDaemon {
       this.enqueueMessage(message);
     });
     this.websocket.on("close", () => {
+      this.lastRuntimeMessageAtMs = 0;
       this.leaseManager.clearActiveLease();
       this.stopHeartbeat();
     });
@@ -133,6 +136,8 @@ export class LocalRuntimeDaemon {
   }
 
   private async handleMessage(message: unknown): Promise<void> {
+    this.lastRuntimeMessageAtMs = Date.now();
+
     if (isConnectedMessage(message)) {
       this.logger.info("local runtime session established", {
         connectionId: message.connection_id,
@@ -220,6 +225,14 @@ export class LocalRuntimeDaemon {
   }
 
   private sendHeartbeat(): void {
+    if (this.lastRuntimeMessageAtMs > 0 && Date.now() - this.lastRuntimeMessageAtMs > 60_000) {
+      this.logger.warn("local runtime websocket heartbeat timed out", {
+        lastSeenMs: this.lastRuntimeMessageAtMs
+      });
+      this.websocket.reconnect();
+      return;
+    }
+
     try {
       this.sendRuntimeMessage({
         type: "heartbeat",
@@ -394,8 +407,9 @@ export class LocalRuntimeDaemon {
         ? new McpChromeBrowserAdapter({
             endpointUrl: this.options.browserMcpUrl
           })
-        : new ManagedBrowserAdapter({
+        : new AgentScopedManagedBrowserAdapter({
             userDataDir: this.options.browserProfileDir,
+            rememberSession: this.options.browserRememberSession,
             headless: this.options.browserHeadless,
             browserChannel: this.options.browserChannel
           });

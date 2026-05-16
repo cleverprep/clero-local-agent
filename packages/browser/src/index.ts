@@ -1,6 +1,9 @@
+import { randomUUID } from "node:crypto";
+import { rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { ToolExecutionError, type ToolDefinition } from "@clero-local-agent/mcp-runtime";
+import process from "node:process";
+import { ToolExecutionError, type ToolDefinition, type ToolExecutionContext } from "@clero-local-agent/mcp-runtime";
 import { isJsonObject, type JsonObject, type JsonValue } from "@clero-local-agent/protocol";
 
 type JsonRpcResponse = {
@@ -16,25 +19,25 @@ type JsonRpcResponse = {
 
 export interface BrowserAdapter {
   dispose?(): Promise<void>;
-  listTabs(args: JsonObject): Promise<JsonObject>;
-  openUrl(args: JsonObject): Promise<JsonObject>;
-  switchTab(args: JsonObject): Promise<JsonObject>;
-  getPageContent(args: JsonObject): Promise<JsonObject>;
-  getInteractiveElements(args: JsonObject): Promise<JsonObject>;
-  getSnapshot(args: JsonObject): Promise<JsonObject>;
-  click(args: JsonObject): Promise<JsonObject>;
-  moveMouse(args: JsonObject): Promise<JsonObject>;
-  mouseDown(args: JsonObject): Promise<JsonObject>;
-  mouseUp(args: JsonObject): Promise<JsonObject>;
-  drag(args: JsonObject): Promise<JsonObject>;
-  type(args: JsonObject): Promise<JsonObject>;
-  pressKey(args: JsonObject): Promise<JsonObject>;
-  screenshot(args: JsonObject): Promise<JsonObject>;
-  getConsoleLogs(args: JsonObject): Promise<JsonObject>;
-  getNetworkEvents(args: JsonObject): Promise<JsonObject>;
-  closeTab(args: JsonObject): Promise<JsonObject>;
-  goBack(args: JsonObject): Promise<JsonObject>;
-  goForward(args: JsonObject): Promise<JsonObject>;
+  listTabs(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject>;
+  openUrl(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject>;
+  switchTab(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject>;
+  getPageContent(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject>;
+  getInteractiveElements(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject>;
+  getSnapshot(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject>;
+  click(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject>;
+  moveMouse(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject>;
+  mouseDown(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject>;
+  mouseUp(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject>;
+  drag(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject>;
+  type(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject>;
+  pressKey(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject>;
+  screenshot(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject>;
+  getConsoleLogs(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject>;
+  getNetworkEvents(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject>;
+  closeTab(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject>;
+  goBack(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject>;
+  goForward(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject>;
 }
 
 export interface McpToolClient {
@@ -54,102 +57,102 @@ export class BrowserTools {
       {
         name: "browser.list_tabs",
         description: "List pages in the local managed browser session.",
-        handler: (args) => this.adapter.listTabs(args)
+        handler: (args, context) => this.adapter.listTabs(args, context)
       },
       {
         name: "browser.open_url",
         description: "Open a URL in the local managed browser session.",
-        handler: (args) => this.adapter.openUrl(args)
+        handler: (args, context) => this.adapter.openUrl(args, context)
       },
       {
         name: "browser.switch_tab",
         description: "Switch to an existing browser tab.",
-        handler: (args) => this.adapter.switchTab(args)
+        handler: (args, context) => this.adapter.switchTab(args, context)
       },
       {
         name: "browser.get_page_content",
         description: "Extract visible page text or HTML from the active tab.",
-        handler: (args) => this.adapter.getPageContent(args)
+        handler: (args, context) => this.adapter.getPageContent(args, context)
       },
       {
         name: "browser.get_interactive_elements",
         description: "Read interactive elements from the active page.",
-        handler: (args) => this.adapter.getInteractiveElements(args)
+        handler: (args, context) => this.adapter.getInteractiveElements(args, context)
       },
       {
         name: "browser.get_snapshot",
         description: "Read an accessibility-like page snapshot.",
-        handler: (args) => this.adapter.getSnapshot(args)
+        handler: (args, context) => this.adapter.getSnapshot(args, context)
       },
       {
         name: "browser.click",
         description: "Click a page element by ref, selector, or coordinates.",
-        handler: (args) => this.adapter.click(args)
+        handler: (args, context) => this.adapter.click(args, context)
       },
       {
         name: "browser.move_mouse",
         description: "Move the mouse pointer to page coordinates.",
-        handler: (args) => this.adapter.moveMouse(args)
+        handler: (args, context) => this.adapter.moveMouse(args, context)
       },
       {
         name: "browser.mouse_down",
         description: "Press and hold a mouse button.",
-        handler: (args) => this.adapter.mouseDown(args)
+        handler: (args, context) => this.adapter.mouseDown(args, context)
       },
       {
         name: "browser.mouse_up",
         description: "Release a mouse button.",
-        handler: (args) => this.adapter.mouseUp(args)
+        handler: (args, context) => this.adapter.mouseUp(args, context)
       },
       {
         name: "browser.drag",
         description: "Drag from one page coordinate to another.",
-        handler: (args) => this.adapter.drag(args)
+        handler: (args, context) => this.adapter.drag(args, context)
       },
       {
         name: "browser.type",
         description: "Type text, or fill a targeted field when a ref or selector is provided.",
-        handler: (args) => this.adapter.type(args)
+        handler: (args, context) => this.adapter.type(args, context)
       },
       {
         name: "browser.press_key",
         description: "Press a keyboard key or shortcut in the browser.",
-        handler: (args) => this.adapter.pressKey(args)
+        handler: (args, context) => this.adapter.pressKey(args, context)
       },
       {
         name: "browser.screenshot",
         description: "Capture a screenshot from the active tab.",
-        handler: (args) => this.adapter.screenshot(args)
+        handler: (args, context) => this.adapter.screenshot(args, context)
       },
       {
         name: "browser.get_console_logs",
         description: "Return captured console output from the active tab.",
-        handler: (args) => this.adapter.getConsoleLogs(args)
+        handler: (args, context) => this.adapter.getConsoleLogs(args, context)
       },
       {
         name: "browser.get_network_events",
         description: "Return captured browser network events.",
-        handler: (args) => this.adapter.getNetworkEvents(args)
+        handler: (args, context) => this.adapter.getNetworkEvents(args, context)
       },
       {
         name: "browser.go_back",
         description: "Navigate the active tab back.",
-        handler: (args) => this.adapter.goBack(args)
+        handler: (args, context) => this.adapter.goBack(args, context)
       },
       {
         name: "browser.go_forward",
         description: "Navigate the active tab forward.",
-        handler: (args) => this.adapter.goForward(args)
+        handler: (args, context) => this.adapter.goForward(args, context)
       },
       {
         name: "browser.close_tab",
         description: "Close the active or selected browser tab.",
-        handler: (args) => this.adapter.closeTab(args)
+        handler: (args, context) => this.adapter.closeTab(args, context)
       },
       {
         name: "browser.close_page",
         description: "Compatibility alias for browser.close_tab.",
-        handler: (args) => this.adapter.closeTab(args)
+        handler: (args, context) => this.adapter.closeTab(args, context)
       }
     ];
   }
@@ -157,6 +160,7 @@ export class BrowserTools {
 
 export type ManagedBrowserAdapterOptions = {
   userDataDir?: string;
+  rememberSession?: boolean;
   headless?: boolean;
   browserChannel?: "chromium" | "chrome" | "chrome-beta" | "msedge";
 };
@@ -203,6 +207,7 @@ type FrameSnapshot = {
 
 export class ManagedBrowserAdapter implements BrowserAdapter {
   private readonly userDataDir: string;
+  private readonly removeUserDataDirOnDispose: boolean;
   private readonly headless: boolean;
   private readonly browserChannel?: string;
   private playwright: PlaywrightModule | null = null;
@@ -218,7 +223,11 @@ export class ManagedBrowserAdapter implements BrowserAdapter {
   private readonly networkEvents = new Map<string, BrowserNetworkEvent[]>();
 
   constructor(options: ManagedBrowserAdapterOptions = {}) {
-    this.userDataDir = options.userDataDir ?? path.join(os.homedir(), ".clero-local-agent", "browser-profile");
+    const rememberSession = options.rememberSession !== false;
+    this.userDataDir = rememberSession
+      ? nonEmptyString(options.userDataDir) ?? path.join(os.homedir(), ".clero-local-agent", "browser-profile")
+      : path.join(os.tmpdir(), "clero-local-agent", `browser-profile-${process.pid}-${randomUUID()}`);
+    this.removeUserDataDirOnDispose = !rememberSession;
     this.headless = options.headless ?? false;
     this.browserChannel = options.browserChannel === "chromium" ? undefined : options.browserChannel;
   }
@@ -233,7 +242,7 @@ export class ManagedBrowserAdapter implements BrowserAdapter {
 
   async dispose(): Promise<void> {
     const context = this.context ?? (await this.contextPromise?.catch(() => null));
-    await context?.close();
+    await context?.close().catch(() => null);
     this.context = null;
     this.contextPromise = null;
     this.activePage = null;
@@ -241,6 +250,9 @@ export class ManagedBrowserAdapter implements BrowserAdapter {
     this.refs.clear();
     this.consoleLogs.clear();
     this.networkEvents.clear();
+    if (this.removeUserDataDirOnDispose) {
+      await rm(this.userDataDir, { recursive: true, force: true }).catch(() => null);
+    }
   }
 
   async openUrl(args: JsonObject): Promise<JsonObject> {
@@ -852,6 +864,147 @@ export class ManagedBrowserAdapter implements BrowserAdapter {
   }
 }
 
+type ManagedBrowserSession = {
+  agentId?: string;
+  sessionId: string;
+  adapter: BrowserAdapter;
+};
+
+export type AgentScopedManagedBrowserAdapterOptions = ManagedBrowserAdapterOptions & {
+  sessionFactory?: (options: ManagedBrowserAdapterOptions) => BrowserAdapter;
+};
+
+export class AgentScopedManagedBrowserAdapter implements BrowserAdapter {
+  private readonly profileRootDir: string;
+  private readonly options: ManagedBrowserAdapterOptions;
+  private readonly sessionFactory: (options: ManagedBrowserAdapterOptions) => BrowserAdapter;
+  private readonly sessions = new Map<string, ManagedBrowserSession>();
+
+  constructor(options: AgentScopedManagedBrowserAdapterOptions = {}) {
+    const rememberSession = options.rememberSession !== false;
+    this.profileRootDir = nonEmptyString(options.userDataDir) ?? path.join(os.homedir(), ".clero-local-agent", "browser-profile");
+    this.options = {
+      ...options,
+      rememberSession
+    };
+    this.sessionFactory = options.sessionFactory ?? ((sessionOptions) => new ManagedBrowserAdapter(sessionOptions));
+  }
+
+  async dispose(): Promise<void> {
+    await Promise.all([...this.sessions.values()].map((session) => session.adapter.dispose?.()));
+    this.sessions.clear();
+  }
+
+  async listTabs(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject> {
+    return this.withSession(context, (adapter) => adapter.listTabs(args));
+  }
+
+  async openUrl(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject> {
+    return this.withSession(context, (adapter) => adapter.openUrl(args));
+  }
+
+  async switchTab(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject> {
+    return this.withSession(context, (adapter) => adapter.switchTab(args));
+  }
+
+  async getPageContent(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject> {
+    return this.withSession(context, (adapter) => adapter.getPageContent(args));
+  }
+
+  async getInteractiveElements(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject> {
+    return this.withSession(context, (adapter) => adapter.getInteractiveElements(args));
+  }
+
+  async getSnapshot(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject> {
+    return this.withSession(context, (adapter) => adapter.getSnapshot(args));
+  }
+
+  async click(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject> {
+    return this.withSession(context, (adapter) => adapter.click(args));
+  }
+
+  async moveMouse(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject> {
+    return this.withSession(context, (adapter) => adapter.moveMouse(args));
+  }
+
+  async mouseDown(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject> {
+    return this.withSession(context, (adapter) => adapter.mouseDown(args));
+  }
+
+  async mouseUp(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject> {
+    return this.withSession(context, (adapter) => adapter.mouseUp(args));
+  }
+
+  async drag(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject> {
+    return this.withSession(context, (adapter) => adapter.drag(args));
+  }
+
+  async type(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject> {
+    return this.withSession(context, (adapter) => adapter.type(args));
+  }
+
+  async pressKey(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject> {
+    return this.withSession(context, (adapter) => adapter.pressKey(args));
+  }
+
+  async screenshot(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject> {
+    return this.withSession(context, (adapter) => adapter.screenshot(args));
+  }
+
+  async getConsoleLogs(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject> {
+    return this.withSession(context, (adapter) => adapter.getConsoleLogs(args));
+  }
+
+  async getNetworkEvents(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject> {
+    return this.withSession(context, (adapter) => adapter.getNetworkEvents(args));
+  }
+
+  async closeTab(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject> {
+    return this.withSession(context, (adapter) => adapter.closeTab(args));
+  }
+
+  async goBack(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject> {
+    return this.withSession(context, (adapter) => adapter.goBack(args));
+  }
+
+  async goForward(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject> {
+    return this.withSession(context, (adapter) => adapter.goForward(args));
+  }
+
+  private async withSession(
+    context: ToolExecutionContext | undefined,
+    run: (adapter: BrowserAdapter) => Promise<JsonObject>
+  ): Promise<JsonObject> {
+    const session = this.sessionForContext(context);
+    const result = await run(session.adapter);
+    return compactJsonObject({
+      ...result,
+      browser_session_id: session.sessionId,
+      agent_id: session.agentId
+    });
+  }
+
+  private sessionForContext(context?: ToolExecutionContext): ManagedBrowserSession {
+    const agentId = nonEmptyString(context?.agentId);
+    const sessionId = agentId ? `agent-${safePathSegment(agentId)}` : "default";
+    const existing = this.sessions.get(sessionId);
+    if (existing) {
+      return existing;
+    }
+
+    const adapter = this.sessionFactory({
+      ...this.options,
+      userDataDir:
+        this.options.rememberSession === false
+          ? undefined
+          : path.join(this.profileRootDir, sessionId)
+    });
+    const session = { agentId, sessionId, adapter };
+    this.sessions.set(sessionId, session);
+    return session;
+  }
+}
+
 export type StreamableHttpMcpClientOptions = {
   endpointUrl: string;
   clientName?: string;
@@ -1272,6 +1425,15 @@ function webUrlArg(args: JsonObject, key: string): string {
 function optionalString(args: JsonObject, key: string): string | undefined {
   const value = args[key];
   return typeof value === "string" ? value : undefined;
+}
+
+function nonEmptyString(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function safePathSegment(value: string): string {
+  return value.replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 80) || "unknown";
 }
 
 function optionalBoolean(args: JsonObject, key: string): boolean | undefined {

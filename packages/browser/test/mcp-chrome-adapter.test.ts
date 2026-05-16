@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
+import path from "node:path";
 import test from "node:test";
 import { ToolExecutionError } from "@clero-local-agent/mcp-runtime";
-import { McpChromeBrowserAdapter, type McpToolClient } from "../src/index.ts";
+import { AgentScopedManagedBrowserAdapter, McpChromeBrowserAdapter, type BrowserAdapter, type McpToolClient } from "../src/index.ts";
 import type { JsonObject, JsonValue } from "@clero-local-agent/protocol";
 
 class FakeMcpClient implements McpToolClient {
@@ -127,6 +128,30 @@ test("close_tab closes the active tab when no tab id is provided", async () => {
   });
 });
 
+test("agent-scoped managed browser keeps separate persistent profile directories", async () => {
+  const createdProfileDirs: string[] = [];
+  const adapter = new AgentScopedManagedBrowserAdapter({
+    userDataDir: "/tmp/clero-browser-root",
+    sessionFactory: (options) => {
+      createdProfileDirs.push(options.userDataDir ?? "");
+      return fakeBrowserAdapter({ profile_dir: options.userDataDir ?? "" });
+    }
+  });
+
+  const first = await adapter.listTabs({}, { requestId: "req_1", agentId: "15", taskId: "task_1" });
+  const second = await adapter.listTabs({}, { requestId: "req_2", agentId: "22", taskId: "task_2" });
+  const again = await adapter.listTabs({}, { requestId: "req_3", agentId: "15", taskId: "task_3" });
+
+  assert.deepEqual(createdProfileDirs, [
+    path.join("/tmp/clero-browser-root", "agent-15"),
+    path.join("/tmp/clero-browser-root", "agent-22")
+  ]);
+  assert.equal(first.browser_session_id, "agent-15");
+  assert.equal(first.agent_id, "15");
+  assert.equal(second.browser_session_id, "agent-22");
+  assert.equal(again.profile_dir, path.join("/tmp/clero-browser-root", "agent-15"));
+});
+
 function mcpTextResult(value: JsonValue): JsonObject {
   return {
     content: [
@@ -136,5 +161,30 @@ function mcpTextResult(value: JsonValue): JsonObject {
       }
     ],
     isError: false
+  };
+}
+
+function fakeBrowserAdapter(result: JsonObject): BrowserAdapter {
+  const call = async () => result;
+  return {
+    listTabs: call,
+    openUrl: call,
+    switchTab: call,
+    getPageContent: call,
+    getInteractiveElements: call,
+    getSnapshot: call,
+    click: call,
+    moveMouse: call,
+    mouseDown: call,
+    mouseUp: call,
+    drag: call,
+    type: call,
+    pressKey: call,
+    screenshot: call,
+    getConsoleLogs: call,
+    getNetworkEvents: call,
+    closeTab: call,
+    goBack: call,
+    goForward: call
   };
 }
