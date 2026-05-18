@@ -288,7 +288,7 @@ npm run smoke:browser
 - `get_daemon_status`
 - `list_capabilities`
 
-Clero acts as the broker, not the lease owner. Normal backend `tool_call` messages do not need a `lease_id`; for lease-required tools, the daemon maps `agent_id` into a local lease. If no active shared-tool lease exists, the daemon grants an implicit lease for the incoming tool call. The same `agent_id` can keep using and extending that lease across event runs. A different agent gets `busy` until the local lease is released or expires.
+Clero acts as the broker, not the lease owner. Normal backend `tool_call` messages do not need a `lease_id`; for lease-required tools, the daemon maps `agent_id` into a local lease. Coding-agent start tasks and git writes are leased per workspace path, so two agents can run Codex or Claude Code in different workspaces at the same time. A different agent gets `busy` only when it tries to use the same leased workspace scope.
 
 Leases expire after 60 seconds of inactivity. Any lease-required tool usage or `heartbeat_lease` refreshes the inactivity timeout. Browser tools do not require a lease because each agent uses an isolated browser session/profile.
 
@@ -347,14 +347,14 @@ Workspace tools, passive:
 
 These let Clero discover which local projects the daemon is allowed to expose. `workspace.list_roots` returns the directories configured with `--allow-dir`. `workspace.list_projects` scans those roots for common project markers like `.git`, `package.json`, `pyproject.toml`, `manage.py`, `Cargo.toml`, and `go.mod`. `workspace.describe_project` returns stack hints, package metadata, and git status for an allowed project path. Codex tasks should use one of these returned paths as `coding_agent.start_task.cwd`.
 
-Coding-agent tools, lease required:
+Coding-agent tools:
 
-- `coding_agent.start_task`
-- `coding_agent.get_status`
-- `coding_agent.get_output`
-- `coding_agent.cancel`
+- `coding_agent.start_task` lease required per `cwd`
+- `coding_agent.get_status` passive
+- `coding_agent.get_output` passive
+- `coding_agent.cancel` passive
 
-`coding_agent.start_task` runs `codex exec --json` as a background job and returns a local `task_id` immediately. By default it uses the `read-only` Codex sandbox. If `sandbox` is `workspace-write` or `danger-full-access`, local approval is required before the Codex process starts. Runtime approval prompts from Codex are not used in this mode; if sandbox or permission policy blocks progress, the task is marked `blocked` and the details are returned through `coding_agent.get_status` / `coding_agent.get_output`. While the child Codex process is running, the daemon keeps the local lease alive.
+`coding_agent.start_task` runs `codex exec --json` or Claude Code as a background job and returns a local `task_id` immediately. By default it uses the `read-only` Codex sandbox. If `sandbox` is `workspace-write` or `danger-full-access`, local approval is required before the Codex process starts. Runtime approval prompts from Codex are not used in this mode; if sandbox or permission policy blocks progress, the task is marked `blocked` and the details are returned through `coding_agent.get_status` / `coding_agent.get_output`. While the child coding process is running, the daemon keeps that workspace lease alive.
 
 Supported `coding_agent.start_task` arguments:
 

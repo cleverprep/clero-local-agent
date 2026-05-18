@@ -12,7 +12,7 @@ test("grants a lease when no active lease exists", () => {
   const result = manager.acquireLease({
     agentId: "agent_1",
     taskId: "task_1",
-    requestedTools: ["browser.open_url"],
+    requestedTools: ["coding_agent.start_task"],
     ttlSeconds: 10
   });
 
@@ -31,13 +31,13 @@ test("returns busy when another agent owns the lease", () => {
   manager.acquireLease({
     agentId: "agent_1",
     taskId: "task_1",
-    requestedTools: ["browser.open_url"]
+    requestedTools: ["coding_agent.start_task"]
   });
 
   const result = manager.acquireLease({
     agentId: "agent_2",
     taskId: "task_2",
-    requestedTools: ["browser.open_url"]
+    requestedTools: ["coding_agent.start_task"]
   });
 
   assert.equal(result.status, "busy");
@@ -52,7 +52,7 @@ test("expires the lease when heartbeat stops", () => {
   manager.acquireLease({
     agentId: "agent_1",
     taskId: "task_1",
-    requestedTools: ["browser.open_url"],
+    requestedTools: ["coding_agent.start_task"],
     ttlSeconds: 1
   });
 
@@ -62,7 +62,7 @@ test("expires the lease when heartbeat stops", () => {
   const result = manager.acquireLease({
     agentId: "agent_2",
     taskId: "task_2",
-    requestedTools: ["browser.open_url"]
+    requestedTools: ["coding_agent.start_task"]
   });
   assert.equal(result.status, "granted");
 });
@@ -76,7 +76,7 @@ test("heartbeat extends the lease", () => {
   manager.acquireLease({
     agentId: "agent_1",
     taskId: "task_1",
-    requestedTools: ["browser.open_url"],
+    requestedTools: ["coding_agent.start_task"],
     ttlSeconds: 1
   });
 
@@ -99,7 +99,7 @@ test("default lease inactivity timeout is 60 seconds", () => {
   const result = manager.acquireLease({
     agentId: "agent_1",
     taskId: "task_1",
-    requestedTools: ["browser.open_url"]
+    requestedTools: ["coding_agent.start_task"]
   });
 
   assert.equal(result.status, "granted");
@@ -124,7 +124,7 @@ test("tool usage refreshes lease inactivity timeout", () => {
   manager.acquireLease({
     agentId: "agent_1",
     taskId: "task_1",
-    requestedTools: ["browser.open_url"]
+    requestedTools: ["coding_agent.start_task"]
   });
 
   now += 30_000;
@@ -133,7 +133,7 @@ test("tool usage refreshes lease inactivity timeout", () => {
     leaseId: "lease_1",
     agentId: "agent_1",
     taskId: "task_1",
-    toolName: "browser.open_url"
+    toolName: "coding_agent.start_task"
   });
 
   assert.deepEqual(ensured, { status: "ok", leaseId: "lease_1" });
@@ -156,7 +156,7 @@ test("release frees the connected agent slot", () => {
   const lease = manager.acquireLease({
     agentId: "agent_1",
     taskId: "task_1",
-    requestedTools: ["browser.open_url"]
+    requestedTools: ["coding_agent.start_task"]
   });
   assert.equal(lease.status, "granted");
   assert.equal(manager.registerAgent("agent_2"), false);
@@ -172,7 +172,7 @@ test("release clears the active lease", () => {
   manager.acquireLease({
     agentId: "agent_1",
     taskId: "task_1",
-    requestedTools: ["browser.open_url"]
+    requestedTools: ["coding_agent.start_task"]
   });
 
   assert.deepEqual(manager.releaseLease("lease_1"), { status: "released" });
@@ -186,7 +186,7 @@ test("auto-acquires a lease for a stateful tool call when no lease exists", () =
     requestId: "req_1",
     agentId: "agent_1",
     taskId: "task_1",
-    toolName: "browser.open_url"
+    toolName: "coding_agent.start_task"
   });
 
   assert.deepEqual(result, { status: "ok", leaseId: "lease_auto" });
@@ -198,54 +198,60 @@ test("auto-acquire returns busy when another agent owns the lease", () => {
   manager.acquireLease({
     agentId: "agent_1",
     taskId: "task_1",
-    requestedTools: ["browser.open_url"]
+    requestedTools: ["coding_agent.start_task"],
+    workspaceKey: "/workspace/a"
   });
 
   const result = manager.ensureLeaseForToolCall({
     requestId: "req_2",
     agentId: "agent_2",
     taskId: "task_2",
-    toolName: "browser.open_url"
+    toolName: "coding_agent.start_task",
+    workspaceKey: "/workspace/a"
   });
 
   assert.equal(result.status, "error");
   if (result.status === "error") {
     assert.equal(result.errorCode, "busy");
-    assert.equal(result.message, "Local browser is busy.");
+    assert.equal(result.message, "Local workspace is busy.");
     assert.deepEqual(result.details, {
-      lease_scope: "browser",
+      lease_scope: "workspace",
+      workspace_key: "/workspace/a",
       active_lease: {
         agent_id: "agent_1",
         task_id: "task_1",
-        expires_at: manager.getStatus().active_lease?.expires_at
+        expires_at: manager.getStatus().active_lease?.expires_at,
+        workspace_key: "/workspace/a"
       }
     });
   }
 });
 
-test("different agents can use browser and coding scopes concurrently", () => {
+test("different agents can use coding tools in different workspaces concurrently", () => {
   let leaseNumber = 0;
   const manager = new LeaseManager({
     leaseIdFactory: () => `lease_${++leaseNumber}`
   });
 
-  const browser = manager.ensureLeaseForToolCall({
+  const firstWorkspace = manager.ensureLeaseForToolCall({
     requestId: "req_1",
-    agentId: "agent_browser",
-    taskId: "task_browser",
-    requestedActionKey: "local_runtime_45.browser",
-    toolName: "browser.open_url"
-  });
-  const coding = manager.ensureLeaseForToolCall({
-    requestId: "req_2",
-    agentId: "agent_coding",
-    taskId: "task_coding",
+    agentId: "agent_a",
+    taskId: "task_a",
     requestedActionKey: "local_runtime_45.codex",
-    toolName: "coding_agent.start_task"
+    toolName: "coding_agent.start_task",
+    workspaceKey: "/workspace/a"
+  });
+  const secondWorkspace = manager.ensureLeaseForToolCall({
+    requestId: "req_2",
+    agentId: "agent_b",
+    taskId: "task_b",
+    requestedActionKey: "local_runtime_45.codex",
+    toolName: "coding_agent.start_task",
+    workspaceKey: "/workspace/b"
   });
 
-  assert.deepEqual(browser, { status: "ok", leaseId: "lease_1" });
-  assert.deepEqual(coding, { status: "ok", leaseId: "lease_2" });
+  assert.deepEqual(firstWorkspace, { status: "ok", leaseId: "lease_1" });
+  assert.deepEqual(secondWorkspace, { status: "ok", leaseId: "lease_2" });
   assert.equal(manager.getStatus().connected_agents, 2);
   assert.equal(manager.getStatus().active_leases?.length, 2);
 });
@@ -261,8 +267,9 @@ test("same agent can reuse and extend the local lease across event runs without 
     requestId: "req_1",
     agentId: "12",
     taskId: "192",
-    requestedActionKey: "local_runtime_45.browser",
-    toolName: "browser.open_url"
+    requestedActionKey: "local_runtime_45.codex",
+    toolName: "coding_agent.start_task",
+    workspaceKey: "/workspace/a"
   });
 
   now += 30_000;
@@ -270,13 +277,15 @@ test("same agent can reuse and extend the local lease across event runs without 
     requestId: "req_2",
     agentId: "12",
     taskId: "193",
-    requestedActionKey: "local_runtime_45.browser",
-    toolName: "browser.click"
+    requestedActionKey: "local_runtime_45.codex",
+    toolName: "coding_agent.start_task",
+    workspaceKey: "/workspace/a"
   });
 
   assert.deepEqual(result, { status: "ok", leaseId: "lease_1" });
   assert.equal(manager.getStatus().active_lease?.expires_at, "2026-01-01T00:01:30.000Z");
   assert.equal(manager.getStatus().active_lease?.task_id, "193");
+  assert.equal(manager.getStatus().active_lease?.workspace_key, "/workspace/a");
 });
 
 test("different agent gets busy while local lease is active", () => {
@@ -286,19 +295,21 @@ test("different agent gets busy while local lease is active", () => {
     requestId: "req_1",
     agentId: "12",
     taskId: "192",
-    toolName: "browser.open_url"
+    toolName: "coding_agent.start_task",
+    workspaceKey: "/workspace/a"
   });
 
   const result = manager.ensureLeaseForToolCall({
     requestId: "req_2",
     agentId: "13",
     taskId: "193",
-    toolName: "browser.open_url"
+    toolName: "coding_agent.start_task",
+    workspaceKey: "/workspace/a"
   });
 
   assert.equal(result.status, "error");
   if (result.status === "error") {
     assert.equal(result.errorCode, "busy");
-    assert.equal(result.message, "Local browser is busy.");
+    assert.equal(result.message, "Local workspace is busy.");
   }
 });

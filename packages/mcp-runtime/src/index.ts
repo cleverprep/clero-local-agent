@@ -54,6 +54,7 @@ export type EnsureLeaseForToolCallInput = {
   taskId?: string;
   requestedActionKey?: string;
   toolName: ToolName;
+  workspaceKey?: string;
 };
 
 export type EnsureLeaseForToolCallResult =
@@ -106,7 +107,7 @@ export class ToolRegistry {
     }
 
     const runContext = toolCallRunContext(message);
-    const leaseResult = this.ensureLease(message, definition, leaseGuard, runContext);
+    const leaseResult = this.ensureLease(message, definition, leaseGuard, runContext, args);
     if (leaseResult.status === "error") {
       return errorToolResult(message.request_id, leaseResult.errorCode, leaseResult.message, leaseResult.details);
     }
@@ -135,7 +136,8 @@ export class ToolRegistry {
     message: ToolCallMessage,
     definition: ToolDefinition,
     leaseGuard: LeaseGuard,
-    runContext: ToolCallRunContext
+    runContext: ToolCallRunContext,
+    args: JsonObject
   ): EnsureLeaseForToolCallResult | { status: "ok"; leaseId?: string } {
     if (!definition.requiresLease) {
       return { status: "ok", leaseId: message.lease_id };
@@ -148,7 +150,8 @@ export class ToolRegistry {
         agentId: runContext.agentId,
         taskId: runContext.taskId,
         requestedActionKey: message.requested_action_key,
-        toolName: message.tool
+        toolName: message.tool,
+        workspaceKey: workspaceKeyForToolCall(message.tool, args)
       });
     }
 
@@ -166,6 +169,15 @@ export class ToolRegistry {
 
     return { status: "ok", leaseId: message.lease_id };
   }
+}
+
+function workspaceKeyForToolCall(tool: ToolName, args: JsonObject): string | undefined {
+  if (tool !== "coding_agent.start_task" && tool !== "git.commit" && tool !== "git.push") {
+    return undefined;
+  }
+
+  const cwd = args.cwd;
+  return typeof cwd === "string" && cwd.trim().length > 0 ? cwd : undefined;
 }
 
 function capabilityAccessForDefinition(definition: ToolDefinition): Capability["access"] {

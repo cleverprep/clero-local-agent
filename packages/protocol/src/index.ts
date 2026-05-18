@@ -66,6 +66,7 @@ export type ActiveLease = {
   task_id: string;
   requested_tools: string[];
   expires_at: string;
+  workspace_key?: string;
 };
 
 export type DaemonStatus = {
@@ -260,7 +261,7 @@ export function isControlRequestMessage(value: unknown): value is ControlRequest
 }
 
 export function toolRequiresLease(tool: string): boolean {
-  if (tool.startsWith("coding_agent.")) {
+  if (tool === "coding_agent.start_task") {
     return true;
   }
 

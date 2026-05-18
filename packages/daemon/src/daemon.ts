@@ -334,6 +334,7 @@ export class LocalRuntimeDaemon {
         const taskId = stringArg(args, "task_id");
         const requestedTools = stringArrayArg(args, "requested_tools");
         const ttlSeconds = numberArg(args, "ttl_seconds");
+        const workspaceKey = stringArg(args, "workspace_key");
         if (!agentId || !taskId) {
           return errorControlResult(message.request_id, "invalid_arguments", "agent_id and task_id are required");
         }
@@ -342,6 +343,7 @@ export class LocalRuntimeDaemon {
           agentId,
           taskId,
           requestedTools,
+          workspaceKey,
           ttlSeconds
         });
         if (result.status === "granted") {

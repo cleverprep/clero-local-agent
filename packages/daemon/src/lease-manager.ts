@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import path from "node:path";
+import process from "node:process";
 import type { ActiveLease, DaemonStatus, JsonObject } from "@clero-local-agent/protocol";
 import type { EnsureLeaseForToolCallInput, EnsureLeaseForToolCallResult } from "@clero-local-agent/mcp-runtime";
 import { AgentSessionRegistry } from "./agent-sessions.ts";
@@ -14,10 +16,15 @@ export type AcquireLeaseInput = {
   agentId: string;
   taskId: string;
   requestedTools: string[];
+  workspaceKey?: string;
   ttlSeconds?: number;
 };
 
-type LeaseScope = "browser" | "workspace" | "global";
+type LeaseScope = string;
+
+const BROWSER_SCOPE = "browser";
+const WORKSPACE_SCOPE = "workspace";
+const GLOBAL_SCOPE = "global";
 
 export type AcquireLeaseResult =
   | { status: "granted"; lease: ActiveLease }
@@ -55,16 +62,19 @@ export class LeaseManager {
     }
 
     this.expireLeaseIfNeeded();
-    const scope = leaseScopeForTools(input.requestedTools);
+    const scope = leaseScopeForTools(input.requestedTools, input.workspaceKey);
     const activeLease = this.activeLeases.get(scope);
     if (activeLease) {
       if (activeLease.agent_id === input.agentId) {
-        const refreshed = {
-          ...activeLease,
-          task_id: input.taskId,
-          requested_tools: input.requestedTools,
-          expires_at: this.expiresAt(ttlSeconds)
-        };
+        const refreshed = this.withScopeMetadata(
+          {
+            ...activeLease,
+            task_id: input.taskId,
+            requested_tools: input.requestedTools,
+            expires_at: this.expiresAt(ttlSeconds)
+          },
+          scope
+        );
         this.activeLeases.set(scope, refreshed);
         this.sessions.touch(input.agentId);
         return { status: "granted", lease: refreshed };
@@ -78,13 +88,16 @@ export class LeaseManager {
       return { status: "slot_limit", maxAgentSlots: registration.maxAgentSlots };
     }
 
-    const lease = {
-      lease_id: this.leaseIdFactory(),
-      agent_id: input.agentId,
-      task_id: input.taskId,
-      requested_tools: input.requestedTools,
-      expires_at: this.expiresAt(ttlSeconds)
-    };
+    const lease = this.withScopeMetadata(
+      {
+        lease_id: this.leaseIdFactory(),
+        agent_id: input.agentId,
+        task_id: input.taskId,
+        requested_tools: input.requestedTools,
+        expires_at: this.expiresAt(ttlSeconds)
+      },
+      scope
+    );
     this.activeLeases.set(scope, lease);
 
     return { status: "granted", lease };
@@ -140,7 +153,7 @@ export class LeaseManager {
       }
     }
 
-    const scope = leaseScopeForTools([input.requestedActionKey ?? input.toolName]);
+    const scope = leaseScopeForTools([input.requestedActionKey ?? input.toolName], input.workspaceKey);
     const activeLease = this.activeLeases.get(scope);
     if (activeLease) {
       const requestedAgentId = input.agentId;
@@ -150,7 +163,8 @@ export class LeaseManager {
         const refreshed = this.acquireLease({
           agentId: input.agentId ?? activeLease.agent_id,
           taskId: input.taskId ?? activeLease.task_id,
-          requestedTools: [input.requestedActionKey ?? input.toolName]
+          requestedTools: [input.requestedActionKey ?? input.toolName],
+          workspaceKey: input.workspaceKey
         });
         if (refreshed.status === "granted") {
           return { status: "ok", leaseId: refreshed.lease.lease_id };
@@ -170,7 +184,8 @@ export class LeaseManager {
     const acquired = this.acquireLease({
       agentId,
       taskId,
-      requestedTools: [input.requestedActionKey ?? input.toolName]
+      requestedTools: [input.requestedActionKey ?? input.toolName],
+      workspaceKey: input.workspaceKey
     });
 
     if (acquired.status === "granted") {
@@ -269,44 +284,91 @@ export class LeaseManager {
   }
 
   private busyDetails(lease: ActiveLease, scope: LeaseScope): JsonObject {
+    const workspaceKey = workspaceKeyFromScope(scope);
+    const activeLease: JsonObject = {
+      agent_id: lease.agent_id,
+      task_id: lease.task_id,
+      expires_at: lease.expires_at
+    };
+    if (lease.workspace_key) {
+      activeLease.workspace_key = lease.workspace_key;
+    }
+
     return {
-      lease_scope: scope,
-      active_lease: {
-        agent_id: lease.agent_id,
-        task_id: lease.task_id,
-        expires_at: lease.expires_at
-      }
+      lease_scope: leaseScopeKind(scope),
+      ...(workspaceKey ? { workspace_key: workspaceKey } : {}),
+      active_lease: activeLease
+    };
+  }
+
+  private withScopeMetadata(lease: ActiveLease, scope: LeaseScope): ActiveLease {
+    const workspaceKey = workspaceKeyFromScope(scope);
+    if (!workspaceKey) {
+      const { workspace_key: _workspaceKey, ...rest } = lease;
+      return rest;
+    }
+
+    return {
+      ...lease,
+      workspace_key: workspaceKey
     };
   }
 }
 
-function leaseScopeForTools(tools: string[]): LeaseScope {
+function leaseScopeForTools(tools: string[], workspaceKey?: string): LeaseScope {
   const scopes = new Set<LeaseScope>();
   for (const tool of tools) {
-    scopes.add(leaseScopeForTool(tool));
+    scopes.add(leaseScopeForTool(tool, workspaceKey));
   }
   if (scopes.size === 1) {
     return [...scopes][0];
   }
-  return "global";
+  return GLOBAL_SCOPE;
 }
 
-function leaseScopeForTool(tool: string): LeaseScope {
+function leaseScopeForTool(tool: string, workspaceKey?: string): LeaseScope {
   if (tool.includes(".browser") || tool.startsWith("browser.")) {
-    return "browser";
+    return BROWSER_SCOPE;
   }
   if (tool.includes(".codex") || tool.startsWith("coding_agent.") || tool.startsWith("git.")) {
+    return workspaceScope(workspaceKey);
+  }
+  return GLOBAL_SCOPE;
+}
+
+function leaseScopeLabel(scope: LeaseScope): string {
+  const kind = leaseScopeKind(scope);
+  if (kind === "browser") {
+    return "Local browser";
+  }
+  if (kind === "workspace") {
+    return "Local workspace";
+  }
+  return "Local runtime";
+}
+
+function workspaceScope(workspaceKey?: string): LeaseScope {
+  return workspaceKey ? `${WORKSPACE_SCOPE}:${normalizeWorkspaceKey(workspaceKey)}` : WORKSPACE_SCOPE;
+}
+
+function leaseScopeKind(scope: LeaseScope): "browser" | "workspace" | "global" {
+  if (scope === BROWSER_SCOPE) {
+    return "browser";
+  }
+  if (scope === WORKSPACE_SCOPE || scope.startsWith(`${WORKSPACE_SCOPE}:`)) {
     return "workspace";
   }
   return "global";
 }
 
-function leaseScopeLabel(scope: LeaseScope): string {
-  if (scope === "browser") {
-    return "Local browser";
+function workspaceKeyFromScope(scope: LeaseScope): string | undefined {
+  if (!scope.startsWith(`${WORKSPACE_SCOPE}:`)) {
+    return undefined;
   }
-  if (scope === "workspace") {
-    return "Local workspace";
-  }
-  return "Local runtime";
+  return scope.slice(WORKSPACE_SCOPE.length + 1);
+}
+
+function normalizeWorkspaceKey(workspaceKey: string): string {
+  const normalized = path.resolve(workspaceKey.trim());
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
 }

@@ -120,6 +120,41 @@ test("executes browser tools without acquiring a lease", async () => {
   }
 });
 
+test("executes coding-agent polling tools without acquiring a lease", async () => {
+  const registry = new ToolRegistry();
+  registry.register({
+    name: "coding_agent.get_output",
+    description: "output",
+    handler: (args, context) => ({
+      task_id: args.task_id,
+      lease_id: context.leaseId ?? null
+    })
+  });
+
+  const result = await registry.execute(
+    {
+      type: "tool_call",
+      request_id: "req_1",
+      tool: "coding_agent.get_output",
+      arguments: { task_id: "codex_1" }
+    },
+    {
+      hasActiveLease: () => false,
+      ensureLeaseForToolCall: () => {
+        throw new Error("coding-agent polling should not acquire a lease");
+      }
+    }
+  );
+
+  assert.equal(result.status, "ok");
+  if (result.status === "ok") {
+    assert.deepEqual(result.result, {
+      task_id: "codex_1",
+      lease_id: null
+    });
+  }
+});
+
 test("rejects stateful tools without a lease", async () => {
   const registry = new ToolRegistry();
   registry.register({
@@ -240,7 +275,7 @@ test("uses lease guard auto-acquire for stateful tools without a lease id", asyn
       event_run_id: 192,
       requested_action_key: "local_runtime_45.codex",
       tool: "coding_agent.start_task",
-      arguments: { prompt: "check the repo" }
+      arguments: { prompt: "check the repo", cwd: "/workspace/a" }
     },
     {
       hasActiveLease: () => false,
@@ -258,7 +293,8 @@ test("uses lease guard auto-acquire for stateful tools without a lease id", asyn
     agentId: "12",
     taskId: "192",
     requestedActionKey: "local_runtime_45.codex",
-    toolName: "coding_agent.start_task"
+    toolName: "coding_agent.start_task",
+    workspaceKey: "/workspace/a"
   });
   if (result.status === "ok") {
     assert.deepEqual(result.result, {
