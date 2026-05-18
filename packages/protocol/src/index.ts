@@ -260,10 +260,6 @@ export function isControlRequestMessage(value: unknown): value is ControlRequest
 }
 
 export function toolRequiresLease(tool: string): boolean {
-  if (tool.startsWith("browser.")) {
-    return true;
-  }
-
   if (tool.startsWith("coding_agent.")) {
     return true;
   }

@@ -34,16 +34,16 @@ The backend can route a tool call only if the connection advertises the capabili
 
 ## Lease Model
 
-Only one agent can hold the active local tool lease at a time. The lease is enforced locally, not by the backend.
+Leases protect shared local tools, mainly coding-agent tasks and git writes. Browser tools are lease-free because managed browser sessions are isolated per agent profile. The lease is enforced locally, not by the backend.
 
-Rules:
+Rules for a leased tool scope:
 
 - no active lease: grant to requesting agent
 - same agent: refresh/reuse lease
 - different agent: return `busy`
 - inactivity: expire by TTL
 
-Passive status/capability requests may remain lease-free.
+Passive status/capability requests, workspace discovery, git reads, and browser browsing should remain lease-free.
 
 ## Workspace Access
 

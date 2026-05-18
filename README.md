@@ -24,10 +24,10 @@ Because Clero Local Agent can control local browser, coding, workspace, and git 
 - Authenticated outbound WebSocket client.
 - Session and lease manager:
   - one attached Clero agent/runtime connection at a time.
-  - one active tool lease at a time.
+  - local leases for shared coding-agent and git-write tools.
   - automatic lease expiry when heartbeats stop.
-- MCP-style tool registry with lease enforcement.
-- Managed browser adapter that launches an agent-controlled browser profile without a Chrome extension.
+- MCP-style tool registry with lease enforcement for shared local tools.
+- Managed browser adapter that launches agent-scoped browser profiles without a Chrome extension.
 - Codex CLI process adapter.
 - Git status/diff/commit/push tools.
 - Approval provider abstraction, with terminal approval for risky git writes.
@@ -288,9 +288,9 @@ npm run smoke:browser
 - `get_daemon_status`
 - `list_capabilities`
 
-Clero acts as the broker, not the lease owner. Normal backend `tool_call` messages do not need a `lease_id`; the daemon maps `agent_id` into a local lease. If no active lease exists, the daemon grants an implicit lease for the incoming tool call. The same `agent_id` can keep using and extending that lease across event runs. A different agent gets `busy` until the local lease is released or expires.
+Clero acts as the broker, not the lease owner. Normal backend `tool_call` messages do not need a `lease_id`; for lease-required tools, the daemon maps `agent_id` into a local lease. If no active shared-tool lease exists, the daemon grants an implicit lease for the incoming tool call. The same `agent_id` can keep using and extending that lease across event runs. A different agent gets `busy` until the local lease is released or expires.
 
-Leases expire after 60 seconds of inactivity. Any stateful tool usage or `heartbeat_lease` refreshes the inactivity timeout.
+Leases expire after 60 seconds of inactivity. Any lease-required tool usage or `heartbeat_lease` refreshes the inactivity timeout. Browser tools do not require a lease because each agent uses an isolated browser session/profile.
 
 Current backend tool-call shape:
 
@@ -312,7 +312,7 @@ The daemon accepts tool input from `arguments`. It also tolerates broker aliases
 
 ## MVP Tool Set
 
-Browser tools, lease required:
+Browser tools, passive and agent-scoped:
 
 - `browser.list_tabs`
 - `browser.open_url`
@@ -336,6 +336,8 @@ Browser tools, lease required:
 - `browser.close_page`
 
 `browser.close_page` is a compatibility alias for `browser.close_tab`.
+
+Browser tools are lease-free. The managed browser adapter keeps agent sessions separated by `agent_id`, so one agent browsing does not block another agent from using browser or coding-agent tools.
 
 Workspace tools, passive:
 
