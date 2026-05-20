@@ -168,6 +168,24 @@ export type LocalTaskCompletedMessage = {
   result: JsonObject;
 };
 
+export type SyncedAgent = {
+  agent_id: BrokerId;
+  name?: string;
+  icon?: string;
+  avatar_url?: string | null;
+  browser_enabled?: boolean;
+  coding_enabled?: boolean;
+  git_read_enabled?: boolean;
+  git_write_enabled?: boolean;
+  browser_profile_key?: string;
+};
+
+export type AgentsSyncMessage = {
+  type: "agents_sync";
+  connection_id?: BrokerId;
+  agents: SyncedAgent[];
+};
+
 export type RuntimeMessage =
   | ToolCallMessage
   | ToolResultMessage
@@ -175,7 +193,8 @@ export type RuntimeMessage =
   | ControlResultMessage
   | HelloMessage
   | HeartbeatMessage
-  | LocalTaskCompletedMessage;
+  | LocalTaskCompletedMessage
+  | AgentsSyncMessage;
 
 export function okToolResult(requestId: string, result: JsonValue): ToolResultMessage {
   return {
@@ -257,6 +276,15 @@ export function isControlRequestMessage(value: unknown): value is ControlRequest
     typeof value.request_id === "string" &&
     typeof value.action === "string" &&
     (value.arguments === undefined || isJsonObject(value.arguments))
+  );
+}
+
+export function isAgentsSyncMessage(value: unknown): value is AgentsSyncMessage {
+  return (
+    isJsonObject(value) &&
+    value.type === "agents_sync" &&
+    Array.isArray(value.agents) &&
+    value.agents.every((agent) => isJsonObject(agent))
   );
 }
 

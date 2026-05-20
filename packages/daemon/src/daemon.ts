@@ -17,6 +17,7 @@ import { GitTools } from "@clero-local-agent/git-tools";
 import { ToolRegistry, toolCallArguments, toolCallRunContext } from "@clero-local-agent/mcp-runtime";
 import {
   errorControlResult,
+  isAgentsSyncMessage,
   isControlRequestMessage,
   isJsonObject,
   isToolCallMessage,
@@ -151,6 +152,14 @@ export class LocalRuntimeDaemon {
 
     if (isHelloAckMessage(message)) {
       this.logger.info("local runtime hello acknowledged");
+      return;
+    }
+
+    if (isAgentsSyncMessage(message)) {
+      this.logger.info("local runtime agents synchronized", {
+        connectionId: message.connection_id,
+        agentCount: message.agents.length
+      });
       return;
     }
 

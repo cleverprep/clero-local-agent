@@ -9,17 +9,18 @@
         </div>
       </div>
 
-      <div v-if="hasConnection || updateIndicatorVisible" class="topbar-actions">
+      <div class="topbar-actions">
         <button
-          v-if="updateIndicatorVisible"
-          class="update-chip"
+          class="update-check-button"
           type="button"
           :data-state="updateState"
-          :disabled="updateState === 'installing' || updateState === 'restarting'"
-          @click="showUpdates"
+          :disabled="updateBusy"
+          aria-label="Check for updates"
+          title="Check for updates"
+          @click="handleTopbarUpdateClick"
         >
-          <span></span>
-          {{ updateIndicatorLabel }}
+          <span class="update-dot"></span>
+          <span>{{ updateTopbarLabel }}</span>
         </button>
 
         <div v-if="hasConnection" class="runtime-control">
@@ -278,6 +279,42 @@
                   Reset session
                 </button>
               </div>
+
+              <section class="profile-tools wide">
+                <div class="folder-tools-header">
+                  <div>
+                    <p class="eyebrow">Profiles</p>
+                    <h4>Agent browser profiles</h4>
+                  </div>
+                  <button class="secondary compact" type="button" @click.stop="refreshStatus">Sync</button>
+                </div>
+
+                <div v-if="browserProfileAgents.length" class="agent-profile-list">
+                  <article v-for="agent in browserProfileAgents" :key="agent.agentId">
+                    <div class="agent-profile-summary">
+                      <img v-if="agent.avatarUrl" :src="agent.avatarUrl" alt="" />
+                      <span v-else>{{ agentInitial(agent) }}</span>
+                      <div>
+                        <strong>{{ agent.name }}</strong>
+                        <small>{{ agentProfileAccessLabel(agent) }}</small>
+                      </div>
+                    </div>
+                    <button
+                      class="secondary compact"
+                      type="button"
+                      :disabled="browserUnavailable || !config.capabilities.browser.remember_session"
+                      @click.stop="openAgentBrowserProfile(agent)"
+                    >
+                      Open
+                    </button>
+                  </article>
+                </div>
+
+                <div v-else class="empty-state">
+                  <strong>No browser profiles synced.</strong>
+                  <span>Turn on the runtime after agents are granted Browser access.</span>
+                </div>
+              </section>
             </div>
           </Transition>
         </article>
@@ -558,6 +595,7 @@ type DaemonStatus = {
   backend_last_seen_ms: number | null;
   last_exit_code: number | null;
   log_tail: string[];
+  agents_sync: AgentsSyncPayload | null;
 };
 
 type DependencyCheck = {
@@ -588,6 +626,40 @@ type CodingTaskActivity = {
   finishedAt: string;
   events: string[];
   changedFiles: string[];
+};
+
+type SyncedAgentProfile = {
+  agentId: string;
+  name: string;
+  icon: string;
+  avatarUrl: string;
+  browserEnabled: boolean;
+  codingEnabled: boolean;
+  gitReadEnabled: boolean;
+  gitWriteEnabled: boolean;
+  browserProfileKey: string;
+};
+
+type SyncedAgentPayload = {
+  agent_id: string | number;
+  name: string;
+  icon: string;
+  avatar_url: string | null;
+  browser_enabled: boolean;
+  coding_enabled: boolean;
+  git_read_enabled: boolean;
+  git_write_enabled: boolean;
+  browser_profile_key: string;
+};
+
+type AgentsSyncPayload = {
+  connection_id: string | null;
+  agents: SyncedAgentPayload[];
+};
+
+type BrowserProfileOpenResult = {
+  profile_key: string;
+  profile_dir: string;
 };
 
 const connectionState = ref<ConnectionState>("offline");
@@ -787,6 +859,15 @@ const codingTaskActivities = computed(() => parseCodingTaskActivities(daemonStat
 
 const latestCodingTasks = computed(() => [...codingTaskActivities.value].reverse());
 
+const syncedAgents = computed(() => {
+  if (!daemonStatus.agents_sync) return [];
+  return daemonStatus.agents_sync.agents
+    .map((agent) => syncedAgentFromRecord(agent as unknown as Record<string, unknown>))
+    .filter((agent): agent is SyncedAgentProfile => Boolean(agent));
+});
+
+const browserProfileAgents = computed(() => syncedAgents.value.filter((agent) => agent.browserEnabled));
+
 const taskRunning = computed(() => {
   if (codingTaskActivities.value.length) {
     return codingTaskActivities.value.some((task) => task.status === "requested" || task.status === "running");
@@ -853,14 +934,12 @@ const updateProgressLabel = computed(() => {
 
 const updateProgressPercent = computed(() => updateProgressLabel.value || "0%");
 
-const updateIndicatorVisible = computed(() =>
-  updateState.value === "available" || updateState.value === "installing" || updateState.value === "restarting"
-);
-
-const updateIndicatorLabel = computed(() => {
-  if (updateState.value === "installing") return "Installing update";
+const updateTopbarLabel = computed(() => {
+  if (updateState.value === "checking") return "Checking";
+  if (updateState.value === "available") return "Update";
+  if (updateState.value === "installing") return "Installing";
   if (updateState.value === "restarting") return "Restarting";
-  return updateVersion.value ? `Update ${updateVersion.value}` : "Update available";
+  return "Check";
 });
 
 const updateDetail = computed(() => {
@@ -1011,6 +1090,15 @@ function showUpdates(): void {
   developerMode.value = true;
 }
 
+function handleTopbarUpdateClick(): void {
+  if (updateState.value === "available" || updateState.value === "installing" || updateState.value === "restarting") {
+    showUpdates();
+    return;
+  }
+
+  void checkForUpdates(false);
+}
+
 function showTaskActivity(): void {
   developerMode.value = false;
   taskActivityMode.value = true;
@@ -1112,6 +1200,27 @@ async function resetBrowserSession(): Promise<void> {
   }
 }
 
+async function openAgentBrowserProfile(agent: SyncedAgentProfile): Promise<void> {
+  if (!config.capabilities.browser.remember_session) {
+    notice.value = "Turn on browser session memory before opening agent profiles.";
+    return;
+  }
+  if (browserUnavailable.value) {
+    notice.value = dependencyStatus.browser.message;
+    return;
+  }
+
+  try {
+    await invokeTauri<BrowserProfileOpenResult>("open_browser_profile", {
+      config: toRaw(config),
+      profileKey: agent.browserProfileKey
+    });
+    notice.value = `Opened ${agent.name} profile.`;
+  } catch (error) {
+    notice.value = errorMessage(error);
+  }
+}
+
 async function toggleDaemon(): Promise<void> {
   if (daemonStatus.running) {
     await stopDaemon();
@@ -1204,7 +1313,8 @@ function applyDaemonStatus(status: DaemonStatus): void {
     backend_connected: status.backend_connected ?? false,
     backend_last_seen_ms: status.backend_last_seen_ms ?? null,
     last_exit_code: status.last_exit_code ?? null,
-    log_tail: status.log_tail ?? []
+    log_tail: status.log_tail ?? [],
+    agents_sync: status.agents_sync ?? null
   });
 }
 
@@ -1366,7 +1476,8 @@ function defaultDaemonStatus(): DaemonStatus {
     backend_connected: false,
     backend_last_seen_ms: null,
     last_exit_code: null,
-    log_tail: []
+    log_tail: [],
+    agents_sync: null
   };
 }
 
@@ -1394,6 +1505,36 @@ function defaultDependencyStatus(): DependencyStatus {
       message: "Claude Code availability has not been checked."
     }
   };
+}
+
+function syncedAgentFromRecord(record: Record<string, unknown>): SyncedAgentProfile | null {
+  const agentId = scalarStringValue(record.agent_id);
+  if (!agentId) return null;
+
+  return {
+    agentId,
+    name: stringValue(record.name) ?? `Agent ${agentId}`,
+    icon: stringValue(record.icon) ?? "",
+    avatarUrl: stringValue(record.avatar_url) ?? "",
+    browserEnabled: booleanValue(record.browser_enabled),
+    codingEnabled: booleanValue(record.coding_enabled),
+    gitReadEnabled: booleanValue(record.git_read_enabled),
+    gitWriteEnabled: booleanValue(record.git_write_enabled),
+    browserProfileKey: stringValue(record.browser_profile_key) ?? `agent-${agentId}`
+  };
+}
+
+function agentInitial(agent: SyncedAgentProfile): string {
+  if (agent.icon) return agent.icon.slice(0, 2);
+  return agent.name.trim().slice(0, 1).toUpperCase() || "A";
+}
+
+function agentProfileAccessLabel(agent: SyncedAgentProfile): string {
+  const access = ["Browser"];
+  if (agent.codingEnabled) access.push("Code");
+  if (agent.gitReadEnabled) access.push("Git");
+  if (agent.gitWriteEnabled) access.push("Push");
+  return access.join(" / ");
 }
 
 function parseCodingTaskActivities(lines: string[]): CodingTaskActivity[] {
@@ -1533,6 +1674,16 @@ function recordValue(record: Record<string, unknown> | undefined, key: string): 
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function scalarStringValue(value: unknown): string | undefined {
+  if (typeof value === "string" && value.length > 0) return value;
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return undefined;
+}
+
+function booleanValue(value: unknown): boolean {
+  return value === true;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

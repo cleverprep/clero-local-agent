@@ -117,6 +117,7 @@ struct DaemonProcessStatus {
     backend_last_seen_ms: Option<u64>,
     last_exit_code: Option<i32>,
     log_tail: Vec<String>,
+    agents_sync: Option<AgentsSyncStatus>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -135,11 +136,37 @@ struct DependencyCheck {
     message: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct BrowserProfileOpenResult {
+    profile_key: String,
+    profile_dir: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct AgentsSyncStatus {
+    connection_id: Option<String>,
+    agents: Vec<SyncedAgentStatus>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SyncedAgentStatus {
+    agent_id: String,
+    name: String,
+    icon: String,
+    avatar_url: Option<String>,
+    browser_enabled: bool,
+    coding_enabled: bool,
+    git_read_enabled: bool,
+    git_write_enabled: bool,
+    browser_profile_key: String,
+}
+
 #[derive(Default)]
 struct DaemonSupervisor {
     child: Mutex<Option<Child>>,
     logs: Arc<Mutex<Vec<String>>>,
     backend_connection: Arc<Mutex<BackendConnectionState>>,
+    agents_sync: Arc<Mutex<Option<AgentsSyncStatus>>>,
     last_exit_code: Mutex<Option<i32>>,
 }
 
@@ -346,6 +373,7 @@ fn start_daemon(
     let mut command = daemon_command(&config_path)?;
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     set_backend_connection(&state.backend_connection, false, None);
+    set_agents_sync(&state.agents_sync, None);
     let mut child = command.spawn().map_err(|error| error.to_string())?;
     let pid = child.id();
 
@@ -355,6 +383,7 @@ fn start_daemon(
             stdout,
             state.logs.clone(),
             state.backend_connection.clone(),
+            state.agents_sync.clone(),
         );
     }
     if let Some(stderr) = child.stderr.take() {
@@ -363,6 +392,7 @@ fn start_daemon(
             stderr,
             state.logs.clone(),
             state.backend_connection.clone(),
+            state.agents_sync.clone(),
         );
     }
 
@@ -411,12 +441,36 @@ fn reset_browser_session(
     current_daemon_status(&state)
 }
 
+#[tauri::command]
+fn open_browser_profile(
+    mut config: RuntimeConfig,
+    profile_key: String,
+) -> Result<BrowserProfileOpenResult, String> {
+    normalize_runtime_config(&mut config);
+    if !config.capabilities.browser.remember_session {
+        return Err("Turn on browser session memory before opening agent profiles.".to_string());
+    }
+
+    let profile_key = normalize_browser_profile_key(&profile_key)?;
+    let profile_root = PathBuf::from(config.capabilities.browser.browser_profile_dir.clone());
+    let profile_dir = profile_root.join(&profile_key);
+    validate_browser_profile_reset_path(&profile_dir)?;
+    fs::create_dir_all(&profile_dir).map_err(|error| error.to_string())?;
+    launch_browser_profile(&config.capabilities.browser.browser_channel, &profile_dir)?;
+
+    Ok(BrowserProfileOpenResult {
+        profile_key,
+        profile_dir: profile_dir.to_string_lossy().to_string(),
+    })
+}
+
 fn stop_daemon_process(state: &State<'_, DaemonSupervisor>) -> Result<DaemonProcessStatus, String> {
     let mut child_guard = state.child.lock().map_err(|error| error.to_string())?;
     if let Some(mut child) = child_guard.take() {
         let _ = child.kill();
         let status = child.wait().map_err(|error| error.to_string())?;
         set_backend_connection(&state.backend_connection, false, None);
+        set_agents_sync(&state.agents_sync, None);
         *state
             .last_exit_code
             .lock()
@@ -455,6 +509,7 @@ pub fn run() {
             start_daemon,
             stop_daemon,
             reset_browser_session,
+            open_browser_profile,
             daemon_status
         ])
         .run(tauri::generate_context!())
@@ -480,6 +535,7 @@ fn current_daemon_status(
         match child.try_wait().map_err(|error| error.to_string())? {
             Some(status) => {
                 set_backend_connection(&state.backend_connection, false, None);
+                set_agents_sync(&state.agents_sync, None);
                 *state
                     .last_exit_code
                     .lock()
@@ -523,6 +579,11 @@ fn current_daemon_status(
         .lock()
         .map_err(|error| error.to_string())?
         .clone();
+    let agents_sync = state
+        .agents_sync
+        .lock()
+        .map_err(|error| error.to_string())?
+        .clone();
     Ok(DaemonProcessStatus {
         running,
         pid,
@@ -530,6 +591,7 @@ fn current_daemon_status(
         backend_last_seen_ms,
         last_exit_code,
         log_tail,
+        agents_sync,
     })
 }
 
@@ -614,6 +676,7 @@ fn collect_daemon_output<R>(
     stream: R,
     logs: Arc<Mutex<Vec<String>>>,
     backend_connection: Arc<Mutex<BackendConnectionState>>,
+    agents_sync: Arc<Mutex<Option<AgentsSyncStatus>>>,
 ) where
     R: Read + Send + 'static,
 {
@@ -621,6 +684,7 @@ fn collect_daemon_output<R>(
         let reader = BufReader::new(stream);
         for line in reader.lines().map_while(Result::ok) {
             update_backend_connection_from_log(&backend_connection, &line);
+            update_agents_sync_from_log(&agents_sync, &line);
             push_log_tail(&logs, format!("{source}: {line}"));
         }
     });
@@ -675,6 +739,82 @@ fn set_backend_connection(
             state.last_seen_ms = None;
         }
     }
+}
+
+fn set_agents_sync(
+    agents_sync: &Arc<Mutex<Option<AgentsSyncStatus>>>,
+    next_sync: Option<AgentsSyncStatus>,
+) {
+    if let Ok(mut state) = agents_sync.lock() {
+        *state = next_sync;
+    }
+}
+
+fn update_agents_sync_from_log(
+    agents_sync: &Arc<Mutex<Option<AgentsSyncStatus>>>,
+    line: &str,
+) {
+    if let Some(next_sync) = parse_agents_sync_log(line) {
+        set_agents_sync(agents_sync, Some(next_sync));
+    }
+}
+
+fn parse_agents_sync_log(line: &str) -> Option<AgentsSyncStatus> {
+    let value = serde_json::from_str::<serde_json::Value>(line).ok()?;
+    let inbound = value.get("inbound")?;
+    if inbound.get("type").and_then(serde_json::Value::as_str) != Some("agents_sync") {
+        return None;
+    }
+
+    let connection_id = json_scalar_to_string(inbound.get("connection_id"));
+    let agents = inbound
+        .get("agents")
+        .and_then(serde_json::Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(parse_synced_agent_status)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    Some(AgentsSyncStatus {
+        connection_id,
+        agents,
+    })
+}
+
+fn parse_synced_agent_status(value: &serde_json::Value) -> Option<SyncedAgentStatus> {
+    let agent_id = json_scalar_to_string(value.get("agent_id"))?;
+    Some(SyncedAgentStatus {
+        agent_id: agent_id.clone(),
+        name: json_string(value.get("name")).unwrap_or_else(|| format!("Agent {agent_id}")),
+        icon: json_string(value.get("icon")).unwrap_or_default(),
+        avatar_url: json_string(value.get("avatar_url")),
+        browser_enabled: json_bool(value.get("browser_enabled")),
+        coding_enabled: json_bool(value.get("coding_enabled")),
+        git_read_enabled: json_bool(value.get("git_read_enabled")),
+        git_write_enabled: json_bool(value.get("git_write_enabled")),
+        browser_profile_key: json_string(value.get("browser_profile_key"))
+            .unwrap_or_else(|| format!("agent-{agent_id}")),
+    })
+}
+
+fn json_string(value: Option<&serde_json::Value>) -> Option<String> {
+    value.and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn json_scalar_to_string(value: Option<&serde_json::Value>) -> Option<String> {
+    match value {
+        Some(serde_json::Value::String(text)) if !text.is_empty() => Some(text.clone()),
+        Some(serde_json::Value::Number(number)) => Some(number.to_string()),
+        _ => None,
+    }
+}
+
+fn json_bool(value: Option<&serde_json::Value>) -> bool {
+    value.and_then(serde_json::Value::as_bool).unwrap_or(false)
 }
 
 fn validate_enabled_dependencies(config: &RuntimeConfig) -> Result<(), String> {
@@ -853,6 +993,62 @@ fn browser_candidates_unix(channel: &str) -> Vec<PathBuf> {
         _ => &["google-chrome", "google-chrome-stable", "chrome"],
     };
     names.iter().filter_map(|name| find_on_path(name)).collect()
+}
+
+fn normalize_browser_profile_key(value: &str) -> Result<String, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err("Browser profile key is required.".to_string());
+    }
+    if trimmed.len() > 96 {
+        return Err("Browser profile key is too long.".to_string());
+    }
+    if !trimmed
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || character == '-' || character == '_')
+    {
+        return Err("Browser profile key contains unsupported characters.".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
+fn launch_browser_profile(channel: &str, profile_dir: &Path) -> Result<(), String> {
+    let label = match channel {
+        "chrome-beta" => "Chrome Beta",
+        "msedge" => "Microsoft Edge",
+        "chromium" => "Chromium",
+        _ => "Google Chrome",
+    };
+    let browser = browser_candidates(channel)
+        .into_iter()
+        .find(|candidate| candidate.exists())
+        .ok_or_else(|| format!("Install {label} before opening agent profiles."))?;
+    let user_data_dir = format!("--user-data-dir={}", profile_dir.display());
+
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg("-n")
+            .arg(&browser)
+            .arg("--args")
+            .arg(user_data_dir)
+            .arg("--no-first-run")
+            .arg("about:blank")
+            .spawn()
+            .map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        Command::new(browser)
+            .arg(user_data_dir)
+            .arg("--no-first-run")
+            .arg("about:blank")
+            .spawn()
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
 }
 
 fn push_command_candidate(candidates: &mut Vec<PathBuf>, command: &str) {

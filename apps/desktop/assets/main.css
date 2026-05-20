@@ -100,21 +100,22 @@ button.power-button[data-running="true"]:hover {
   background: #b8433f;
 }
 
-button.update-chip {
-  gap: 8px;
-  min-height: 38px;
+button.update-check-button {
+  gap: 7px;
+  min-height: 36px;
   border-color: #cfe2d9;
   background: #f2fbf7;
   color: #12382a;
-  padding: 0 12px;
+  padding: 0 11px;
+  font-size: 0.8rem;
   white-space: nowrap;
 }
 
-button.update-chip:hover {
+button.update-check-button:hover {
   border-color: #2bb886;
 }
 
-button.update-chip span {
+button.update-check-button .update-dot {
   width: 8px;
   height: 8px;
   flex: 0 0 auto;
@@ -123,8 +124,9 @@ button.update-chip span {
   box-shadow: 0 0 0 5px rgba(43, 184, 134, 0.13);
 }
 
-button.update-chip[data-state="installing"] span,
-button.update-chip[data-state="restarting"] span {
+button.update-check-button[data-state="checking"] .update-dot,
+button.update-check-button[data-state="installing"] .update-dot,
+button.update-check-button[data-state="restarting"] .update-dot {
   background: #d18b28;
   box-shadow: 0 0 0 5px rgba(209, 139, 40, 0.13);
 }
@@ -751,6 +753,13 @@ button.capability-toggle:focus-visible {
   padding-top: 14px;
 }
 
+.profile-tools {
+  display: grid;
+  gap: 12px;
+  border-top: 1px solid #e6ebef;
+  padding-top: 14px;
+}
+
 .folder-tools-header {
   display: flex;
   align-items: center;
@@ -779,6 +788,73 @@ button.capability-toggle:focus-visible {
   margin-bottom: 3px;
   color: #14181f;
   font-size: 0.88rem;
+}
+
+.agent-profile-list {
+  display: grid;
+  gap: 8px;
+}
+
+.agent-profile-list article {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid #dce2e8;
+  border-radius: 14px;
+  background: #fbfcfd;
+  padding: 10px;
+}
+
+.agent-profile-summary {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.agent-profile-summary > img,
+.agent-profile-summary > span {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid #dce2e8;
+  border-radius: 999px;
+  background: #14181f;
+  color: #ffffff;
+  font-size: 0.78rem;
+  font-weight: 850;
+}
+
+.agent-profile-summary > img {
+  object-fit: cover;
+}
+
+.agent-profile-summary div {
+  min-width: 0;
+}
+
+.agent-profile-summary strong,
+.agent-profile-summary small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-profile-summary strong {
+  color: #14181f;
+  font-size: 0.88rem;
+}
+
+.agent-profile-summary small {
+  margin-top: 2px;
+  color: #657382;
+  font-size: 0.75rem;
+  font-weight: 700;
 }
 
 .empty-state {
@@ -1098,7 +1174,8 @@ pre.task-text-block.response {
   .pairing-form,
   .manual-folder,
   .setting-action-row,
-  .folder-list article {
+  .folder-list article,
+  .agent-profile-list article {
     grid-template-columns: 1fr;
   }
 
