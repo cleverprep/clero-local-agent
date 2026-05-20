@@ -7,9 +7,9 @@ The desktop app is the setup and control plane:
 - Pair the machine with Clero through the backend `/claim/` endpoint.
 - Start and stop the local daemon process.
 - Store local runtime settings.
-- Enable or disable browser, workspace, Codex, and git capabilities.
+- Enable or disable browser, workspace, coding-agent, and git capabilities.
 - Choose allowed project folders.
-- Set Codex sandbox policy before tasks can run.
+- Set coding-agent sandbox policy before tasks can run.
 
 The daemon remains the execution engine. The desktop app should only start/stop it, write config, and collect local approvals.
 

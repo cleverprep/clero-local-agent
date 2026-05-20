@@ -78,6 +78,8 @@ struct CodexConfig {
     #[serde(default)]
     reasoning_effort: String,
     #[serde(default)]
+    antigravity_command: String,
+    #[serde(default)]
     claude_command: String,
     #[serde(default)]
     claude_model: String,
@@ -125,6 +127,7 @@ struct DependencyStatus {
     browser: DependencyCheck,
     codex: DependencyCheck,
     claude: DependencyCheck,
+    antigravity: DependencyCheck,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -215,6 +218,7 @@ impl Default for CodexConfig {
             command: String::new(),
             model: String::new(),
             reasoning_effort: String::new(),
+            antigravity_command: String::new(),
             claude_command: String::new(),
             claude_model: String::new(),
             claude_model_custom: String::new(),
@@ -829,7 +833,14 @@ fn validate_enabled_dependencies(config: &RuntimeConfig) -> Result<(), String> {
         return Err(status.claude.message);
     }
     if config.capabilities.codex.enabled
+        && config.capabilities.codex.provider == "antigravity"
+        && !status.antigravity.available
+    {
+        return Err(status.antigravity.message);
+    }
+    if config.capabilities.codex.enabled
         && config.capabilities.codex.provider != "claude-code"
+        && config.capabilities.codex.provider != "antigravity"
         && !status.codex.available
     {
         return Err(status.codex.message);
@@ -842,6 +853,7 @@ fn dependency_status(config: &RuntimeConfig) -> DependencyStatus {
         browser: check_browser_dependency(&config.capabilities.browser.browser_channel),
         codex: check_codex_dependency(&config.capabilities.codex.command),
         claude: check_claude_dependency(&config.capabilities.codex.claude_command),
+        antigravity: check_antigravity_dependency(&config.capabilities.codex.antigravity_command),
     }
 }
 
@@ -946,6 +958,45 @@ fn check_claude_dependency(configured_command: &str) -> DependencyCheck {
         path: None,
         version: None,
         message: "Install Claude Code before enabling Claude Code.".to_string(),
+    }
+}
+
+fn check_antigravity_dependency(configured_command: &str) -> DependencyCheck {
+    let mut candidates = Vec::new();
+    push_command_candidate(&mut candidates, configured_command);
+    push_command_candidate(
+        &mut candidates,
+        &env::var("CLERO_LOCAL_AGENT_ANTIGRAVITY_BIN").unwrap_or_default(),
+    );
+    push_command_candidate(&mut candidates, "agy");
+    push_command_candidate(&mut candidates, "antigravity");
+
+    if let Some(home) = dirs::home_dir() {
+        push_path_candidate(&mut candidates, home.join(".gemini/antigravity-cli/bin/agy"));
+        push_path_candidate(&mut candidates, home.join(".local/bin/agy"));
+        push_path_candidate(&mut candidates, home.join(".npm-global/bin/agy"));
+    }
+    push_path_candidate(&mut candidates, PathBuf::from("/opt/homebrew/bin/agy"));
+    push_path_candidate(&mut candidates, PathBuf::from("/usr/local/bin/agy"));
+
+    for candidate in candidates {
+        if let Some((path, version)) = command_version(&candidate, "--version") {
+            return DependencyCheck {
+                available: true,
+                label: "Antigravity CLI".to_string(),
+                path: Some(path),
+                version,
+                message: "Antigravity CLI is installed.".to_string(),
+            };
+        }
+    }
+
+    DependencyCheck {
+        available: false,
+        label: "Antigravity CLI".to_string(),
+        path: None,
+        version: None,
+        message: "Install Antigravity CLI before enabling Antigravity.".to_string(),
     }
 }
 
@@ -1177,7 +1228,7 @@ fn normalize_runtime_config(config: &mut RuntimeConfig) -> bool {
         changed = true;
     }
 
-    if config.capabilities.codex.provider == "codex" {
+    if config.capabilities.codex.provider == "codex" || config.capabilities.codex.provider == "antigravity" {
         if config.capabilities.codex.allow_workspace_write
             && config.capabilities.codex.default_sandbox == "read-only"
         {

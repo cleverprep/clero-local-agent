@@ -1140,12 +1140,18 @@ pre.task-text-block.response {
 }
 
 @media (max-width: 860px) {
-  .topbar,
   .runtime-summary,
   .screen-heading {
     align-items: stretch;
     grid-template-columns: 1fr;
     flex-direction: column;
+  }
+
+  .topbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+    gap: 12px;
   }
 
   .runtime-control,
@@ -1180,13 +1186,19 @@ pre.task-text-block.response {
   }
 
   .runtime-control {
-    display: grid;
-    grid-template-columns: 1fr;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
   }
 
   .topbar-actions {
-    display: grid;
-    grid-template-columns: 1fr;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .topbar-actions .runtime-control {
+    flex: 0 0 100%;
   }
 
   .runtime-actions {

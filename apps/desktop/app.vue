@@ -352,6 +352,7 @@
               <select v-model="config.capabilities.codex.provider">
                 <option value="codex">Codex</option>
                 <option value="claude-code">Claude Code</option>
+                <option value="antigravity">Antigravity</option>
               </select>
             </label>
 
@@ -392,7 +393,7 @@
               </label>
             </template>
 
-            <template v-else>
+            <template v-else-if="config.capabilities.codex.provider === 'claude-code'">
               <label class="wide">
                 Claude command
                 <input v-model="config.capabilities.codex.claude_command" spellcheck="false" placeholder="Auto-detected" />
@@ -439,6 +440,21 @@
                   <option value="acceptEdits">Accept edits</option>
                   <option value="auto">Auto</option>
                   <option value="dontAsk">Don't ask</option>
+                </select>
+              </label>
+            </template>
+
+            <template v-else>
+              <label class="wide">
+                Antigravity command
+                <input v-model="config.capabilities.codex.antigravity_command" spellcheck="false" placeholder="Auto-detected" />
+              </label>
+              <label>
+                Sandbox
+                <select v-model="codexSandbox">
+                  <option value="read-only">Read only</option>
+                  <option value="workspace-write">Workspace write</option>
+                  <option value="danger-full-access">Danger full access</option>
                 </select>
               </label>
             </template>
@@ -568,10 +584,11 @@ type RuntimeConfig = {
     };
     codex: {
       enabled: boolean;
-      provider: "codex" | "claude-code";
+      provider: "codex" | "claude-code" | "antigravity";
       command: string;
       model: string;
       reasoning_effort: "" | "low" | "medium" | "high" | "xhigh";
+      antigravity_command: string;
       claude_command: string;
       claude_model: string;
       claude_model_custom: string;
@@ -610,6 +627,7 @@ type DependencyStatus = {
   browser: DependencyCheck;
   codex: DependencyCheck;
   claude: DependencyCheck;
+  antigravity: DependencyCheck;
 };
 
 type CodingTaskActivity = {
@@ -721,9 +739,11 @@ const connectionHost = computed(() => {
 
 const browserUnavailable = computed(() => dependenciesChecked.value && !dependencyStatus.browser.available);
 
-const selectedCodingDependency = computed(() =>
-  config.capabilities.codex.provider === "claude-code" ? dependencyStatus.claude : dependencyStatus.codex
-);
+const selectedCodingDependency = computed(() => {
+  if (config.capabilities.codex.provider === "claude-code") return dependencyStatus.claude;
+  if (config.capabilities.codex.provider === "antigravity") return dependencyStatus.antigravity;
+  return dependencyStatus.codex;
+});
 
 const codexUnavailable = computed(() => dependenciesChecked.value && !selectedCodingDependency.value.available);
 
@@ -832,12 +852,16 @@ const browserStatusText = computed(() => {
 const codexStatusText = computed(() => {
   if (codexUnavailable.value) return selectedCodingDependency.value.message;
   if (selectedCodingDependency.value.version) return selectedCodingDependency.value.version;
-  return config.capabilities.codex.provider === "claude-code" ? "Claude Code tasks in allowed folders" : "Codex tasks in allowed folders";
+  if (config.capabilities.codex.provider === "claude-code") return "Claude Code tasks in allowed folders";
+  if (config.capabilities.codex.provider === "antigravity") return "Antigravity tasks in allowed folders";
+  return "Codex tasks in allowed folders";
 });
 
-const codingProviderLabel = computed(() =>
-  config.capabilities.codex.provider === "claude-code" ? "Claude Code" : "Codex"
-);
+const codingProviderLabel = computed(() => {
+  if (config.capabilities.codex.provider === "claude-code") return "Claude Code";
+  if (config.capabilities.codex.provider === "antigravity") return "Antigravity";
+  return "Codex";
+});
 
 const enabledToolGroups = computed(() => {
   const groups: string[] = [];
@@ -1268,12 +1292,16 @@ async function refreshDependencyStatus(): Promise<void> {
     Object.assign(dependencyStatus.browser, status.browser);
     Object.assign(dependencyStatus.codex, status.codex);
     Object.assign(dependencyStatus.claude, status.claude);
+    Object.assign(dependencyStatus.antigravity, status.antigravity);
     dependenciesChecked.value = true;
     if (status.codex.available && status.codex.path && !config.capabilities.codex.command) {
       config.capabilities.codex.command = status.codex.path;
     }
     if (status.claude.available && status.claude.path && !config.capabilities.codex.claude_command) {
       config.capabilities.codex.claude_command = status.claude.path;
+    }
+    if (status.antigravity.available && status.antigravity.path && !config.capabilities.codex.antigravity_command) {
+      config.capabilities.codex.antigravity_command = status.antigravity.path;
     }
   } catch {
     dependenciesChecked.value = false;
@@ -1360,6 +1388,10 @@ function normalizeLoadedConfig(nextConfig: RuntimeConfig): RuntimeConfig {
   const normalized = nextConfig;
   normalized.capabilities ??= defaultConfig().capabilities;
   normalized.capabilities.browser ??= defaultConfig().capabilities.browser;
+  normalized.capabilities.codex = {
+    ...defaultConfig().capabilities.codex,
+    ...normalized.capabilities.codex
+  };
   const backendWasLocal = isLocalEndpoint(normalized.backend_url);
   normalized.backend_url = PRODUCTION_BACKEND_URL;
   normalized.capabilities.browser.provider = "managed";
@@ -1388,7 +1420,7 @@ function forceProductionConnectionConfig(): void {
 }
 
 function reconcileCodingPermissionSettings(): void {
-  if (config.capabilities.codex.provider !== "codex") {
+  if (config.capabilities.codex.provider === "claude-code") {
     return;
   }
 
@@ -1452,6 +1484,7 @@ function defaultConfig(): RuntimeConfig {
         command: "",
         model: "",
         reasoning_effort: "",
+        antigravity_command: "",
         claude_command: "",
         claude_model: "",
         claude_model_custom: "",
@@ -1503,6 +1536,13 @@ function defaultDependencyStatus(): DependencyStatus {
       path: null,
       version: null,
       message: "Claude Code availability has not been checked."
+    },
+    antigravity: {
+      available: true,
+      label: "Antigravity CLI",
+      path: null,
+      version: null,
+      message: "Antigravity availability has not been checked."
     }
   };
 }

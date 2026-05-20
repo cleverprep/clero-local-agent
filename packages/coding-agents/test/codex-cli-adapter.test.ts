@@ -8,7 +8,7 @@ import { StaticApprovalProvider } from "@clero-local-agent/approvals";
 import { ToolExecutionError } from "@clero-local-agent/mcp-runtime";
 import type { JsonObject, JsonValue } from "@clero-local-agent/protocol";
 import { WorkspacePolicy } from "@clero-local-agent/workspace";
-import { ClaudeCodeAdapter, CodexCliAdapter, type CodingAgentAdapter } from "../src/index.ts";
+import { AntigravityCliAdapter, ClaudeCodeAdapter, CodexCliAdapter, type CodingAgentAdapter } from "../src/index.ts";
 
 test("runs codex exec as an async JSONL task", async (t) => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "clero-codex-test-"));
@@ -199,6 +199,41 @@ test("runs claude code print mode as an async JSONL task", async (t) => {
   assert.equal(args.at(-1), "<prompt>");
 });
 
+test("runs antigravity cli as an async text task", async (t) => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "clero-antigravity-test-"));
+  t.after(() => rm(workspace, { recursive: true, force: true }));
+  const fakeAntigravity = await createFakeAntigravity(workspace, 0);
+  const adapter = new AntigravityCliAdapter({
+    workspacePolicy: new WorkspacePolicy({ allowedDirectories: [workspace] }),
+    approvalProvider: new StaticApprovalProvider(false, "not approved"),
+    command: fakeAntigravity,
+    allowWorkspaceWrite: true
+  });
+
+  const start = await adapter.startTask(
+    { prompt: "inspect repo", cwd: workspace, sandbox: "workspace-write" },
+    { requestId: "req_1", leaseId: "lease_1", agentId: "agent_1", taskId: "task_1" }
+  );
+
+  assert.equal(start.provider, "antigravity");
+  assert.equal(start.sandbox, "workspace-write");
+  assert.equal(start.approved, true);
+
+  const status = await waitForTerminalStatus(adapter, stringField(start, "task_id"));
+  assert.equal(status.status, "completed");
+  assert.equal(status.final_message, "done: inspect repo");
+
+  const output = await adapter.getOutput(stringField(start, "task_id"));
+  assert.match(stringField(output, "stdout"), /done: inspect repo/);
+
+  const events = eventArray(output.events);
+  const processStarted = events.find((event) => event.type === "process.started");
+  assert.ok(processStarted);
+  const processData = objectField(processStarted, "data");
+  const args = stringArrayField(processData, "args");
+  assert.deepEqual(args, ["--sandbox"]);
+});
+
 async function createFakeCodex(workspace: string, exitCode: number, errorMessage?: string): Promise<string> {
   const fakeCodex = path.join(workspace, `fake-codex-${exitCode}.js`);
   await writeFile(
@@ -220,6 +255,26 @@ process.stdin.on("end", () => {
   );
   await chmod(fakeCodex, 0o755);
   return fakeCodex;
+}
+
+async function createFakeAntigravity(workspace: string, exitCode: number): Promise<string> {
+  const fakeAntigravity = path.join(workspace, `fake-antigravity-${exitCode}.js`);
+  await writeFile(
+    fakeAntigravity,
+    `#!/usr/bin/env node
+let prompt = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {
+  prompt += chunk;
+});
+process.stdin.on("end", () => {
+  console.log("done: " + prompt.trim());
+  process.exit(${exitCode});
+});
+`
+  );
+  await chmod(fakeAntigravity, 0o755);
+  return fakeAntigravity;
 }
 
 async function createFakeClaude(workspace: string, exitCode: number): Promise<string> {

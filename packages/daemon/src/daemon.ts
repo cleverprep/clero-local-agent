@@ -1,6 +1,7 @@
 import { createDefaultApprovalProvider } from "@clero-local-agent/approvals";
 import { AgentScopedManagedBrowserAdapter, BrowserTools, McpChromeBrowserAdapter, type BrowserAdapter } from "@clero-local-agent/browser";
 import {
+  AntigravityCliAdapter,
   ClaudeCodeAdapter,
   CodexCliAdapter,
   CodingAgentTools,
@@ -64,6 +65,7 @@ export type LocalRuntimeCapabilityOptions = {
     command?: string;
     model?: string;
     reasoningEffort?: CodexReasoningEffort;
+    antigravityCommand?: string;
     claudeCommand?: string;
     claudeModel?: string;
     claudeReasoningEffort?: ClaudeCodeReasoningEffort;
@@ -505,6 +507,18 @@ export class LocalRuntimeDaemon {
         defaultReasoningEffort: codingConfig.claudeReasoningEffort,
         permissionMode: codingConfig.claudePermissionMode,
         allowBypassPermissions: codingConfig.allowDangerFullAccess,
+        ...callbacks
+      });
+    }
+
+    if (codingConfig?.provider === "antigravity") {
+      return new AntigravityCliAdapter({
+        workspacePolicy,
+        approvalProvider,
+        command: codingConfig.antigravityCommand || process.env.CLERO_LOCAL_AGENT_ANTIGRAVITY_BIN,
+        defaultSandbox: codingConfig.defaultSandbox,
+        allowWorkspaceWrite: codingConfig.allowWorkspaceWrite,
+        allowDangerFullAccess: codingConfig.allowDangerFullAccess,
         ...callbacks
       });
     }

@@ -437,7 +437,7 @@ export function inputSchemaForTool(tool: string): JsonSchema {
           cwd: stringSchema("Allowed working directory for the task."),
           sandbox: stringEnumSchema(
             ["read-only", "workspace-write", "danger-full-access"],
-            "Codex sandbox policy. Defaults to read-only. workspace-write and danger-full-access require approval."
+            "Coding-agent sandbox policy. Defaults to read-only. workspace-write and danger-full-access require approval."
           ),
           model: stringSchema("Optional coding-agent model override."),
           reasoning_effort: stringEnumSchema(
@@ -524,7 +524,7 @@ export function defaultCapabilities(): Capability[] {
     capability("workspace.list_roots", "List local filesystem roots the agent is allowed to inspect. Use this before choosing a project path."),
     capability("workspace.list_projects", "Discover local projects under allowed roots without using the browser for file browsing."),
     capability("workspace.describe_project", "Inspect a discovered local project path and summarize markers, stack, package metadata, and git state."),
-    capability("coding_agent.start_task", "Start a local Codex or Claude Code task in an allowed cwd. Returns immediately with task_id; poll coding_agent.get_status/get_output."),
+    capability("coding_agent.start_task", "Start a local Codex, Claude Code, or Antigravity task in an allowed cwd. Returns immediately with task_id; poll coding_agent.get_status/get_output."),
     capability("coding_agent.get_status", "Get local coding-agent task status by task_id."),
     capability("coding_agent.get_output", "Read local coding-agent task output and streamed events by task_id."),
     capability("coding_agent.cancel", "Cancel a running local coding-agent task."),

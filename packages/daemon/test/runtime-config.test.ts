@@ -40,6 +40,7 @@ test("maps runtime config to daemon capability options", () => {
     command: "",
     model: "",
     reasoningEffort: undefined,
+    antigravityCommand: "",
     claudeCommand: "",
     claudeModel: "",
     claudeReasoningEffort: undefined,

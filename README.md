@@ -28,7 +28,7 @@ Because Clero Local Agent can control local browser, coding, workspace, and git 
   - automatic lease expiry when heartbeats stop.
 - MCP-style tool registry with lease enforcement for shared local tools.
 - Managed browser adapter that launches agent-scoped browser profiles without a Chrome extension.
-- Codex CLI process adapter.
+- Codex, Claude Code, and Antigravity CLI process adapters.
 - Git status/diff/commit/push tools.
 - Approval provider abstraction, with terminal approval for risky git writes.
 - Focused tests for lease behavior and tool lease enforcement.
@@ -44,7 +44,7 @@ packages/
   protocol/            # shared message schemas/types
   mcp-runtime/         # tool registry and JSON tool execution
   browser/             # managed Playwright browser plus optional MCP provider adapters
-  coding-agents/       # Codex and Claude Code process adapters
+  coding-agents/       # Codex, Claude Code, and Antigravity process adapters
   git-tools/           # git status/diff/commit/push wrappers
   workspace/           # allowed directories and file policies
   approvals/           # approval prompts and policies
@@ -345,7 +345,7 @@ Workspace tools, passive:
 - `workspace.list_projects`
 - `workspace.describe_project`
 
-These let Clero discover which local projects the daemon is allowed to expose. `workspace.list_roots` returns the directories configured with `--allow-dir`. `workspace.list_projects` scans those roots for common project markers like `.git`, `package.json`, `pyproject.toml`, `manage.py`, `Cargo.toml`, and `go.mod`. `workspace.describe_project` returns stack hints, package metadata, and git status for an allowed project path. Codex tasks should use one of these returned paths as `coding_agent.start_task.cwd`.
+These let Clero discover which local projects the daemon is allowed to expose. `workspace.list_roots` returns the directories configured with `--allow-dir`. `workspace.list_projects` scans those roots for common project markers like `.git`, `package.json`, `pyproject.toml`, `manage.py`, `Cargo.toml`, and `go.mod`. `workspace.describe_project` returns stack hints, package metadata, and git status for an allowed project path. Coding-agent tasks should use one of these returned paths as `coding_agent.start_task.cwd`.
 
 Coding-agent tools:
 
@@ -354,18 +354,18 @@ Coding-agent tools:
 - `coding_agent.get_output` passive
 - `coding_agent.cancel` passive
 
-`coding_agent.start_task` runs `codex exec --json` or Claude Code as a background job and returns a local `task_id` immediately. By default it uses the `read-only` Codex sandbox. If `sandbox` is `workspace-write` or `danger-full-access`, local approval is required before the Codex process starts. Runtime approval prompts from Codex are not used in this mode; if sandbox or permission policy blocks progress, the task is marked `blocked` and the details are returned through `coding_agent.get_status` / `coding_agent.get_output`. While the child coding process is running, the daemon keeps that workspace lease alive.
+`coding_agent.start_task` runs Codex, Claude Code, or Antigravity as a background job and returns a local `task_id` immediately. By default it uses the `read-only` sandbox setting. If `sandbox` is `workspace-write` or `danger-full-access`, local approval is required before the coding process starts. Runtime approval prompts from the coding CLI are not used in this mode; if sandbox or permission policy blocks progress, the task is marked `blocked` and the details are returned through `coding_agent.get_status` / `coding_agent.get_output`. While the child coding process is running, the daemon keeps that workspace lease alive.
 
 Supported `coding_agent.start_task` arguments:
 
 - `prompt` required.
 - `cwd` allowed workspace directory.
 - `sandbox` one of `read-only`, `workspace-write`, or `danger-full-access`.
-- `model` optional Codex model override.
+- `model` optional Codex or Claude Code model override.
 - `ephemeral` to avoid persisting Codex session rollout files.
 - `skip_git_repo_check` to allow one-off non-git directories.
 
-`coding_agent.get_output` returns captured stdout/stderr, the final agent message, and parsed Codex JSONL events. Use `since_event_index` and `max_events` for polling long-running tasks.
+`coding_agent.get_output` returns captured stdout/stderr, the final agent message, and parsed coding-agent events. Use `since_event_index` and `max_events` for polling long-running tasks.
 
 Git tools:
 

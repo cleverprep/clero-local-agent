@@ -75,7 +75,7 @@ Browser tools should avoid exposing more data than requested. Snapshots, screens
 
 ## Coding Agents
 
-Codex and Claude Code adapters execute local CLI processes. Sandbox and approval settings must be visible to the user before enabling the capability.
+Codex, Claude Code, and Antigravity adapters execute local CLI processes. Sandbox and approval settings must be visible to the user before enabling the capability.
 
 Default posture:
 

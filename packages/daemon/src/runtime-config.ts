@@ -36,6 +36,7 @@ export type LocalRuntimeConfig = {
       command?: string;
       model?: string;
       reasoning_effort?: CodexReasoningEffort;
+      antigravity_command?: string;
       claude_command?: string;
       claude_model?: string;
       claude_model_custom?: string;
@@ -75,6 +76,7 @@ export function defaultRuntimeConfig(): LocalRuntimeConfig {
         command: "",
         model: "",
         reasoning_effort: undefined,
+        antigravity_command: "",
         claude_command: "",
         claude_model: "",
         claude_model_custom: "",
@@ -128,6 +130,7 @@ export function capabilityOptionsFromConfig(config: LocalRuntimeConfig): LocalRu
       command: config.capabilities?.codex?.command,
       model: config.capabilities?.codex?.model,
       reasoningEffort: config.capabilities?.codex?.reasoning_effort,
+      antigravityCommand: config.capabilities?.codex?.antigravity_command,
       claudeCommand: config.capabilities?.codex?.claude_command,
       claudeModel: claudeModelFromConfig(config),
       claudeReasoningEffort: config.capabilities?.codex?.claude_reasoning_effort,
