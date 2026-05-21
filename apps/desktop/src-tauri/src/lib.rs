@@ -1075,6 +1075,11 @@ fn launch_browser_profile(channel: &str, profile_dir: &Path) -> Result<(), Strin
         .find(|candidate| candidate.exists())
         .ok_or_else(|| format!("Install {label} before opening agent profiles."))?;
     let user_data_dir = format!("--user-data-dir={}", profile_dir.display());
+    let remote_debugging_address = "--remote-debugging-address=127.0.0.1";
+    let remote_debugging_port = format!(
+        "--remote-debugging-port={}",
+        browser_profile_debug_port(profile_dir)
+    );
 
     #[cfg(target_os = "macos")]
     {
@@ -1083,6 +1088,8 @@ fn launch_browser_profile(channel: &str, profile_dir: &Path) -> Result<(), Strin
             .arg(&browser)
             .arg("--args")
             .arg(user_data_dir)
+            .arg(remote_debugging_address)
+            .arg(remote_debugging_port)
             .arg("--no-first-run")
             .arg("about:blank")
             .spawn()
@@ -1094,12 +1101,23 @@ fn launch_browser_profile(channel: &str, profile_dir: &Path) -> Result<(), Strin
     {
         Command::new(browser)
             .arg(user_data_dir)
+            .arg(remote_debugging_address)
+            .arg(remote_debugging_port)
             .arg("--no-first-run")
             .arg("about:blank")
             .spawn()
             .map_err(|error| error.to_string())?;
         Ok(())
     }
+}
+
+fn browser_profile_debug_port(profile_dir: &Path) -> u16 {
+    let mut hash: u32 = 2_166_136_261;
+    for byte in profile_dir.to_string_lossy().as_bytes() {
+        hash ^= u32::from(*byte);
+        hash = hash.wrapping_mul(16_777_619);
+    }
+    40_000 + (hash % 20_000) as u16
 }
 
 fn push_command_candidate(candidates: &mut Vec<PathBuf>, command: &str) {

@@ -218,6 +218,7 @@ export class ManagedBrowserAdapter implements BrowserAdapter {
   private nextRefId = 1;
   private readonly pagesById = new Map<string, ManagedPage>();
   private readonly pageIds = new WeakMap<object, string>();
+  private cdpBrowser: any | null = null;
   private readonly refs = new Map<string, BrowserRefTarget>();
   private readonly consoleLogs = new Map<string, BrowserLogEvent[]>();
   private readonly networkEvents = new Map<string, BrowserNetworkEvent[]>();
@@ -243,6 +244,10 @@ export class ManagedBrowserAdapter implements BrowserAdapter {
   async dispose(): Promise<void> {
     const context = this.context ?? (await this.contextPromise?.catch(() => null));
     await context?.close().catch(() => null);
+    if (typeof this.cdpBrowser?.close === "function") {
+      await this.cdpBrowser.close().catch(() => null);
+    }
+    this.cdpBrowser = null;
     this.context = null;
     this.contextPromise = null;
     this.activePage = null;
@@ -718,11 +723,67 @@ export class ManagedBrowserAdapter implements BrowserAdapter {
       throw new Error("Playwright is not installed. Run `pnpm install` so the managed browser dependency is available.");
     }
 
-    const context = await this.playwright.chromium.launchPersistentContext(this.userDataDir, {
-      channel: this.browserChannel,
-      headless: this.headless,
-      viewport: null
-    });
+    const existingContext = await this.connectToOpenProfileContext();
+    if (existingContext) {
+      return this.setContext(existingContext);
+    }
+
+    let context: ManagedContext;
+    try {
+      context = await this.playwright.chromium.launchPersistentContext(this.userDataDir, {
+        channel: this.browserChannel,
+        headless: this.headless,
+        viewport: null
+      });
+    } catch (error: unknown) {
+      if (isBrowserProfileInUseError(error)) {
+        throw new ToolExecutionError(
+          "busy",
+          "This browser profile is already open in Chrome. Close that profile window, or reopen it from the latest Clero Local Agent so the daemon can attach to it.",
+          { profile_dir: this.userDataDir }
+        );
+      }
+      throw error;
+    }
+
+    return this.setContext(context);
+  }
+
+  private async connectToOpenProfileContext(): Promise<ManagedContext | null> {
+    const endpoint = await this.existingProfileDebugEndpoint();
+    if (!endpoint) {
+      return null;
+    }
+
+    const browser = await this.playwright.chromium.connectOverCDP(endpoint);
+    const context = browser.contexts()[0];
+    if (!context) {
+      await browser.close().catch(() => null);
+      return null;
+    }
+    this.cdpBrowser = browser;
+    return context;
+  }
+
+  private async existingProfileDebugEndpoint(): Promise<string | null> {
+    if (this.removeUserDataDirOnDispose) {
+      return null;
+    }
+
+    const endpoint = `http://127.0.0.1:${browserProfileDebugPort(this.userDataDir)}`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 350);
+    try {
+      const response = await fetch(`${endpoint}/json/version`, { signal: controller.signal });
+      return response.ok ? endpoint : null;
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  private setContext(context: ManagedContext): ManagedContext {
     context.on("page", (page: ManagedPage) => this.registerPage(page));
     for (const page of context.pages()) {
       this.registerPage(page);
@@ -1550,6 +1611,20 @@ function coordinatesArg(args: JsonObject): JsonObject | undefined {
   }
 
   return { x, y };
+}
+
+function browserProfileDebugPort(profileDir: string): number {
+  let hash = 2_166_136_261;
+  for (const byte of Buffer.from(profileDir, "utf8")) {
+    hash ^= byte;
+    hash = Math.imul(hash, 16_777_619) >>> 0;
+  }
+  return 40_000 + (hash % 20_000);
+}
+
+function isBrowserProfileInUseError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("Opening in existing browser session") || message.includes("SingletonLock");
 }
 
 function compactJsonObject(values: Record<string, JsonValue | undefined>): JsonObject {
