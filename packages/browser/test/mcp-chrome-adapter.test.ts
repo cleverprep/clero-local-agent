@@ -152,6 +152,42 @@ test("agent-scoped managed browser keeps separate persistent profile directories
   assert.equal(again.profile_dir, path.join("/tmp/clero-browser-root", "agent-15"));
 });
 
+test("agent-scoped managed browser restarts a stale closed session once", async () => {
+  const createdProfileDirs: string[] = [];
+  const disposed: string[] = [];
+  let firstCall = true;
+  const adapter = new AgentScopedManagedBrowserAdapter({
+    userDataDir: "/tmp/clero-browser-root",
+    sessionFactory: (options) => {
+      const profileDir = options.userDataDir ?? "";
+      createdProfileDirs.push(profileDir);
+      return {
+        ...fakeBrowserAdapter({ profile_dir: profileDir }),
+        async listTabs() {
+          if (firstCall) {
+            firstCall = false;
+            throw new Error("browser is closed");
+          }
+          return { profile_dir: profileDir };
+        },
+        async dispose() {
+          disposed.push(profileDir);
+        }
+      };
+    }
+  });
+
+  const result = await adapter.listTabs({}, { requestId: "req_1", agentId: "15", taskId: "task_1" });
+
+  assert.deepEqual(createdProfileDirs, [
+    path.join("/tmp/clero-browser-root", "agent-15"),
+    path.join("/tmp/clero-browser-root", "agent-15")
+  ]);
+  assert.deepEqual(disposed, [path.join("/tmp/clero-browser-root", "agent-15")]);
+  assert.equal(result.profile_dir, path.join("/tmp/clero-browser-root", "agent-15"));
+  assert.equal(result.browser_session_id, "agent-15");
+});
+
 function mcpTextResult(value: JsonValue): JsonObject {
   return {
     content: [

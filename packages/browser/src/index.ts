@@ -247,14 +247,7 @@ export class ManagedBrowserAdapter implements BrowserAdapter {
     if (typeof this.cdpBrowser?.close === "function") {
       await this.cdpBrowser.close().catch(() => null);
     }
-    this.cdpBrowser = null;
-    this.context = null;
-    this.contextPromise = null;
-    this.activePage = null;
-    this.pagesById.clear();
-    this.refs.clear();
-    this.consoleLogs.clear();
-    this.networkEvents.clear();
+    this.clearRuntimeState();
     if (this.removeUserDataDirOnDispose) {
       await rm(this.userDataDir, { recursive: true, force: true }).catch(() => null);
     }
@@ -702,7 +695,15 @@ export class ManagedBrowserAdapter implements BrowserAdapter {
 
   private async ensureContext(): Promise<ManagedContext> {
     if (this.context) {
-      return this.context;
+      try {
+        this.context.pages();
+        return this.context;
+      } catch (error: unknown) {
+        if (!isBrowserClosedError(error)) {
+          throw error;
+        }
+        this.clearRuntimeState();
+      }
     }
 
     if (!this.contextPromise) {
@@ -784,6 +785,11 @@ export class ManagedBrowserAdapter implements BrowserAdapter {
   }
 
   private setContext(context: ManagedContext): ManagedContext {
+    context.on?.("close", () => {
+      if (this.context === context) {
+        this.clearRuntimeState();
+      }
+    });
     context.on("page", (page: ManagedPage) => this.registerPage(page));
     for (const page of context.pages()) {
       this.registerPage(page);
@@ -848,6 +854,19 @@ export class ManagedBrowserAdapter implements BrowserAdapter {
     this.pagesById.set(pageId, page);
     this.consoleLogs.set(pageId, []);
     this.networkEvents.set(pageId, []);
+    page.on?.("close", () => {
+      if (this.activePage === page) {
+        this.activePage = null;
+      }
+      this.pagesById.delete(pageId);
+      this.consoleLogs.delete(pageId);
+      this.networkEvents.delete(pageId);
+      for (const [ref, target] of this.refs) {
+        if (target.pageId === pageId) {
+          this.refs.delete(ref);
+        }
+      }
+    });
     page.on("console", (message: any) => {
       this.pushBounded(this.consoleLogs.get(pageId), {
         at: new Date().toISOString(),
@@ -881,6 +900,17 @@ export class ManagedBrowserAdapter implements BrowserAdapter {
       });
     });
     return pageId;
+  }
+
+  private clearRuntimeState(): void {
+    this.cdpBrowser = null;
+    this.context = null;
+    this.contextPromise = null;
+    this.activePage = null;
+    this.pagesById.clear();
+    this.refs.clear();
+    this.consoleLogs.clear();
+    this.networkEvents.clear();
   }
 
   private pageId(page: ManagedPage): string {
@@ -1036,8 +1066,20 @@ export class AgentScopedManagedBrowserAdapter implements BrowserAdapter {
     context: ToolExecutionContext | undefined,
     run: (adapter: BrowserAdapter) => Promise<JsonObject>
   ): Promise<JsonObject> {
-    const session = this.sessionForContext(context);
-    const result = await run(session.adapter);
+    let session = this.sessionForContext(context);
+    let result: JsonObject;
+    try {
+      result = await run(session.adapter);
+    } catch (error: unknown) {
+      if (!isBrowserClosedError(error)) {
+        throw error;
+      }
+
+      await session.adapter.dispose?.().catch(() => null);
+      this.sessions.delete(session.sessionId);
+      session = this.sessionForContext(context);
+      result = await run(session.adapter);
+    }
     return compactJsonObject({
       ...result,
       browser_session_id: session.sessionId,
@@ -1625,6 +1667,18 @@ function browserProfileDebugPort(profileDir: string): number {
 function isBrowserProfileInUseError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return message.includes("Opening in existing browser session") || message.includes("SingletonLock");
+}
+
+function isBrowserClosedError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("browser is closed") ||
+    normalized.includes("browser has been closed") ||
+    normalized.includes("target page, context or browser has been closed") ||
+    normalized.includes("browsercontext has been closed") ||
+    normalized.includes("target closed")
+  );
 }
 
 function compactJsonObject(values: Record<string, JsonValue | undefined>): JsonObject {
