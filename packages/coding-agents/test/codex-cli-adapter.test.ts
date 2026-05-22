@@ -226,7 +226,8 @@ test("runs claude code print mode as an async JSONL task", async (t) => {
     "claude-sonnet-4-5"
   ]);
   assert.deepEqual(args.slice(8, 10), ["--effort", "high"]);
-  assert.equal(args.at(-1), "<prompt>");
+  assert.equal(args.includes("-"), false);
+  assert.equal(args.includes("<prompt>"), false);
 });
 
 test("runs antigravity cli as an async text task", async (t) => {
@@ -328,11 +329,17 @@ async function createFakeClaude(workspace: string, exitCode: number): Promise<st
   await writeFile(
     fakeClaude,
     `#!/usr/bin/env node
-const prompt = process.argv.at(-1) || "";
-console.log(JSON.stringify({ type: "system", subtype: "init" }));
-console.log(JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "done: " + prompt.trim() }] } }));
-console.log(JSON.stringify({ type: "result", result: "done: " + prompt.trim() }));
-process.exit(${exitCode});
+let prompt = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {
+  prompt += chunk;
+});
+process.stdin.on("end", () => {
+  console.log(JSON.stringify({ type: "system", subtype: "init" }));
+  console.log(JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "done: " + prompt.trim() }] } }));
+  console.log(JSON.stringify({ type: "result", result: "done: " + prompt.trim() }));
+  process.exit(${exitCode});
+});
 `
   );
   await chmod(fakeClaude, 0o755);

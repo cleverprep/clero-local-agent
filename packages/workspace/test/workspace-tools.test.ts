@@ -1,34 +1,55 @@
 import assert from "node:assert/strict";
+import { realpathSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { ToolExecutionError } from "@clero-local-agent/mcp-runtime";
 import { WorkspacePolicy, WorkspaceTools } from "../src/index.ts";
 
 test("lists allowed workspace roots", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "clero-workspace-test-"));
   t.after(() => rm(root, { recursive: true, force: true }));
+  const realRoot = realpathSync(root);
   const tools = new WorkspaceTools(new WorkspacePolicy({ allowedDirectories: [root] }));
 
   const result = tools.listRoots();
 
-  assert.deepEqual(result.roots, [{ path: root, name: path.basename(root) }]);
+  assert.deepEqual(result.roots, [{ path: realRoot, name: path.basename(realRoot) }]);
 });
 
 test("uses the first allowed root as the default directory", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "clero-workspace-test-"));
   t.after(() => rm(root, { recursive: true, force: true }));
+  const realRoot = realpathSync(root);
   const policy = new WorkspacePolicy({ allowedDirectories: [root] });
 
-  assert.equal(policy.resolveAllowedDirectory(), root);
-  assert.equal(policy.resolveAllowedDirectory("."), root);
+  assert.equal(policy.resolveAllowedDirectory(), realRoot);
+  assert.equal(policy.resolveAllowedDirectory("."), realRoot);
+});
+
+test("rejects a missing cwd with an invalid arguments error", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "clero-workspace-test-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const policy = new WorkspacePolicy({ allowedDirectories: [root] });
+  const missing = path.join(root, "missing");
+  const isMissingCwdError = (error: unknown) =>
+    error instanceof ToolExecutionError &&
+    error.errorCode === "invalid_arguments" &&
+    error.message === `cwd does not exist: ${missing}`;
+
+  assert.throws(() => policy.resolveAllowedDirectory(missing), isMissingCwdError);
+  assert.throws(() => policy.isAllowed(missing), isMissingCwdError);
 });
 
 test("discovers projects under allowed roots", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "clero-workspace-test-"));
   t.after(() => rm(root, { recursive: true, force: true }));
+  const realRoot = realpathSync(root);
   const nodeProject = path.join(root, "node-app");
   const djangoProject = path.join(root, "python-app");
+  const realNodeProject = path.join(realRoot, "node-app");
+  const realDjangoProject = path.join(realRoot, "python-app");
   await mkdir(nodeProject);
   await mkdir(djangoProject);
   await writeFile(
@@ -43,8 +64,8 @@ test("discovers projects under allowed roots", async (t) => {
   const projects = jsonArray(result.projects);
 
   assert.equal(projects.length, 2);
-  assert.deepEqual(projects.map((project) => project.path).sort(), [djangoProject, nodeProject].sort());
-  const node = projects.find((project) => project.path === nodeProject);
+  assert.deepEqual(projects.map((project) => project.path).sort(), [realDjangoProject, realNodeProject].sort());
+  const node = projects.find((project) => project.path === realNodeProject);
   assert.ok(node);
   assert.equal(node.name, "node-app");
   assert.deepEqual(node.detected_stacks, ["node"]);

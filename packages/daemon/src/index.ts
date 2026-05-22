@@ -7,6 +7,7 @@ export {
   defaultRuntimeConfig,
   defaultRuntimeConfigPath,
   loadRuntimeConfig,
+  resolveDeviceToken,
   saveRuntimeConfig,
   type LocalRuntimeConfig
 } from "./runtime-config.ts";

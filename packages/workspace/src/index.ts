@@ -1,3 +1,4 @@
+import { existsSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { readdir, readFile } from "node:fs/promises";
@@ -18,7 +19,7 @@ export class WorkspacePolicy {
       throw new Error("At least one allowed directory is required");
     }
 
-    this.allowedDirectories = allowedDirectories.map((directory) => path.resolve(directory));
+    this.allowedDirectories = allowedDirectories.map((directory) => realpathSync(path.resolve(directory)));
   }
 
   resolveAllowedDirectory(candidate?: string): string {
@@ -26,7 +27,7 @@ export class WorkspacePolicy {
       return this.defaultDirectory();
     }
 
-    const resolved = path.resolve(candidate);
+    const resolved = resolveExistingCwd(candidate);
     if (!this.isAllowed(resolved)) {
       throw new ToolExecutionError(
         "invalid_arguments",
@@ -39,7 +40,7 @@ export class WorkspacePolicy {
   }
 
   isAllowed(candidate: string): boolean {
-    const resolved = path.resolve(candidate);
+    const resolved = resolveExistingCwd(candidate);
     return this.allowedDirectories.some((allowed) => resolved === allowed || resolved.startsWith(`${allowed}${path.sep}`));
   }
 
@@ -184,6 +185,14 @@ export class WorkspaceTools {
       });
     }
   }
+}
+
+function resolveExistingCwd(candidate: string): string {
+  const resolved = path.resolve(candidate);
+  if (!existsSync(resolved)) {
+    throw new ToolExecutionError("invalid_arguments", `cwd does not exist: ${candidate}`);
+  }
+  return realpathSync(resolved);
 }
 
 const PROJECT_MARKERS = new Set([

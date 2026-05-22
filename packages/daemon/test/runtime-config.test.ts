@@ -8,9 +8,37 @@ import {
   capabilityOptionsFromConfig,
   defaultRuntimeConfig,
   mergeRuntimeConfig,
+  resolveDeviceToken,
   saveRuntimeConfig,
   loadRuntimeConfig
 } from "../src/runtime-config.ts";
+import type { TokenStore } from "../src/token-store.ts";
+
+class MemoryTokenStore implements TokenStore {
+  readonly values = new Map<string, string>();
+  readonly setCalls: Array<{ account: string; token: string }> = [];
+  readonly deleteCalls: string[] = [];
+
+  constructor(initialValues: Record<string, string> = {}) {
+    for (const [account, token] of Object.entries(initialValues)) {
+      this.values.set(account, token);
+    }
+  }
+
+  async get(account: string): Promise<string | null> {
+    return this.values.get(account) ?? null;
+  }
+
+  async set(account: string, token: string): Promise<void> {
+    this.values.set(account, token);
+    this.setCalls.push({ account, token });
+  }
+
+  async delete(account: string): Promise<void> {
+    this.values.delete(account);
+    this.deleteCalls.push(account);
+  }
+}
 
 test("filters advertised capabilities from runtime config", () => {
   const config = defaultRuntimeConfig();
@@ -97,4 +125,50 @@ test("saves and loads runtime config", async (t) => {
   assert.match(raw, /Test Device/);
   assert.equal(loaded.device_name, "Test Device");
   assert.deepEqual(loaded.allowed_directories, [directory]);
+});
+
+test("resolves device token from config JSON before the token store", async () => {
+  const config = defaultRuntimeConfig();
+  config.device_token = "json-token";
+  const tokenStore = new MemoryTokenStore({ device_token: "stored-token" });
+
+  const token = await resolveDeviceToken(config, tokenStore);
+
+  assert.equal(token, "json-token");
+  assert.deepEqual(tokenStore.setCalls, [{ account: "device_token", token: "json-token" }]);
+  assert.equal(await tokenStore.get("device_token"), "json-token");
+});
+
+test("saves config JSON device token to the token store on first use", async () => {
+  const config = defaultRuntimeConfig();
+  config.device_token = "json-token";
+  const tokenStore = new MemoryTokenStore();
+
+  const token = await resolveDeviceToken(config, tokenStore);
+
+  assert.equal(token, "json-token");
+  assert.deepEqual(tokenStore.setCalls, [{ account: "device_token", token: "json-token" }]);
+  assert.equal(await tokenStore.get("device_token"), "json-token");
+});
+
+test("resolves device token from the token store when config JSON has no token", async () => {
+  const config = defaultRuntimeConfig();
+  const tokenStore = new MemoryTokenStore({ device_token: "stored-token" });
+
+  const token = await resolveDeviceToken(config, tokenStore);
+
+  assert.equal(token, "stored-token");
+  assert.deepEqual(tokenStore.deleteCalls, []);
+});
+
+test("clears the token store when config JSON explicitly clears the device token", async () => {
+  const config = defaultRuntimeConfig();
+  config.device_token = "";
+  const tokenStore = new MemoryTokenStore({ device_token: "stored-token" });
+
+  const token = await resolveDeviceToken(config, tokenStore);
+
+  assert.equal(token, undefined);
+  assert.deepEqual(tokenStore.deleteCalls, ["device_token"]);
+  assert.equal(await tokenStore.get("device_token"), null);
 });

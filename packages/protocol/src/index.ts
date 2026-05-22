@@ -168,6 +168,21 @@ export type LocalTaskCompletedMessage = {
   result: JsonObject;
 };
 
+export type ApprovalRequestMessage = {
+  type: "approval_request";
+  request_id: string;
+  tool: string;
+  summary: string;
+  metadata?: JsonObject;
+};
+
+export type ApprovalResponseMessage = {
+  type: "approval_response";
+  request_id: string;
+  approved: boolean;
+  reason?: string;
+};
+
 export type SyncedAgent = {
   agent_id: BrokerId;
   name?: string;
@@ -194,6 +209,8 @@ export type RuntimeMessage =
   | HelloMessage
   | HeartbeatMessage
   | LocalTaskCompletedMessage
+  | ApprovalRequestMessage
+  | ApprovalResponseMessage
   | AgentsSyncMessage;
 
 export function okToolResult(requestId: string, result: JsonValue): ToolResultMessage {
@@ -285,6 +302,16 @@ export function isAgentsSyncMessage(value: unknown): value is AgentsSyncMessage 
     value.type === "agents_sync" &&
     Array.isArray(value.agents) &&
     value.agents.every((agent) => isJsonObject(agent))
+  );
+}
+
+export function isApprovalResponseMessage(value: unknown): value is ApprovalResponseMessage {
+  return (
+    isJsonObject(value) &&
+    value.type === "approval_response" &&
+    typeof value.request_id === "string" &&
+    typeof value.approved === "boolean" &&
+    (value.reason === undefined || typeof value.reason === "string")
   );
 }
 

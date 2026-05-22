@@ -1010,7 +1010,7 @@ export class ClaudeCodeAdapter implements CodingAgentAdapter {
     const model = optionalString(args, "model") ?? this.options.defaultModel;
     const reasoningEffort =
       claudeReasoningEffortArg(args, "reasoning_effort") ?? this.options.defaultReasoningEffort;
-    const cliArgs = this.claudeArgs(prompt, permissionMode, model, reasoningEffort);
+    const cliArgs = this.claudeArgs(permissionMode, model, reasoningEffort);
     const child = spawn(this.command, cliArgs, {
       cwd,
       stdio: "pipe"
@@ -1053,7 +1053,7 @@ export class ClaudeCodeAdapter implements CodingAgentAdapter {
     this.startLeaseHeartbeat(task);
     this.appendProcessEvent(task, "process.started", {
       command: this.command,
-      args: cliArgs.slice(0, -1).concat("<prompt>"),
+      args: cliArgs,
       cwd,
       permission_mode: permissionMode
     });
@@ -1092,7 +1092,7 @@ export class ClaudeCodeAdapter implements CodingAgentAdapter {
       this.notifyTerminal(task);
     });
 
-    child.stdin.end();
+    child.stdin.end(prompt);
     return this.publicTask(task);
   }
 
@@ -1130,7 +1130,6 @@ export class ClaudeCodeAdapter implements CodingAgentAdapter {
   }
 
   private claudeArgs(
-    prompt: string,
     permissionMode: ClaudeCodePermissionMode,
     model?: string,
     reasoningEffort?: ClaudeCodeReasoningEffort
@@ -1142,7 +1141,6 @@ export class ClaudeCodeAdapter implements CodingAgentAdapter {
     if (reasoningEffort) {
       cliArgs.push("--effort", reasoningEffort);
     }
-    cliArgs.push(prompt);
     return cliArgs;
   }
 

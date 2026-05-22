@@ -10,6 +10,9 @@ import type {
 } from "@clero-local-agent/coding-agents";
 import { defaultCapabilities, type Capability } from "@clero-local-agent/protocol";
 import type { LocalRuntimeCapabilityOptions } from "./daemon.ts";
+import { createTokenStore, type TokenStore } from "./token-store.ts";
+
+const DEVICE_TOKEN_ACCOUNT = "device_token";
 
 export type LocalRuntimeConfig = {
   backend_url?: string;
@@ -99,6 +102,25 @@ export async function loadRuntimeConfig(configPath: string): Promise<LocalRuntim
   return mergeRuntimeConfig(defaultRuntimeConfig(), JSON.parse(raw) as LocalRuntimeConfig);
 }
 
+export async function resolveDeviceToken(
+  config: LocalRuntimeConfig | undefined,
+  tokenStore: TokenStore = createTokenStore()
+): Promise<string | undefined> {
+  const rawConfigToken = config?.device_token;
+  const configToken = nonEmptyString(rawConfigToken);
+  if (configToken) {
+    await tokenStore.set(DEVICE_TOKEN_ACCOUNT, configToken);
+    return configToken;
+  }
+
+  if (rawConfigToken !== undefined) {
+    await tokenStore.delete(DEVICE_TOKEN_ACCOUNT);
+    return undefined;
+  }
+
+  return nonEmptyString(await tokenStore.get(DEVICE_TOKEN_ACCOUNT));
+}
+
 export async function saveRuntimeConfig(configPath: string, config: LocalRuntimeConfig): Promise<void> {
   await mkdir(path.dirname(configPath), { recursive: true });
   await writeFile(configPath, `${JSON.stringify(mergeRuntimeConfig(defaultRuntimeConfig(), config), null, 2)}\n`);
@@ -152,6 +174,11 @@ function claudeModelFromConfig(config: LocalRuntimeConfig): string | undefined {
     return config.capabilities?.codex?.claude_model_custom;
   }
   return selected;
+}
+
+function nonEmptyString(value: string | null | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
 }
 
 export function capabilitiesFromConfig(config: LocalRuntimeConfig): Capability[] {

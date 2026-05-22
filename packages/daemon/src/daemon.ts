@@ -1,4 +1,9 @@
-import { createDefaultApprovalProvider } from "@clero-local-agent/approvals";
+import {
+  createDefaultApprovalProvider,
+  DEFAULT_APPROVAL_TIMEOUT_MS,
+  WebSocketApprovalProvider,
+  type ApprovalProvider
+} from "@clero-local-agent/approvals";
 import { AgentScopedManagedBrowserAdapter, BrowserTools, McpChromeBrowserAdapter, type BrowserAdapter } from "@clero-local-agent/browser";
 import {
   AntigravityCliAdapter,
@@ -19,9 +24,12 @@ import { ToolRegistry, toolCallArguments, toolCallRunContext } from "@clero-loca
 import {
   errorControlResult,
   isAgentsSyncMessage,
+  isApprovalResponseMessage,
   isControlRequestMessage,
   isJsonObject,
   isToolCallMessage,
+  type ApprovalRequestMessage,
+  type ApprovalResponseMessage,
   okControlResult,
   type ControlRequestMessage,
   type ControlResultMessage,
@@ -80,6 +88,12 @@ export type LocalRuntimeCapabilityOptions = {
   };
 };
 
+type PendingApprovalRequest = {
+  resolve: (message: ApprovalResponseMessage) => void;
+  reject: (error: Error) => void;
+  timeout: ReturnType<typeof setTimeout>;
+};
+
 export class LocalRuntimeDaemon {
   private readonly logger: Logger;
   private readonly auditLogger: AuditLogger;
@@ -92,6 +106,7 @@ export class LocalRuntimeDaemon {
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private lastRuntimeMessageAtMs = 0;
   private readonly pendingRuntimeMessages: RuntimeMessage[] = [];
+  private readonly pendingApprovalRequests = new Map<string, PendingApprovalRequest>();
 
   constructor(options: LocalRuntimeDaemonOptions) {
     this.options = options;
@@ -113,6 +128,7 @@ export class LocalRuntimeDaemon {
     this.websocket.on("close", () => {
       this.lastRuntimeMessageAtMs = 0;
       this.leaseManager.clearActiveLease();
+      this.rejectPendingApprovalRequests("WebSocket closed before approval response");
       this.stopHeartbeat();
     });
     await this.websocket.start();
@@ -122,6 +138,7 @@ export class LocalRuntimeDaemon {
     await this.websocket.stop();
     this.stopHeartbeat();
     this.leaseManager.clearActiveLease();
+    this.rejectPendingApprovalRequests("Daemon stopped before approval response");
     await this.browserAdapter?.dispose?.();
   }
 
@@ -130,6 +147,14 @@ export class LocalRuntimeDaemon {
   }
 
   private enqueueMessage(message: unknown): void {
+    if (isApprovalResponseMessage(message)) {
+      this.handleMessage(message).catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        this.logger.error("failed to handle approval response", { error: detail });
+      });
+      return;
+    }
+
     this.messageQueue = this.messageQueue
       .then(() => this.handleMessage(message))
       .catch((error: unknown) => {
@@ -177,6 +202,11 @@ export class LocalRuntimeDaemon {
       return;
     }
 
+    if (isApprovalResponseMessage(message)) {
+      this.resolveApprovalResponse(message);
+      return;
+    }
+
     if (isControlRequestMessage(message)) {
       this.sendRuntimeMessage(this.handleControlRequest(message));
       return;
@@ -204,6 +234,20 @@ export class LocalRuntimeDaemon {
     }
 
     this.logger.warn("ignored unknown runtime message");
+  }
+
+  private resolveApprovalResponse(message: ApprovalResponseMessage): void {
+    const pending = this.pendingApprovalRequests.get(message.request_id);
+    if (!pending) {
+      this.logger.warn("received approval response for unknown request", {
+        requestId: message.request_id
+      });
+      return;
+    }
+
+    this.pendingApprovalRequests.delete(message.request_id);
+    clearTimeout(pending.timeout);
+    pending.resolve(message);
   }
 
   private sendHello(): void {
@@ -272,6 +316,42 @@ export class LocalRuntimeDaemon {
         pending: this.pendingRuntimeMessages.length,
         error: detail
       });
+    }
+  }
+
+  private sendApprovalRequest(message: ApprovalRequestMessage): Promise<ApprovalResponseMessage> {
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.pendingApprovalRequests.delete(message.request_id);
+        resolve({
+          type: "approval_response",
+          request_id: message.request_id,
+          approved: false,
+          reason: "Approval timed out"
+        });
+      }, DEFAULT_APPROVAL_TIMEOUT_MS);
+
+      this.pendingApprovalRequests.set(message.request_id, {
+        resolve,
+        reject,
+        timeout
+      });
+
+      try {
+        this.websocket.send(message);
+      } catch (error: unknown) {
+        this.pendingApprovalRequests.delete(message.request_id);
+        clearTimeout(timeout);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    });
+  }
+
+  private rejectPendingApprovalRequests(reason: string): void {
+    for (const [requestId, pending] of this.pendingApprovalRequests) {
+      this.pendingApprovalRequests.delete(requestId);
+      clearTimeout(pending.timeout);
+      pending.reject(new Error(reason));
     }
   }
 
@@ -414,7 +494,7 @@ export class LocalRuntimeDaemon {
 
   private registerTools(): void {
     const workspacePolicy = new WorkspacePolicy({ allowedDirectories: this.options.allowedDirectories });
-    const approvalProvider = createDefaultApprovalProvider(this.options.interactiveApprovals ?? process.stdin.isTTY);
+    const approvalProvider = this.createApprovalProvider();
     const browserAdapter =
       this.options.browserProvider === "mcp-chrome"
         ? new McpChromeBrowserAdapter({
@@ -455,7 +535,19 @@ export class LocalRuntimeDaemon {
     }
   }
 
-  private createCodingAgentAdapter(workspacePolicy: WorkspacePolicy, approvalProvider: ReturnType<typeof createDefaultApprovalProvider>): CodingAgentAdapter {
+  private createApprovalProvider(): ApprovalProvider {
+    if (this.options.interactiveApprovals === false) {
+      return createDefaultApprovalProvider(false);
+    }
+
+    if (this.options.interactiveApprovals === true || process.stdin.isTTY === true) {
+      return createDefaultApprovalProvider(true);
+    }
+
+    return new WebSocketApprovalProvider((message) => this.sendApprovalRequest(message));
+  }
+
+  private createCodingAgentAdapter(workspacePolicy: WorkspacePolicy, approvalProvider: ApprovalProvider): CodingAgentAdapter {
     const callbacks = {
       onTaskHeartbeat: (task: CodingTask) => {
         if (task.lease_id) {

@@ -22,6 +22,7 @@ export type RuntimeWebSocketClientOptions = {
 
 export class RuntimeWebSocketClient extends EventEmitter {
   private socket: RuntimeWebSocket | null = null;
+  private authenticated = false;
   private shouldReconnect = true;
   private readonly reconnectDelayMs: number;
   private readonly options: RuntimeWebSocketClientOptions;
@@ -39,6 +40,7 @@ export class RuntimeWebSocketClient extends EventEmitter {
 
   async stop(): Promise<void> {
     this.shouldReconnect = false;
+    this.authenticated = false;
     this.socket?.close();
     this.socket = null;
   }
@@ -46,6 +48,7 @@ export class RuntimeWebSocketClient extends EventEmitter {
   reconnect(): void {
     const socket = this.socket;
     this.socket = null;
+    this.authenticated = false;
     socket?.close();
     this.emit("close");
     if (this.shouldReconnect) {
@@ -54,7 +57,7 @@ export class RuntimeWebSocketClient extends EventEmitter {
   }
 
   send(message: RuntimeMessage): void {
-    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN || !this.authenticated) {
       throw new Error("WebSocket is not connected");
     }
 
@@ -66,16 +69,22 @@ export class RuntimeWebSocketClient extends EventEmitter {
     url.searchParams.set("token", this.options.token);
     const socket = new WebSocket(url.toString());
     this.socket = socket;
+    this.authenticated = false;
 
     socket.addEventListener("open", () => {
-      this.options.logger.info("local runtime websocket connected");
-      this.emit("open");
+      socket.send(JSON.stringify({ type: "auth", token: this.options.token }));
+      this.options.logger.info("local runtime websocket connected; auth message sent");
     });
 
     socket.addEventListener("message", (event: { data: string }) => {
       try {
         const message: unknown = JSON.parse(event.data);
         this.options.logger.info("received websocket message", { inbound: message });
+        if (!this.authenticated && isAuthAcknowledgementMessage(message)) {
+          this.authenticated = true;
+          this.options.logger.info("local runtime websocket authenticated");
+          this.emit("open");
+        }
         this.emit("message", message);
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error);
@@ -88,6 +97,7 @@ export class RuntimeWebSocketClient extends EventEmitter {
         return;
       }
       this.socket = null;
+      this.authenticated = false;
       this.options.logger.warn("local runtime websocket closed");
       this.emit("close");
       if (this.shouldReconnect) {
@@ -99,4 +109,12 @@ export class RuntimeWebSocketClient extends EventEmitter {
       this.options.logger.error("local runtime websocket error", { event: String(event) });
     });
   }
+}
+
+function isAuthAcknowledgementMessage(value: unknown): value is { type: string } {
+  return isRecord(value) && (value.type === "auth_ack" || value.type === "authenticated" || value.type === "connected");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

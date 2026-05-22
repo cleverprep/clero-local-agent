@@ -9,6 +9,7 @@ import {
   defaultRuntimeConfig,
   defaultRuntimeConfigPath,
   loadRuntimeConfig,
+  resolveDeviceToken,
   saveRuntimeConfig,
   type LocalRuntimeConfig
 } from "@clero-local-agent/daemon";
@@ -121,9 +122,14 @@ async function main(): Promise<void> {
 
   if (command === "daemon") {
     const wsUrl = getString(args, "ws-url") ?? process.env.CLERO_LOCAL_RUNTIME_WS_URL ?? runtimeConfig?.websocket_url;
-    const token = getString(args, "token") ?? process.env.CLERO_LOCAL_RUNTIME_TOKEN ?? runtimeConfig?.device_token;
+    const token =
+      nonEmptyString(getString(args, "token")) ??
+      nonEmptyString(process.env.CLERO_LOCAL_RUNTIME_TOKEN) ??
+      (await resolveDeviceToken(runtimeConfig));
     if (!wsUrl || !token) {
-      throw new Error("daemon requires --ws-url and --token, or CLERO_LOCAL_RUNTIME_WS_URL and CLERO_LOCAL_RUNTIME_TOKEN");
+      throw new Error(
+        "daemon requires --ws-url and a token from --token, CLERO_LOCAL_RUNTIME_TOKEN, config JSON, or the token store"
+      );
     }
 
     const daemon = createDaemon({
