@@ -243,6 +243,7 @@ export class CodexCliAdapter implements CodingAgentAdapter {
       task.stderr = appendBounded(task.stderr, text, this.maxOutputBytes);
       task.output = appendBounded(task.output, text, this.maxOutputBytes);
       this.appendTextEvent(task, "stderr", "stderr.chunk", text);
+      this.markBlockedFromText(task, text);
     });
     child.on("error", (error) => {
       task.status = "failed";
@@ -415,6 +416,7 @@ export class CodexCliAdapter implements CodingAgentAdapter {
     if (!event) {
       task.output = appendBounded(task.output, `${line}\n`, this.maxOutputBytes);
       this.appendTextEvent(task, "stdout", "stdout.line", line);
+      this.markBlockedFromText(task, line);
       return;
     }
 
@@ -440,8 +442,7 @@ export class CodexCliAdapter implements CodingAgentAdapter {
 
     const blockedReason = blockedReasonFromEvent(event);
     if (blockedReason) {
-      task.blocked_reason = blockedReason;
-      task.output = appendBounded(task.output, `${blockedReason}\n`, this.maxOutputBytes);
+      this.markTaskBlocked(task, blockedReason);
     }
   }
 
@@ -467,6 +468,29 @@ export class CodexCliAdapter implements CodingAgentAdapter {
     }
 
     return "failed";
+  }
+
+  private markBlockedFromText(task: StoredCodingTask, text: string): void {
+    const blockedReason = blockedReasonFromText(text);
+    if (blockedReason) {
+      this.markTaskBlocked(task, blockedReason);
+    }
+  }
+
+  private markTaskBlocked(task: StoredCodingTask, reason: string): void {
+    task.blocked_reason ??= reason;
+    if (!task.output.includes(reason)) {
+      task.output = appendBounded(task.output, `${reason}\n`, this.maxOutputBytes);
+    }
+    if (task.status !== "running") {
+      return;
+    }
+
+    task.status = "blocked";
+    task.finished_at = new Date().toISOString();
+    this.appendProcessEvent(task, "process.blocked", { reason: task.blocked_reason });
+    task.process?.kill("SIGTERM");
+    this.notifyTerminal(task);
   }
 
   private appendProcessEvent(task: StoredCodingTask, type: string, data: JsonObject): void {
@@ -625,6 +649,7 @@ export class AntigravityCliAdapter implements CodingAgentAdapter {
       task.stderr = appendBounded(task.stderr, text, this.maxOutputBytes);
       task.output = appendBounded(task.output, text, this.maxOutputBytes);
       this.appendTextEvent(task, "stderr", "stderr.chunk", text);
+      this.markBlockedFromText(task, text);
     });
     child.on("error", (error) => {
       task.status = "failed";
@@ -813,6 +838,7 @@ export class AntigravityCliAdapter implements CodingAgentAdapter {
       task.final_message = line;
       task.output = appendBounded(task.output, `${line}\n`, this.maxOutputBytes);
       this.appendTextEvent(task, "stdout", "stdout.line", line);
+      this.markBlockedFromText(task, line);
       return;
     }
 
@@ -836,8 +862,7 @@ export class AntigravityCliAdapter implements CodingAgentAdapter {
 
     const blockedReason = blockedReasonFromEvent(event);
     if (blockedReason) {
-      task.blocked_reason = blockedReason;
-      task.output = appendBounded(task.output, `${blockedReason}\n`, this.maxOutputBytes);
+      this.markTaskBlocked(task, blockedReason);
     }
   }
 
@@ -852,6 +877,29 @@ export class AntigravityCliAdapter implements CodingAgentAdapter {
     }
 
     return "failed";
+  }
+
+  private markBlockedFromText(task: StoredCodingTask, text: string): void {
+    const blockedReason = blockedReasonFromText(text);
+    if (blockedReason) {
+      this.markTaskBlocked(task, blockedReason);
+    }
+  }
+
+  private markTaskBlocked(task: StoredCodingTask, reason: string): void {
+    task.blocked_reason ??= reason;
+    if (!task.output.includes(reason)) {
+      task.output = appendBounded(task.output, `${reason}\n`, this.maxOutputBytes);
+    }
+    if (task.status !== "running") {
+      return;
+    }
+
+    task.status = "blocked";
+    task.finished_at = new Date().toISOString();
+    this.appendProcessEvent(task, "process.blocked", { reason: task.blocked_reason });
+    task.process?.kill("SIGTERM");
+    this.notifyTerminal(task);
   }
 
   private appendProcessEvent(task: StoredCodingTask, type: string, data: JsonObject): void {
@@ -1018,6 +1066,7 @@ export class ClaudeCodeAdapter implements CodingAgentAdapter {
       task.stderr = appendBounded(task.stderr, text, this.maxOutputBytes);
       task.output = appendBounded(task.output, text, this.maxOutputBytes);
       this.appendTextEvent(task, "stderr", "stderr.chunk", text);
+      this.markBlockedFromText(task, text);
     });
     child.on("error", (error) => {
       task.status = "failed";
@@ -1170,6 +1219,7 @@ export class ClaudeCodeAdapter implements CodingAgentAdapter {
     if (!event) {
       task.output = appendBounded(task.output, `${line}\n`, this.maxOutputBytes);
       this.appendTextEvent(task, "stdout", "stdout.line", line);
+      this.markBlockedFromText(task, line);
       return;
     }
 
@@ -1193,8 +1243,7 @@ export class ClaudeCodeAdapter implements CodingAgentAdapter {
 
     const blockedReason = blockedReasonFromEvent(event);
     if (blockedReason) {
-      task.blocked_reason = blockedReason;
-      task.output = appendBounded(task.output, `${blockedReason}\n`, this.maxOutputBytes);
+      this.markTaskBlocked(task, blockedReason);
     }
   }
 
@@ -1209,6 +1258,29 @@ export class ClaudeCodeAdapter implements CodingAgentAdapter {
     }
 
     return "failed";
+  }
+
+  private markBlockedFromText(task: StoredCodingTask, text: string): void {
+    const blockedReason = blockedReasonFromText(text);
+    if (blockedReason) {
+      this.markTaskBlocked(task, blockedReason);
+    }
+  }
+
+  private markTaskBlocked(task: StoredCodingTask, reason: string): void {
+    task.blocked_reason ??= reason;
+    if (!task.output.includes(reason)) {
+      task.output = appendBounded(task.output, `${reason}\n`, this.maxOutputBytes);
+    }
+    if (task.status !== "running") {
+      return;
+    }
+
+    task.status = "blocked";
+    task.finished_at = new Date().toISOString();
+    this.appendProcessEvent(task, "process.blocked", { reason: task.blocked_reason });
+    task.process?.kill("SIGTERM");
+    this.notifyTerminal(task);
   }
 
   private appendProcessEvent(task: StoredCodingTask, type: string, data: JsonObject): void {
@@ -1475,6 +1547,15 @@ function blockedReasonFromEvent(event: JsonObject): string | undefined {
   return message;
 }
 
+function blockedReasonFromText(text: string): string | undefined {
+  const trimmed = text.trim();
+  if (!trimmed || !looksApprovalOrSandboxBlocked(trimmed)) {
+    return undefined;
+  }
+
+  return trimmed.slice(0, 2_000);
+}
+
 function findStringField(value: JsonValue, keys: string[]): string | undefined {
   if (typeof value === "string") {
     return value;
@@ -1514,6 +1595,12 @@ function looksApprovalOrSandboxBlocked(text: string): boolean {
   return (
     normalized.includes("approval") ||
     normalized.includes("sandbox") ||
+    normalized.includes("blocked by policy") ||
+    normalized.includes("blocked by local policy") ||
+    normalized.includes("blocked by sandbox policy") ||
+    normalized.includes("rejected(\"") ||
+    normalized.includes("rejected(") ||
+    normalized.includes("rejected: blocked") ||
     normalized.includes("permission denied") ||
     normalized.includes("operation not permitted") ||
     normalized.includes("read-only")

@@ -338,7 +338,7 @@ dependencies = [
 
 [[package]]
 name = "clero-local-agent-desktop"
-version = "0.1.16"
+version = "0.1.17"
 dependencies = [
  "dirs",
  "hostname",

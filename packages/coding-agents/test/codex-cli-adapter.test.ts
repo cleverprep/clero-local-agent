@@ -155,6 +155,36 @@ test("marks nonzero approval or sandbox exits as blocked", async (t) => {
   assert.match(stringField(status, "blocked_reason"), /sandbox/i);
 });
 
+test("marks policy-blocked codex tasks terminal even when the process keeps running", async (t) => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "clero-codex-test-"));
+  t.after(() => rm(workspace, { recursive: true, force: true }));
+  const fakeCodex = await createFakeHangingBlockedCodex(workspace);
+  const terminalTasks: unknown[] = [];
+  const adapter = new CodexCliAdapter({
+    workspacePolicy: new WorkspacePolicy({ allowedDirectories: [workspace] }),
+    command: fakeCodex,
+    onTaskTerminal: (task) => {
+      terminalTasks.push(task);
+    }
+  });
+
+  const start = await adapter.startTask(
+    { prompt: "try blocked local command", cwd: workspace },
+    { requestId: "req_1", leaseId: "lease_1", agentId: "agent_1", taskId: "task_1" }
+  );
+
+  const taskId = stringField(start, "task_id");
+  const status = await waitForTerminalStatus(adapter, taskId);
+
+  assert.equal(status.status, "blocked");
+  assert.match(stringField(status, "blocked_reason"), /blocked by policy/i);
+  assert.equal(terminalTasks.length, 1);
+
+  const output = await adapter.getOutput(taskId);
+  const events = eventArray(output.events);
+  assert.equal(events.some((event) => event.type === "process.blocked"), true);
+});
+
 test("runs claude code print mode as an async JSONL task", async (t) => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "clero-claude-test-"));
   t.after(() => rm(workspace, { recursive: true, force: true }));
@@ -250,6 +280,22 @@ process.stdin.on("end", () => {
   console.log(JSON.stringify({ type: "item.completed", item: { id: "item_1", type: "agent_message", text: "done: " + prompt.trim() } }));
   console.log(JSON.stringify({ type: ${JSON.stringify(errorMessage ? "error" : "turn.completed")}, message: ${JSON.stringify(errorMessage ?? "ok")} }));
   process.exit(${exitCode});
+});
+`
+  );
+  await chmod(fakeCodex, 0o755);
+  return fakeCodex;
+}
+
+async function createFakeHangingBlockedCodex(workspace: string): Promise<string> {
+  const fakeCodex = path.join(workspace, "fake-codex-blocked-hanging.js");
+  await writeFile(
+    fakeCodex,
+    `#!/usr/bin/env node
+process.stdin.resume();
+process.stdin.on("end", () => {
+  console.error("exec_command failed: Rejected: blocked by policy");
+  setInterval(() => {}, 1000);
 });
 `
   );
