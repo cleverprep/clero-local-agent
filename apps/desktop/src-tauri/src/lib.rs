@@ -1080,18 +1080,23 @@ fn launch_browser_profile(channel: &str, profile_dir: &Path) -> Result<(), Strin
         "--remote-debugging-port={}",
         browser_profile_debug_port(profile_dir)
     );
+    let profile_args = [
+        user_data_dir.as_str(),
+        remote_debugging_address,
+        remote_debugging_port.as_str(),
+        "--password-store=basic",
+        "--use-mock-keychain",
+        "--disable-sync",
+        "--no-first-run",
+        "about:blank",
+    ];
 
     #[cfg(target_os = "macos")]
     {
-        Command::new("open")
-            .arg("-n")
-            .arg(&browser)
-            .arg("--args")
-            .arg(user_data_dir)
-            .arg(remote_debugging_address)
-            .arg(remote_debugging_port)
-            .arg("--no-first-run")
-            .arg("about:blank")
+        let mut command = Command::new("open");
+        command.arg("-n").arg(&browser).arg("--args");
+        command.args(profile_args);
+        command
             .spawn()
             .map_err(|error| error.to_string())?;
         return Ok(());
@@ -1100,11 +1105,7 @@ fn launch_browser_profile(channel: &str, profile_dir: &Path) -> Result<(), Strin
     #[cfg(not(target_os = "macos"))]
     {
         Command::new(browser)
-            .arg(user_data_dir)
-            .arg(remote_debugging_address)
-            .arg(remote_debugging_port)
-            .arg("--no-first-run")
-            .arg("about:blank")
+            .args(profile_args)
             .spawn()
             .map_err(|error| error.to_string())?;
         Ok(())
