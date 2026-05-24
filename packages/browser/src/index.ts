@@ -260,7 +260,7 @@ export class ManagedBrowserAdapter implements BrowserAdapter {
     const settleMs = boundedOptionalNumber(args, "settle_ms", 0, 30_000) ?? 5_000;
     const page = optionalBoolean(args, "new_tab") || optionalBoolean(args, "new_window")
       ? await this.newPage()
-      : await this.ensurePage(pageIdArg(args));
+      : await this.pageForNavigation(pageIdArg(args));
     await page.goto(url, { waitUntil, timeout: timeoutMs });
     await page.locator("body").waitFor({ state: "attached", timeout: Math.min(timeoutMs, 5_000) }).catch(() => null);
     if (settleMs > 0 && waitUntil !== "networkidle") {
@@ -818,6 +818,21 @@ export class ManagedBrowserAdapter implements BrowserAdapter {
     }
 
     return this.newPage();
+  }
+
+  private async pageForNavigation(pageId?: string): Promise<ManagedPage> {
+    if (!pageId) {
+      return this.ensurePage();
+    }
+
+    try {
+      return await this.requirePage(pageId);
+    } catch (error: unknown) {
+      if (!isUnknownBrowserPageError(error)) {
+        throw error;
+      }
+      return this.newPage();
+    }
   }
 
   private async requirePage(pageId?: string): Promise<ManagedPage> {
@@ -1679,6 +1694,11 @@ function isBrowserClosedError(error: unknown): boolean {
     normalized.includes("browsercontext has been closed") ||
     normalized.includes("target closed")
   );
+}
+
+function isUnknownBrowserPageError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.startsWith("Unknown browser page:");
 }
 
 function compactJsonObject(values: Record<string, JsonValue | undefined>): JsonObject {

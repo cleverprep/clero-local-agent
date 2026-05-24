@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -13,6 +13,7 @@ import { AntigravityCliAdapter, ClaudeCodeAdapter, CodexCliAdapter, type CodingA
 test("runs codex exec as an async JSONL task", async (t) => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "clero-codex-test-"));
   t.after(() => rm(workspace, { recursive: true, force: true }));
+  const resolvedWorkspace = await realpath(workspace);
   const fakeCodex = await createFakeCodex(workspace, 0);
   const terminalTasks: Array<{ agent_id?: string; event_run_id?: string }> = [];
   const streamedEvents: string[] = [];
@@ -64,7 +65,7 @@ test("runs codex exec as an async JSONL task", async (t) => {
   assert.ok(processStarted);
   const processData = objectField(processStarted, "data");
   const args = stringArrayField(processData, "args");
-  assert.deepEqual(args.slice(0, 8), ["--ask-for-approval", "never", "exec", "--json", "--sandbox", "read-only", "--cd", workspace]);
+  assert.deepEqual(args.slice(0, 8), ["--ask-for-approval", "never", "exec", "--json", "--sandbox", "read-only", "--cd", resolvedWorkspace]);
   assert.deepEqual(args.slice(8, 12), ["--model", "gpt-5.3-codex", "--config", 'model_reasoning_effort="high"']);
   assert.equal(args.at(-1), "-");
 });
