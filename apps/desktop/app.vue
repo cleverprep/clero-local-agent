@@ -15,8 +15,8 @@
           type="button"
           :data-state="updateState"
           :disabled="updateBusy"
-          aria-label="Check for updates"
-          title="Check for updates"
+          :aria-label="updateTopbarTitle"
+          :title="updateTopbarTitle"
           @click="handleTopbarUpdateClick"
         >
           <span class="update-dot"></span>
@@ -966,6 +966,13 @@ const updateTopbarLabel = computed(() => {
   return "Check";
 });
 
+const updateTopbarTitle = computed(() => {
+  if (updateState.value === "available") return "Install update";
+  if (updateState.value === "installing") return "Installing update";
+  if (updateState.value === "restarting") return "Restarting app";
+  return "Check for updates";
+});
+
 const updateDetail = computed(() => {
   if (updateMessage.value) return updateMessage.value;
   if (updateState.value === "available") return "Download and restart to apply the latest GitHub release.";
@@ -1115,8 +1122,8 @@ function showUpdates(): void {
 }
 
 function handleTopbarUpdateClick(): void {
-  if (updateState.value === "available" || updateState.value === "installing" || updateState.value === "restarting") {
-    showUpdates();
+  if (updateState.value === "available") {
+    void checkForUpdates(true);
     return;
   }
 
