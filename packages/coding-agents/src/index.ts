@@ -116,6 +116,7 @@ export type ClaudeCodeAdapterOptions = {
   defaultModel?: string;
   defaultReasoningEffort?: ClaudeCodeReasoningEffort;
   permissionMode?: ClaudeCodePermissionMode;
+  allowWorkspaceWrite?: boolean;
   allowBypassPermissions?: boolean;
   maxEvents?: number;
   maxOutputBytes?: number;
@@ -1151,6 +1152,21 @@ export class ClaudeCodeAdapter implements CodingAgentAdapter {
   ): Promise<ApprovalMetadata> {
     if (permissionMode === "default" || permissionMode === "plan") {
       return { required: false, approved: null, reason: `No local approval required for Claude ${permissionMode} mode` };
+    }
+
+    if (permissionMode === "acceptEdits" && this.options.allowWorkspaceWrite === false) {
+      throw new ToolExecutionError("approval_denied", "Claude Code acceptEdits mode is disabled in local settings.", {
+        permission_mode: permissionMode,
+        cwd
+      });
+    }
+
+    if (permissionMode === "acceptEdits" && this.options.allowWorkspaceWrite === true) {
+      return {
+        required: true,
+        approved: true,
+        reason: "Approved by local workspace-write setting"
+      };
     }
 
     if (permissionMode === "bypassPermissions" && this.options.allowBypassPermissions !== true) {

@@ -94,6 +94,15 @@ test("workspace-write default sandbox enables Codex write permission", () => {
   assert.equal(capabilityOptionsFromConfig(config).codex?.allowWorkspaceWrite, true);
 });
 
+test("Claude acceptEdits permission enables local workspace-write approval", () => {
+  const config = defaultRuntimeConfig();
+  config.capabilities!.codex!.provider = "claude-code";
+  config.capabilities!.codex!.claude_permission_mode = "acceptEdits";
+  config.capabilities!.codex!.allow_workspace_write = false;
+
+  assert.equal(capabilityOptionsFromConfig(config).codex?.allowWorkspaceWrite, true);
+});
+
 test("maps custom Claude model selection to daemon options", () => {
   const config = defaultRuntimeConfig();
   config.capabilities!.codex!.provider = "claude-code";

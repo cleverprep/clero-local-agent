@@ -231,6 +231,32 @@ test("runs claude code print mode as an async JSONL task", async (t) => {
   assert.equal(args.includes("<prompt>"), false);
 });
 
+test("uses local workspace-write setting as Claude acceptEdits approval", async (t) => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "clero-claude-test-"));
+  t.after(() => rm(workspace, { recursive: true, force: true }));
+  const fakeClaude = await createFakeClaude(workspace, 0);
+  const adapter = new ClaudeCodeAdapter({
+    workspacePolicy: new WorkspacePolicy({ allowedDirectories: [workspace] }),
+    approvalProvider: new StaticApprovalProvider(false, "not approved"),
+    command: fakeClaude,
+    permissionMode: "acceptEdits",
+    allowWorkspaceWrite: true
+  });
+
+  const start = await adapter.startTask(
+    { prompt: "edit files", cwd: workspace },
+    { requestId: "req_1", leaseId: "lease_1", agentId: "agent_1", taskId: "task_1" }
+  );
+
+  assert.equal(start.status, "running");
+  assert.equal(start.permission_mode, "acceptEdits");
+  assert.equal(start.approved, true);
+  assert.equal(start.approval_reason, "Approved by local workspace-write setting");
+
+  const status = await waitForTerminalStatus(adapter, stringField(start, "task_id"));
+  assert.equal(status.status, "completed");
+});
+
 test("runs antigravity cli as an async text task", async (t) => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "clero-antigravity-test-"));
   t.after(() => rm(workspace, { recursive: true, force: true }));

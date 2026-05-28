@@ -1428,6 +1428,12 @@ function forceProductionConnectionConfig(): void {
 
 function reconcileCodingPermissionSettings(): void {
   if (config.capabilities.codex.provider === "claude-code") {
+    if (config.capabilities.codex.allow_workspace_write && config.capabilities.codex.claude_permission_mode === "default") {
+      config.capabilities.codex.claude_permission_mode = "acceptEdits";
+    }
+    if (config.capabilities.codex.claude_permission_mode === "acceptEdits") {
+      config.capabilities.codex.allow_workspace_write = true;
+    }
     return;
   }
 

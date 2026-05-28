@@ -598,6 +598,7 @@ export class LocalRuntimeDaemon {
         defaultModel: codingConfig.claudeModel,
         defaultReasoningEffort: codingConfig.claudeReasoningEffort,
         permissionMode: codingConfig.claudePermissionMode,
+        allowWorkspaceWrite: codingConfig.allowWorkspaceWrite,
         allowBypassPermissions: codingConfig.allowDangerFullAccess,
         ...callbacks
       });

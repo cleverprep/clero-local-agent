@@ -132,8 +132,12 @@ export function defaultRuntimeConfigPath(): string {
 
 export function capabilityOptionsFromConfig(config: LocalRuntimeConfig): LocalRuntimeCapabilityOptions {
   const codexSandbox = config.capabilities?.codex?.default_sandbox;
+  const claudePermissionMode = config.capabilities?.codex?.claude_permission_mode;
+  const claudeAllowWorkspaceWrite =
+    config.capabilities?.codex?.provider === "claude-code" && claudePermissionMode === "acceptEdits";
   const codexAllowWorkspaceWrite =
     config.capabilities?.codex?.allow_workspace_write === true ||
+    claudeAllowWorkspaceWrite ||
     codexSandbox === "workspace-write" ||
     codexSandbox === "danger-full-access";
   const codexAllowDangerFullAccess =
@@ -156,7 +160,7 @@ export function capabilityOptionsFromConfig(config: LocalRuntimeConfig): LocalRu
       claudeCommand: config.capabilities?.codex?.claude_command,
       claudeModel: claudeModelFromConfig(config),
       claudeReasoningEffort: config.capabilities?.codex?.claude_reasoning_effort,
-      claudePermissionMode: config.capabilities?.codex?.claude_permission_mode,
+      claudePermissionMode,
       defaultSandbox: config.capabilities?.codex?.default_sandbox,
       allowWorkspaceWrite: codexAllowWorkspaceWrite,
       allowDangerFullAccess: codexAllowDangerFullAccess
