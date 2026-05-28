@@ -94,6 +94,23 @@ type PendingApprovalRequest = {
   timeout: ReturnType<typeof setTimeout>;
 };
 
+type PendingLocalTaskCompletion = {
+  message: LocalTaskCompletedMessage;
+  retryCount: number;
+  retryTimer: ReturnType<typeof setTimeout> | null;
+  cleanupTimer: ReturnType<typeof setTimeout> | null;
+};
+
+type BackendErrorMessage = {
+  type: "error";
+  error_code?: string;
+  message?: string;
+  task_id?: string;
+};
+
+const LOCAL_TASK_COMPLETION_RETRY_DELAYS_MS = [1_000, 3_000, 10_000];
+const LOCAL_TASK_COMPLETION_RETENTION_MS = 2 * 60_000;
+
 export class LocalRuntimeDaemon {
   private readonly logger: Logger;
   private readonly auditLogger: AuditLogger;
@@ -107,6 +124,7 @@ export class LocalRuntimeDaemon {
   private lastRuntimeMessageAtMs = 0;
   private readonly pendingRuntimeMessages: RuntimeMessage[] = [];
   private readonly pendingApprovalRequests = new Map<string, PendingApprovalRequest>();
+  private readonly pendingLocalTaskCompletions = new Map<string, PendingLocalTaskCompletion>();
 
   constructor(options: LocalRuntimeDaemonOptions) {
     this.options = options;
@@ -139,6 +157,7 @@ export class LocalRuntimeDaemon {
     this.stopHeartbeat();
     this.leaseManager.clearActiveLease();
     this.rejectPendingApprovalRequests("Daemon stopped before approval response");
+    this.clearPendingLocalTaskCompletions();
     await this.browserAdapter?.dispose?.();
   }
 
@@ -195,10 +214,7 @@ export class LocalRuntimeDaemon {
     }
 
     if (isBackendErrorMessage(message)) {
-      this.logger.warn("local runtime backend error", {
-        errorCode: message.error_code,
-        backendMessage: message.message
-      });
+      this.handleBackendError(message);
       return;
     }
 
@@ -413,7 +429,112 @@ export class LocalRuntimeDaemon {
         output_tail: tailText(task.output)
       }
     };
+    this.sendLocalTaskCompletion(message);
+  }
+
+  private handleBackendError(message: BackendErrorMessage): void {
+    if (message.error_code === "not_found" && message.task_id && this.retryLocalTaskCompletion(message.task_id)) {
+      return;
+    }
+
+    this.logger.warn("local runtime backend error", {
+      errorCode: message.error_code,
+      backendMessage: message.message,
+      taskId: message.task_id
+    });
+  }
+
+  private sendLocalTaskCompletion(message: LocalTaskCompletedMessage): void {
+    let pending = this.pendingLocalTaskCompletions.get(message.task_id);
+    if (!pending) {
+      pending = {
+        message,
+        retryCount: 0,
+        retryTimer: null,
+        cleanupTimer: null
+      };
+      this.pendingLocalTaskCompletions.set(message.task_id, pending);
+    } else {
+      pending.message = message;
+    }
+
+    this.scheduleLocalTaskCompletionCleanup(message.task_id, pending);
+    this.logger.info("sending local coding task completion", {
+      taskId: message.task_id,
+      requestId: message.request_id,
+      status: message.status,
+      retryCount: pending.retryCount
+    });
     this.sendRuntimeMessage(message);
+  }
+
+  private retryLocalTaskCompletion(taskId: string): boolean {
+    const pending = this.pendingLocalTaskCompletions.get(taskId);
+    if (!pending) {
+      return false;
+    }
+
+    if (pending.retryTimer) {
+      return true;
+    }
+
+    const retryDelayMs = LOCAL_TASK_COMPLETION_RETRY_DELAYS_MS[pending.retryCount];
+    if (retryDelayMs === undefined) {
+      this.pendingLocalTaskCompletions.delete(taskId);
+      this.clearLocalTaskCompletionTimers(pending);
+      this.logger.warn("local coding task completion was rejected after retries", {
+        taskId,
+        attempts: pending.retryCount + 1
+      });
+      return true;
+    }
+
+    pending.retryCount += 1;
+    this.scheduleLocalTaskCompletionCleanup(taskId, pending);
+    this.logger.warn("backend has not recorded local coding task yet; retrying completion", {
+      taskId,
+      retryInMs: retryDelayMs,
+      attempt: pending.retryCount
+    });
+    pending.retryTimer = setTimeout(() => {
+      pending.retryTimer = null;
+      this.logger.info("retrying local coding task completion", {
+        taskId,
+        attempt: pending.retryCount
+      });
+      this.sendRuntimeMessage(pending.message);
+    }, retryDelayMs);
+    pending.retryTimer.unref?.();
+    return true;
+  }
+
+  private scheduleLocalTaskCompletionCleanup(taskId: string, pending: PendingLocalTaskCompletion): void {
+    if (pending.cleanupTimer) {
+      clearTimeout(pending.cleanupTimer);
+    }
+    pending.cleanupTimer = setTimeout(() => {
+      this.pendingLocalTaskCompletions.delete(taskId);
+      this.clearLocalTaskCompletionTimers(pending);
+    }, LOCAL_TASK_COMPLETION_RETENTION_MS);
+    pending.cleanupTimer.unref?.();
+  }
+
+  private clearPendingLocalTaskCompletions(): void {
+    for (const pending of this.pendingLocalTaskCompletions.values()) {
+      this.clearLocalTaskCompletionTimers(pending);
+    }
+    this.pendingLocalTaskCompletions.clear();
+  }
+
+  private clearLocalTaskCompletionTimers(pending: PendingLocalTaskCompletion): void {
+    if (pending.retryTimer) {
+      clearTimeout(pending.retryTimer);
+      pending.retryTimer = null;
+    }
+    if (pending.cleanupTimer) {
+      clearTimeout(pending.cleanupTimer);
+      pending.cleanupTimer = null;
+    }
   }
 
   private handleControlRequest(message: ControlRequestMessage): ControlResultMessage {
@@ -659,7 +780,7 @@ function isHeartbeatAckMessage(value: unknown): value is { type: "heartbeat_ack"
   return isJsonObject(value) && value.type === "heartbeat_ack";
 }
 
-function isBackendErrorMessage(value: unknown): value is { type: "error"; error_code?: string; message?: string } {
+function isBackendErrorMessage(value: unknown): value is BackendErrorMessage {
   return isJsonObject(value) && value.type === "error";
 }
 

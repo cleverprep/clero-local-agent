@@ -1,7 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
-import path from "node:path";
 import type { ApprovalProvider } from "@clero-local-agent/approvals";
 import { ToolExecutionError, type ToolDefinition, type ToolExecutionContext } from "@clero-local-agent/mcp-runtime";
 import { isJsonObject, type JsonObject, type JsonValue } from "@clero-local-agent/protocol";
@@ -722,22 +721,16 @@ export class AntigravityCliAdapter implements CodingAgentAdapter {
   }
 
   private spawnAntigravityProcess(cliArgs: string[], cwd: string): ChildProcessWithoutNullStreams {
-    if (process.platform === "darwin" && this.shouldUseMacPseudoTerminal()) {
-      return spawn("script", ["-q", "/dev/null", this.command, ...cliArgs], {
-        cwd,
-        stdio: "pipe"
-      });
-    }
-
     return spawn(this.command, cliArgs, {
       cwd,
-      stdio: "pipe"
+      stdio: "pipe",
+      env: {
+        ...process.env,
+        CI: process.env.CI ?? "1",
+        TERM: process.env.TERM ?? "dumb",
+        NO_COLOR: process.env.NO_COLOR ?? "1"
+      }
     });
-  }
-
-  private shouldUseMacPseudoTerminal(): boolean {
-    const name = path.basename(this.command).toLowerCase();
-    return name === "agy" || name === "antigravity";
   }
 
   private permissionModeFromSandbox(sandbox: CodexSandbox): string {
