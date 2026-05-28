@@ -1,5 +1,6 @@
 import {
   errorToolResult,
+  capabilityGroups,
   inputSchemaForTool,
   isJsonObject,
   okToolResult,
@@ -31,6 +32,7 @@ export type ToolDefinition = {
   name: ToolName;
   description: string;
   inputSchema?: JsonSchema;
+  groups?: string[];
   requiresLease?: boolean;
   handler: ToolHandler;
 };
@@ -90,7 +92,8 @@ export class ToolRegistry {
       name: definition.name,
       access: capabilityAccessForDefinition(definition),
       description: definition.description,
-      inputSchema: definition.inputSchema ?? inputSchemaForTool(definition.name)
+      inputSchema: definition.inputSchema ?? inputSchemaForTool(definition.name),
+      groups: definition.groups ?? capabilityGroups(definition.name)
     }));
   }
 

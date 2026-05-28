@@ -52,6 +52,7 @@ test("derives advertised capabilities from registered tool definitions", () => {
   const codingAgent = capabilities.find((capability) => capability.name === "coding_agent.start_task");
   assert.equal(codingAgent?.access, "lease_required");
   assert.deepEqual(codingAgent?.inputSchema?.required, ["prompt"]);
+  assert.deepEqual(codingAgent?.groups, ["codex"]);
 });
 
 test("rejects missing required arguments before tool execution", async () => {

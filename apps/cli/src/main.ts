@@ -112,7 +112,8 @@ async function main(): Promise<void> {
             access: capability.access,
             description: capability.description
           };
-          return capability.inputSchema ? { ...tool, inputSchema: capability.inputSchema } : tool;
+          const withGroups = capability.groups?.length ? { ...tool, groups: capability.groups } : tool;
+          return capability.inputSchema ? { ...withGroups, inputSchema: capability.inputSchema } : withGroups;
         })
       }
     });

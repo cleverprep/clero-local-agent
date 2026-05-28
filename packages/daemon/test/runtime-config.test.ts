@@ -55,6 +55,18 @@ test("filters advertised capabilities from runtime config", () => {
   assert.equal(names.includes("workspace.list_projects"), true);
 });
 
+test("advertises Antigravity through coding-agent tool capabilities", () => {
+  const config = defaultRuntimeConfig();
+  config.capabilities!.codex!.enabled = true;
+  config.capabilities!.codex!.provider = "antigravity";
+
+  const capabilities = capabilitiesFromConfig(config);
+  const startTask = capabilities.find((capability) => capability.name === "coding_agent.start_task");
+
+  assert.ok(startTask);
+  assert.deepEqual(startTask.groups, ["codex"]);
+});
+
 test("maps runtime config to daemon capability options", () => {
   const config = defaultRuntimeConfig();
   config.capabilities!.codex!.enabled = true;

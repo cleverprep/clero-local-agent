@@ -58,6 +58,7 @@ export type Capability = {
   access: CapabilityAccess;
   description: string;
   inputSchema?: JsonSchema;
+  groups?: string[];
 };
 
 export type ActiveLease = {
@@ -567,8 +568,25 @@ function capability(name: ToolName, description: string): Capability {
     name,
     access: toolCapabilityAccess(name),
     description,
-    inputSchema: inputSchemaForTool(name)
+    inputSchema: inputSchemaForTool(name),
+    groups: capabilityGroups(name)
   };
+}
+
+export function capabilityGroups(tool: string): string[] {
+  if (tool.startsWith("browser.")) {
+    return ["browser"];
+  }
+  if (tool.startsWith("coding_agent.")) {
+    return ["codex"];
+  }
+  if (tool.startsWith("git.")) {
+    const verb = tool.split(".", 2)[1];
+    return ["commit", "push", "tag", "checkout", "reset", "merge", "rebase"].includes(verb)
+      ? ["git_write"]
+      : ["git_read"];
+  }
+  return [];
 }
 
 function emptyObjectSchema(): JsonSchema {
