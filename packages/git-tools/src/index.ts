@@ -20,24 +20,24 @@ export class GitTools {
     return [
       {
         name: "git.status",
-        description: "Read git status.",
+        description: "Read git status for a discovered project. Prefer project over absolute cwd.",
         requiresLease: false,
         handler: (args) => this.status(args)
       },
       {
         name: "git.diff",
-        description: "Read git diff.",
+        description: "Read git diff for a discovered project. Prefer project over absolute cwd.",
         requiresLease: false,
         handler: (args) => this.diff(args)
       },
       {
         name: "git.commit",
-        description: "Create a git commit after local approval.",
+        description: "Create a git commit in a discovered project after local approval. Prefer project over absolute cwd.",
         handler: (args) => this.commit(args)
       },
       {
         name: "git.push",
-        description: "Push commits after local approval.",
+        description: "Push commits from a discovered project after local approval. Prefer project over absolute cwd.",
         handler: (args) => this.push(args)
       }
     ];
@@ -97,7 +97,7 @@ export class GitTools {
   }
 
   private cwd(args: JsonObject): string {
-    return this.options.workspacePolicy.resolveAllowedDirectory(optionalString(args, "cwd"));
+    return this.options.workspacePolicy.resolveAllowedDirectory(optionalString(args, "project") ?? optionalString(args, "cwd"));
   }
 }
 

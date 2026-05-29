@@ -452,17 +452,18 @@ export function inputSchemaForTool(tool: string): JsonSchema {
         max_results: numberSchema("Maximum projects to return. Defaults to 50, maximum 200.")
       });
     case "workspace.describe_project":
-      return objectSchema(
-        {
-          path: stringSchema("Allowed local project directory to describe.")
-        },
-        ["path"]
-      );
+      return objectSchema({
+        project: stringSchema("Preferred project key/name from workspace.list_projects. Use this instead of inventing absolute paths."),
+        path: stringSchema("Optional allowed local project directory to describe.")
+      });
     case "coding_agent.start_task":
       return objectSchema(
         {
           prompt: stringSchema("Task prompt to send to the local coding agent."),
-          cwd: stringSchema("Allowed working directory for the task."),
+          project: stringSchema("Preferred project key/name from workspace.list_projects. Use this instead of inventing absolute paths."),
+          cwd: stringSchema("Optional allowed working directory for the task. Prefer project unless the user provided an exact path."),
+          continue_session: booleanSchema("Continue the previous local coding-agent session for this agent/project when available. Defaults to false."),
+          session_key: stringSchema("Optional stable session key. Use the same key with continue_session=true to resume a specific coding-agent session."),
           sandbox: stringEnumSchema(
             ["read-only", "workspace-write", "danger-full-access"],
             "Coding-agent sandbox policy. Defaults to read-only. workspace-write and danger-full-access require approval."
@@ -500,17 +501,20 @@ export function inputSchemaForTool(tool: string): JsonSchema {
       );
     case "git.status":
       return objectSchema({
-        cwd: stringSchema("Allowed git working directory.")
+        project: stringSchema("Preferred project key/name from workspace.list_projects. Use this instead of inventing absolute paths."),
+        cwd: stringSchema("Optional allowed git working directory. Prefer project unless the user provided an exact path.")
       });
     case "git.diff":
       return objectSchema({
-        cwd: stringSchema("Allowed git working directory."),
+        project: stringSchema("Preferred project key/name from workspace.list_projects. Use this instead of inventing absolute paths."),
+        cwd: stringSchema("Optional allowed git working directory. Prefer project unless the user provided an exact path."),
         staged: booleanSchema("Return staged diff instead of unstaged diff.")
       });
     case "git.commit":
       return objectSchema(
         {
-          cwd: stringSchema("Allowed git working directory."),
+          project: stringSchema("Preferred project key/name from workspace.list_projects. Use this instead of inventing absolute paths."),
+          cwd: stringSchema("Optional allowed git working directory. Prefer project unless the user provided an exact path."),
           message: stringSchema("Commit message."),
           paths: stringArraySchema("Optional paths to stage before committing.")
         },
@@ -518,7 +522,8 @@ export function inputSchemaForTool(tool: string): JsonSchema {
       );
     case "git.push":
       return objectSchema({
-        cwd: stringSchema("Allowed git working directory."),
+        project: stringSchema("Preferred project key/name from workspace.list_projects. Use this instead of inventing absolute paths."),
+        cwd: stringSchema("Optional allowed git working directory. Prefer project unless the user provided an exact path."),
         remote: stringSchema("Git remote name. Defaults to origin."),
         branch: stringSchema("Branch to push. Defaults to the current branch.")
       });
@@ -550,16 +555,16 @@ export function defaultCapabilities(): Capability[] {
     capability("browser.close_tab", "Close the active or selected browser tab."),
     capability("browser.close_page", "Compatibility alias for browser.close_tab."),
     capability("workspace.list_roots", "List local filesystem roots the agent is allowed to inspect. Use this before choosing a project path."),
-    capability("workspace.list_projects", "Discover local projects under allowed roots without using the browser for file browsing."),
-    capability("workspace.describe_project", "Inspect a discovered local project path and summarize markers, stack, package metadata, and git state."),
-    capability("coding_agent.start_task", "Start a local Codex, Claude Code, or Antigravity task in an allowed cwd. Returns immediately with task_id; poll coding_agent.get_status/get_output."),
+    capability("workspace.list_projects", "Discover local projects under allowed roots. Use the returned project key/name for coding and git tools instead of inventing absolute paths."),
+    capability("workspace.describe_project", "Inspect a discovered local project key/name or path and summarize markers, stack, package metadata, and git state."),
+    capability("coding_agent.start_task", "Start a local Codex, Claude Code, or Antigravity task in a discovered project. Prefer project over absolute cwd. Set continue_session=true to resume prior context for the same agent/project when available. Returns immediately with task_id; poll coding_agent.get_status/get_output."),
     capability("coding_agent.get_status", "Get local coding-agent task status by task_id."),
     capability("coding_agent.get_output", "Read local coding-agent task output and streamed events by task_id."),
     capability("coding_agent.cancel", "Cancel a running local coding-agent task."),
-    capability("git.status", "Read git status in an allowed workspace."),
-    capability("git.diff", "Read git diff in an allowed workspace."),
-    capability("git.commit", "Create a git commit after local approval."),
-    capability("git.push", "Push git commits after local approval.")
+    capability("git.status", "Read git status for a discovered project. Prefer project over absolute cwd."),
+    capability("git.diff", "Read git diff for a discovered project. Prefer project over absolute cwd."),
+    capability("git.commit", "Create a git commit in a discovered project after local approval. Prefer project over absolute cwd."),
+    capability("git.push", "Push git commits from a discovered project after local approval. Prefer project over absolute cwd.")
   ];
 }
 

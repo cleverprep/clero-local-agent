@@ -1,6 +1,6 @@
 {
   "name": "clero-local-agent",
-  "version": "0.1.23",
+  "version": "0.1.24",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
@@ -20,6 +20,10 @@
     "tauri:build:release": "pnpm build:daemon-runtime && pnpm build:tauri-updater-config && pnpm --filter @clero-local-agent/desktop exec tauri build --bundles app --config src-tauri/tauri.updater.generated.json && pnpm build:macos-dmg",
     "smoke:browser": "node --experimental-strip-types scripts/smoke-managed-browser.ts",
     "smoke:browser:mcp-chrome": "node --experimental-strip-types scripts/smoke-mcp-chrome.ts",
+    "smoke:coding": "node --experimental-strip-types scripts/smoke-coding-agents.ts",
+    "smoke:coding:codex": "node --experimental-strip-types scripts/smoke-coding-agents.ts --provider codex",
+    "smoke:coding:claude": "node --experimental-strip-types scripts/smoke-coding-agents.ts --provider claude-code",
+    "smoke:coding:antigravity": "node --experimental-strip-types scripts/smoke-coding-agents.ts --provider antigravity",
     "test": "node --experimental-strip-types --test packages/browser/test/mcp-chrome-adapter.test.ts packages/coding-agents/test/codex-cli-adapter.test.ts packages/daemon/test/lease-manager.test.ts packages/daemon/test/local-task-completion.test.ts packages/daemon/test/pairing-client.test.ts packages/daemon/test/runtime-config.test.ts packages/mcp-runtime/test/tool-registry.test.ts packages/workspace/test/workspace-tools.test.ts",
     "typecheck": "tsc -p tsconfig.typecheck.json --pretty false"
   },

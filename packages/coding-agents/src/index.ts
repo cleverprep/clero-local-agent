@@ -1,6 +1,8 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import type { ApprovalProvider } from "@clero-local-agent/approvals";
 import { ToolExecutionError, type ToolDefinition, type ToolExecutionContext } from "@clero-local-agent/mcp-runtime";
 import { isJsonObject, type JsonObject, type JsonValue } from "@clero-local-agent/protocol";
@@ -50,6 +52,14 @@ export type CodingTask = {
   agent_id?: string;
   local_task_id?: string;
   event_run_id?: string;
+  session_key?: string;
+  continue_session?: boolean;
+  resumed_session?: boolean;
+  provider_session_id?: string;
+  claude_session_id?: string;
+  antigravity_conversation_id?: string;
+  antigravity_log_file?: string;
+  antigravity_log_start_byte?: number;
 };
 
 export interface CodingAgentAdapter {
@@ -70,7 +80,7 @@ export class CodingAgentTools {
     return [
       {
         name: "coding_agent.start_task",
-        description: "Start a non-interactive local coding-agent task.",
+        description: "Start a non-interactive local coding-agent task in a discovered project. Prefer project over absolute cwd.",
         handler: (args, context) => this.adapter.startTask(args, context)
       },
       {
@@ -153,6 +163,19 @@ type ApprovalMetadata = {
   reason?: string;
 };
 
+type CodingSessionState = {
+  providerSessionId: string;
+  cwd: string;
+  updatedAt: string;
+};
+
+type CodingSessionPlan = {
+  key?: string;
+  continueSession: boolean;
+  providerSessionId?: string;
+  resumed: boolean;
+};
+
 const SANDBOX_VALUES: CodexSandbox[] = ["read-only", "workspace-write", "danger-full-access"];
 const REASONING_EFFORT_VALUES: CodexReasoningEffort[] = ["low", "medium", "high", "xhigh"];
 const CLAUDE_PERMISSION_MODES: ClaudeCodePermissionMode[] = [
@@ -170,6 +193,7 @@ const DEFAULT_MAX_OUTPUT_BYTES = 1_000_000;
 export class CodexCliAdapter implements CodingAgentAdapter {
   private readonly command: string;
   private readonly tasks = new Map<string, StoredCodingTask>();
+  private readonly sessions = new Map<string, CodingSessionState>();
   private readonly options: CodexCliAdapterOptions;
   private readonly maxEvents: number;
   private readonly maxOutputBytes: number;
@@ -183,12 +207,13 @@ export class CodexCliAdapter implements CodingAgentAdapter {
 
   async startTask(args: JsonObject, context: ToolExecutionContext): Promise<JsonObject> {
     const prompt = requiredString(args, "prompt");
-    const cwd = this.options.workspacePolicy.resolveAllowedDirectory(optionalString(args, "cwd"));
+    const cwd = this.options.workspacePolicy.resolveAllowedDirectory(optionalString(args, "project") ?? optionalString(args, "cwd"));
     await ensureExistingDirectory(cwd);
     const sandbox = sandboxArg(args, "sandbox") ?? this.options.defaultSandbox ?? "read-only";
     const approval = await this.ensureSandboxApproval(sandbox, cwd, prompt);
+    const sessionPlan = codingSessionPlan(args, context, cwd, this.sessions);
     const taskId = `codex_${randomUUID()}`;
-    const cliArgs = this.codexExecArgs(args, cwd, sandbox);
+    const cliArgs = this.codexExecArgs(args, cwd, sandbox, sessionPlan);
     const child = spawn(this.command, cliArgs, {
       cwd,
       stdio: "pipe"
@@ -219,6 +244,11 @@ export class CodexCliAdapter implements CodingAgentAdapter {
       agent_id: context.agentId,
       local_task_id: context.taskId,
       event_run_id: context.eventRunId,
+      session_key: sessionPlan.key,
+      continue_session: sessionPlan.continueSession,
+      resumed_session: sessionPlan.resumed,
+      provider_session_id: sessionPlan.providerSessionId,
+      codex_thread_id: sessionPlan.providerSessionId,
       process: child,
       events: [],
       nextEventIndex: 0,
@@ -306,7 +336,32 @@ export class CodexCliAdapter implements CodingAgentAdapter {
     return this.publicTask(task);
   }
 
-  private codexExecArgs(args: JsonObject, cwd: string, sandbox: CodexSandbox): string[] {
+  private codexExecArgs(
+    args: JsonObject,
+    cwd: string,
+    sandbox: CodexSandbox,
+    sessionPlan: CodingSessionPlan
+  ): string[] {
+    if (sessionPlan.resumed && sessionPlan.providerSessionId) {
+      const cliArgs = ["--ask-for-approval", "never", "--sandbox", sandbox, "--cd", cwd, "exec", "resume", "--json"];
+      const model = optionalString(args, "model") ?? this.options.defaultModel;
+      if (model) {
+        cliArgs.push("--model", model);
+      }
+      const reasoningEffort = reasoningEffortArg(args, "reasoning_effort") ?? this.options.defaultReasoningEffort;
+      if (reasoningEffort) {
+        cliArgs.push("--config", `model_reasoning_effort=${JSON.stringify(reasoningEffort)}`);
+      }
+      if (booleanArg(args, "ephemeral")) {
+        cliArgs.push("--ephemeral");
+      }
+      if (booleanArg(args, "skip_git_repo_check")) {
+        cliArgs.push("--skip-git-repo-check");
+      }
+      cliArgs.push(sessionPlan.providerSessionId, "-");
+      return cliArgs;
+    }
+
     const cliArgs = ["--ask-for-approval", "never", "exec", "--json", "--sandbox", sandbox, "--cd", cwd];
     const model = optionalString(args, "model") ?? this.options.defaultModel;
     if (model) {
@@ -434,6 +489,8 @@ export class CodexCliAdapter implements CodingAgentAdapter {
 
     if (type === "thread.started" && typeof event.thread_id === "string") {
       task.codex_thread_id = event.thread_id;
+      task.provider_session_id = event.thread_id;
+      rememberCodingSession(this.sessions, task, event.thread_id);
     }
 
     if (type === "item.completed" && isJsonObject(event.item)) {
@@ -580,6 +637,7 @@ export class CodexCliAdapter implements CodingAgentAdapter {
 export class AntigravityCliAdapter implements CodingAgentAdapter {
   private readonly command: string;
   private readonly tasks = new Map<string, StoredCodingTask>();
+  private readonly sessions = new Map<string, CodingSessionState>();
   private readonly options: AntigravityCliAdapterOptions;
   private readonly maxEvents: number;
   private readonly maxOutputBytes: number;
@@ -593,12 +651,15 @@ export class AntigravityCliAdapter implements CodingAgentAdapter {
 
   async startTask(args: JsonObject, context: ToolExecutionContext): Promise<JsonObject> {
     const prompt = requiredString(args, "prompt");
-    const cwd = this.options.workspacePolicy.resolveAllowedDirectory(optionalString(args, "cwd"));
+    const cwd = this.options.workspacePolicy.resolveAllowedDirectory(optionalString(args, "project") ?? optionalString(args, "cwd"));
     await ensureExistingDirectory(cwd);
     const sandbox = sandboxArg(args, "sandbox") ?? this.options.defaultSandbox ?? "read-only";
     const approval = await this.ensureSandboxApproval(sandbox, cwd, prompt);
+    const sessionPlan = codingSessionPlan(args, context, cwd, this.sessions);
     const taskId = `antigravity_${randomUUID()}`;
-    const cliArgs = this.antigravityArgs(sandbox);
+    const antigravityLogFile = antigravityCliLogFile();
+    const antigravityLogStartByte = await fileSize(antigravityLogFile);
+    const cliArgs = this.antigravityArgs(sandbox, sessionPlan);
     const child = this.spawnAntigravityProcess(cliArgs, cwd);
 
     const task: StoredCodingTask = {
@@ -625,6 +686,13 @@ export class AntigravityCliAdapter implements CodingAgentAdapter {
       agent_id: context.agentId,
       local_task_id: context.taskId,
       event_run_id: context.eventRunId,
+      session_key: sessionPlan.key,
+      continue_session: sessionPlan.continueSession,
+      resumed_session: sessionPlan.resumed,
+      provider_session_id: sessionPlan.providerSessionId,
+      antigravity_conversation_id: sessionPlan.providerSessionId,
+      antigravity_log_file: antigravityLogFile,
+      antigravity_log_start_byte: antigravityLogStartByte,
       process: child,
       events: [],
       nextEventIndex: 0,
@@ -661,22 +729,49 @@ export class AntigravityCliAdapter implements CodingAgentAdapter {
       this.notifyTerminal(task);
     });
     child.on("close", (code) => {
-      this.flushStdoutBuffer(task);
-      task.exit_code = code;
-      if (task.status !== "cancelled") {
-        task.status = this.statusFromExit(task, code);
-      }
-      task.finished_at = new Date().toISOString();
-      task.process = null;
-      this.appendProcessEvent(task, "process.closed", {
-        exit_code: code,
-        status: task.status
-      });
-      this.notifyTerminal(task);
+      void this.handleAntigravityClose(task, code);
     });
 
     child.stdin.end(`${prompt.trimEnd()}\n`);
     return this.publicTask(task);
+  }
+
+  private async handleAntigravityClose(task: StoredCodingTask, code: number | null): Promise<void> {
+    this.flushStdoutBuffer(task);
+    task.exit_code = code;
+    if (task.status !== "cancelled") {
+      task.status = this.statusFromExit(task, code);
+    }
+    task.finished_at = new Date().toISOString();
+    task.process = null;
+    await this.captureAntigravityConversationId(task);
+    this.appendProcessEvent(task, "process.closed", {
+      exit_code: code,
+      status: task.status
+    });
+    this.notifyTerminal(task);
+  }
+
+  private async captureAntigravityConversationId(task: StoredCodingTask): Promise<void> {
+    if (task.provider_session_id || !task.antigravity_log_file) {
+      return;
+    }
+
+    const conversationId = await antigravityConversationIdFromLog(
+      task.antigravity_log_file,
+      task.antigravity_log_start_byte ?? 0
+    );
+    if (!conversationId) {
+      return;
+    }
+
+    task.antigravity_conversation_id = conversationId;
+    task.provider_session_id = conversationId;
+    rememberCodingSession(this.sessions, task, conversationId);
+    this.appendProcessEvent(task, "antigravity.session_detected", {
+      conversation_id: conversationId,
+      source: "cli.log"
+    });
   }
 
   async getStatus(taskId: string): Promise<JsonObject> {
@@ -712,12 +807,18 @@ export class AntigravityCliAdapter implements CodingAgentAdapter {
     return this.publicTask(task);
   }
 
-  private antigravityArgs(sandbox: CodexSandbox): string[] {
+  private antigravityArgs(sandbox: CodexSandbox, sessionPlan: CodingSessionPlan): string[] {
+    const cliArgs: string[] = [];
+    if (sessionPlan.resumed && sessionPlan.providerSessionId) {
+      cliArgs.push("--conversation", sessionPlan.providerSessionId);
+    }
     if (sandbox === "danger-full-access") {
-      return ["--dangerously-skip-permissions"];
+      cliArgs.push("--dangerously-skip-permissions");
+      return cliArgs;
     }
 
-    return ["--sandbox"];
+    cliArgs.push("--sandbox");
+    return cliArgs;
   }
 
   private spawnAntigravityProcess(cliArgs: string[], cwd: string): ChildProcessWithoutNullStreams {
@@ -854,6 +955,13 @@ export class AntigravityCliAdapter implements CodingAgentAdapter {
       task.output = appendBounded(task.output, `${text}\n`, this.maxOutputBytes);
     }
 
+    const conversationId = stringValue(event.conversation_id) ?? stringValue(event.conversationId);
+    if (conversationId) {
+      task.antigravity_conversation_id = conversationId;
+      task.provider_session_id = conversationId;
+      rememberCodingSession(this.sessions, task, conversationId);
+    }
+
     const blockedReason = blockedReasonFromEvent(event);
     if (blockedReason) {
       this.markTaskBlocked(task, blockedReason);
@@ -983,6 +1091,7 @@ export class AntigravityCliAdapter implements CodingAgentAdapter {
 export class ClaudeCodeAdapter implements CodingAgentAdapter {
   private readonly command: string;
   private readonly tasks = new Map<string, StoredCodingTask>();
+  private readonly sessions = new Map<string, CodingSessionState>();
   private readonly options: ClaudeCodeAdapterOptions;
   private readonly maxEvents: number;
   private readonly maxOutputBytes: number;
@@ -996,15 +1105,16 @@ export class ClaudeCodeAdapter implements CodingAgentAdapter {
 
   async startTask(args: JsonObject, context: ToolExecutionContext): Promise<JsonObject> {
     const prompt = requiredString(args, "prompt");
-    const cwd = this.options.workspacePolicy.resolveAllowedDirectory(optionalString(args, "cwd"));
+    const cwd = this.options.workspacePolicy.resolveAllowedDirectory(optionalString(args, "project") ?? optionalString(args, "cwd"));
     await ensureExistingDirectory(cwd);
     const permissionMode = claudePermissionModeArg(args, "permission_mode") ?? this.options.permissionMode ?? "default";
     const approval = await this.ensurePermissionApproval(permissionMode, cwd, prompt);
+    const sessionPlan = codingSessionPlan(args, context, cwd, this.sessions);
     const taskId = `claude_${randomUUID()}`;
     const model = optionalString(args, "model") ?? this.options.defaultModel;
     const reasoningEffort =
       claudeReasoningEffortArg(args, "reasoning_effort") ?? this.options.defaultReasoningEffort;
-    const cliArgs = this.claudeArgs(permissionMode, model, reasoningEffort);
+    const cliArgs = this.claudeArgs(permissionMode, model, reasoningEffort, sessionPlan);
     const child = spawn(this.command, cliArgs, {
       cwd,
       stdio: "pipe"
@@ -1036,6 +1146,11 @@ export class ClaudeCodeAdapter implements CodingAgentAdapter {
       agent_id: context.agentId,
       local_task_id: context.taskId,
       event_run_id: context.eventRunId,
+      session_key: sessionPlan.key,
+      continue_session: sessionPlan.continueSession,
+      resumed_session: sessionPlan.resumed,
+      provider_session_id: sessionPlan.providerSessionId,
+      claude_session_id: sessionPlan.providerSessionId,
       process: child,
       events: [],
       nextEventIndex: 0,
@@ -1126,9 +1241,13 @@ export class ClaudeCodeAdapter implements CodingAgentAdapter {
   private claudeArgs(
     permissionMode: ClaudeCodePermissionMode,
     model?: string,
-    reasoningEffort?: ClaudeCodeReasoningEffort
+    reasoningEffort?: ClaudeCodeReasoningEffort,
+    sessionPlan?: CodingSessionPlan
   ): string[] {
     const cliArgs = ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", permissionMode];
+    if (sessionPlan?.resumed && sessionPlan.providerSessionId) {
+      cliArgs.push("--resume", sessionPlan.providerSessionId);
+    }
     if (model) {
       cliArgs.push("--model", model);
     }
@@ -1246,6 +1365,13 @@ export class ClaudeCodeAdapter implements CodingAgentAdapter {
     if (text) {
       task.final_message = text;
       task.output = appendBounded(task.output, `${text}\n`, this.maxOutputBytes);
+    }
+
+    const sessionId = stringValue(event.session_id) ?? stringValue(event.sessionId);
+    if (sessionId) {
+      task.claude_session_id = sessionId;
+      task.provider_session_id = sessionId;
+      rememberCodingSession(this.sessions, task, sessionId);
     }
 
     const blockedReason = blockedReasonFromEvent(event);
@@ -1440,6 +1566,40 @@ function claudeReasoningEffortArg(args: JsonObject, key: string): ClaudeCodeReas
   throw new Error(`${key} must be one of ${CLAUDE_REASONING_EFFORT_VALUES.join(", ")}`);
 }
 
+function codingSessionPlan(
+  args: JsonObject,
+  context: ToolExecutionContext,
+  cwd: string,
+  sessions: Map<string, CodingSessionState>
+): CodingSessionPlan {
+  const continueSession = booleanArg(args, "continue_session");
+  const explicitKey = optionalString(args, "session_key");
+  const key = explicitKey ?? (continueSession ? `${context.agentId ?? "agent"}:${cwd}` : undefined);
+  const stored = key ? sessions.get(key) : undefined;
+  return {
+    key,
+    continueSession,
+    providerSessionId: continueSession ? stored?.providerSessionId : undefined,
+    resumed: continueSession && Boolean(stored?.providerSessionId)
+  };
+}
+
+function rememberCodingSession(
+  sessions: Map<string, CodingSessionState>,
+  task: StoredCodingTask,
+  providerSessionId: string
+): void {
+  if (!task.session_key) {
+    return;
+  }
+
+  sessions.set(task.session_key, {
+    providerSessionId,
+    cwd: task.cwd,
+    updatedAt: new Date().toISOString()
+  });
+}
+
 function publicTask(task: CodingTask): JsonObject {
   const result: JsonObject = {
     task_id: task.task_id,
@@ -1454,8 +1614,16 @@ function publicTask(task: CodingTask): JsonObject {
     finished_at: task.finished_at,
     final_message: task.final_message,
     events_count: task.events_count,
-    last_event_type: task.last_event_type
+    last_event_type: task.last_event_type,
+    continue_session: task.continue_session ?? false,
+    resumed_session: task.resumed_session ?? false
   };
+  if (task.session_key) {
+    result.session_key = task.session_key;
+  }
+  if (task.provider_session_id) {
+    result.provider_session_id = task.provider_session_id;
+  }
   if (task.model) {
     result.model = task.model;
   }
@@ -1474,6 +1642,12 @@ function publicTask(task: CodingTask): JsonObject {
   if (task.codex_thread_id) {
     result.codex_thread_id = task.codex_thread_id;
   }
+  if (task.claude_session_id) {
+    result.claude_session_id = task.claude_session_id;
+  }
+  if (task.antigravity_conversation_id) {
+    result.antigravity_conversation_id = task.antigravity_conversation_id;
+  }
   if (task.lease_id) {
     result.lease_id = task.lease_id;
   }
@@ -1491,6 +1665,41 @@ function parseJsonObject(line: string): JsonObject | undefined {
   } catch {
     return undefined;
   }
+}
+
+function antigravityCliLogFile(): string {
+  return path.join(os.homedir(), ".gemini", "antigravity-cli", "cli.log");
+}
+
+async function fileSize(file: string): Promise<number> {
+  try {
+    const result = await stat(file);
+    return result.size;
+  } catch {
+    return 0;
+  }
+}
+
+async function antigravityConversationIdFromLog(file: string, startByte: number): Promise<string | undefined> {
+  let log: string;
+  try {
+    log = await readFile(file, "utf8");
+  } catch {
+    return undefined;
+  }
+
+  const start = startByte > log.length ? 0 : startByte;
+  const segment = log.slice(start);
+  return antigravityConversationIdFromText(segment) ?? antigravityConversationIdFromText(log);
+}
+
+function antigravityConversationIdFromText(text: string): string | undefined {
+  const matches = Array.from(
+    text.matchAll(
+      /(?:Created conversation |Print mode: conversation=)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/g
+    )
+  );
+  return matches.at(-1)?.[1];
 }
 
 async function ensureExistingDirectory(directory: string): Promise<void> {

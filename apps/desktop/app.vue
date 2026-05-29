@@ -449,6 +449,10 @@
                 Antigravity command
                 <input v-model="config.capabilities.codex.antigravity_command" spellcheck="false" placeholder="Auto-detected" />
               </label>
+              <div class="settings-tip wide">
+                <strong>Model is managed in Antigravity.</strong>
+                <span>Open the CLI with <span class="command-token">agy</span>, then type <span class="command-token">/model</span> to show models and select the default reasoning model.</span>
+              </div>
               <label>
                 Sandbox
                 <select v-model="codexSandbox">

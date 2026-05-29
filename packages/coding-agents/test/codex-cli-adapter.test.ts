@@ -70,6 +70,62 @@ test("runs codex exec as an async JSONL task", async (t) => {
   assert.equal(args.at(-1), "-");
 });
 
+test("resumes codex exec when continue_session uses the same session key", async (t) => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "clero-codex-test-"));
+  t.after(() => rm(workspace, { recursive: true, force: true }));
+  const resolvedWorkspace = await realpath(workspace);
+  const fakeCodex = await createFakeCodex(workspace, 0);
+  const adapter = new CodexCliAdapter({
+    workspacePolicy: new WorkspacePolicy({ allowedDirectories: [workspace] }),
+    command: fakeCodex
+  });
+
+  const sessionKey = "agent_1:repo";
+  const first = await adapter.startTask(
+    { prompt: "first turn", cwd: workspace, continue_session: true, session_key: sessionKey },
+    { requestId: "req_1", leaseId: "lease_1", agentId: "agent_1", taskId: "task_1" }
+  );
+  assert.equal(first.continue_session, true);
+  assert.equal(first.resumed_session, false);
+  assert.equal(first.session_key, sessionKey);
+
+  const firstStatus = await waitForTerminalStatus(adapter, stringField(first, "task_id"));
+  assert.equal(firstStatus.provider_session_id, "thread_fake");
+  assert.equal(firstStatus.codex_thread_id, "thread_fake");
+
+  const second = await adapter.startTask(
+    { prompt: "second turn", cwd: workspace, continue_session: true, session_key: sessionKey },
+    { requestId: "req_2", leaseId: "lease_1", agentId: "agent_1", taskId: "task_2" }
+  );
+  assert.equal(second.continue_session, true);
+  assert.equal(second.resumed_session, true);
+  assert.equal(second.provider_session_id, "thread_fake");
+  assert.equal(second.codex_thread_id, "thread_fake");
+
+  const secondStatus = await waitForTerminalStatus(adapter, stringField(second, "task_id"));
+  assert.equal(secondStatus.status, "completed");
+
+  const output = await adapter.getOutput(stringField(second, "task_id"));
+  const events = eventArray(output.events);
+  const processStarted = events.find((event) => event.type === "process.started");
+  assert.ok(processStarted);
+  const processData = objectField(processStarted, "data");
+  const args = stringArrayField(processData, "args");
+  assert.deepEqual(args, [
+    "--ask-for-approval",
+    "never",
+    "--sandbox",
+    "read-only",
+    "--cd",
+    resolvedWorkspace,
+    "exec",
+    "resume",
+    "--json",
+    "thread_fake",
+    "-"
+  ]);
+});
+
 test("requires approval before starting a writable codex exec task", async (t) => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "clero-codex-test-"));
   t.after(() => rm(workspace, { recursive: true, force: true }));

@@ -36,7 +36,7 @@ test("rejects a missing cwd with an invalid arguments error", async (t) => {
   const isMissingCwdError = (error: unknown) =>
     error instanceof ToolExecutionError &&
     error.errorCode === "invalid_arguments" &&
-    error.message === `cwd does not exist: ${missing}`;
+    error.message.includes(`cwd does not exist: ${missing}`);
 
   assert.throws(() => policy.resolveAllowedDirectory(missing), isMissingCwdError);
   assert.throws(() => policy.isAllowed(missing), isMissingCwdError);
@@ -67,9 +67,24 @@ test("discovers projects under allowed roots", async (t) => {
   assert.deepEqual(projects.map((project) => project.path).sort(), [realDjangoProject, realNodeProject].sort());
   const node = projects.find((project) => project.path === realNodeProject);
   assert.ok(node);
+  assert.equal(node.project, "node-app");
   assert.equal(node.name, "node-app");
   assert.deepEqual(node.detected_stacks, ["node"]);
   assert.equal(node.package_manager, "pnpm");
+});
+
+test("resolves discovered projects by relative key, folder name, and wrong absolute basename", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "clero-workspace-test-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const nestedProject = path.join(root, "clero", "clero_back");
+  await mkdir(nestedProject, { recursive: true });
+  await writeFile(path.join(nestedProject, "manage.py"), "");
+  const realProject = realpathSync(nestedProject);
+  const policy = new WorkspacePolicy({ allowedDirectories: [root] });
+
+  assert.equal(policy.resolveAllowedDirectory("clero/clero_back"), realProject);
+  assert.equal(policy.resolveAllowedDirectory("clero_back"), realProject);
+  assert.equal(policy.resolveAllowedDirectory("/Users/aiaz/workspace/clero/clero_back"), realProject);
 });
 
 test("describes an allowed project", async (t) => {
@@ -82,7 +97,7 @@ test("describes an allowed project", async (t) => {
   await writeFile(path.join(root, "tsconfig.json"), "{}");
 
   const tools = new WorkspaceTools(new WorkspacePolicy({ allowedDirectories: [root] }));
-  const result = await tools.describeProject({ path: root });
+  const result = await tools.describeProject({ project: "described-app" });
 
   assert.equal(result.name, "described-app");
   assert.deepEqual(result.detected_stacks, ["node", "typescript"]);

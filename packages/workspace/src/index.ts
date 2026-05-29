@@ -1,4 +1,4 @@
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { readdir, readFile } from "node:fs/promises";
@@ -27,7 +27,7 @@ export class WorkspacePolicy {
       return this.defaultDirectory();
     }
 
-    const resolved = resolveExistingCwd(candidate);
+    const resolved = this.resolveCandidateDirectory(candidate);
     if (!this.isAllowed(resolved)) {
       throw new ToolExecutionError(
         "invalid_arguments",
@@ -41,7 +41,68 @@ export class WorkspacePolicy {
 
   isAllowed(candidate: string): boolean {
     const resolved = resolveExistingCwd(candidate);
+    return this.isResolvedPathAllowed(resolved);
+  }
+
+  private isResolvedPathAllowed(resolved: string): boolean {
     return this.allowedDirectories.some((allowed) => resolved === allowed || resolved.startsWith(`${allowed}${path.sep}`));
+  }
+
+  private resolveCandidateDirectory(candidate: string): string {
+    const trimmed = candidate.trim();
+    const directCandidates = path.isAbsolute(trimmed)
+      ? [trimmed]
+      : [path.resolve(trimmed), ...this.allowedDirectories.map((root) => path.join(root, trimmed))];
+
+    for (const directCandidate of uniqueStrings(directCandidates)) {
+      const resolved = tryRealpath(directCandidate);
+      if (!resolved) {
+        continue;
+      }
+      if (!this.isResolvedPathAllowed(resolved)) {
+        throw new ToolExecutionError(
+          "invalid_arguments",
+          `Path is outside allowed workspaces: ${candidate}. Allowed roots: ${this.allowedDirectories.join(", ")}`,
+          { allowed_roots: this.listAllowedDirectories() }
+        );
+      }
+      return resolved;
+    }
+
+    const lookup = projectLookupName(trimmed);
+    if (lookup) {
+      const matches = this.findProjectMatches(lookup);
+      if (matches.length === 1) {
+        return matches[0]!;
+      }
+      if (matches.length > 1) {
+        throw new ToolExecutionError(
+          "invalid_arguments",
+          `Project name is ambiguous: ${lookup}. Use one of: ${matches.join(", ")}`,
+          { matches }
+        );
+      }
+    }
+
+    throw new ToolExecutionError(
+      "invalid_arguments",
+      `cwd does not exist: ${candidate}. Use workspace.list_projects and pass the returned project key/name, or omit cwd to use the default workspace.`,
+      { allowed_roots: this.listAllowedDirectories(), project: lookup }
+    );
+  }
+
+  private findProjectMatches(lookup: string): string[] {
+    const matches: string[] = [];
+    for (const root of this.allowedDirectories) {
+      scanProjectsSync({
+        current: root,
+        depth: 0,
+        maxDepth: 5,
+        lookup,
+        matches
+      });
+    }
+    return uniqueStrings(matches);
   }
 
   listAllowedDirectories(): string[] {
@@ -70,13 +131,13 @@ export class WorkspaceTools {
       },
       {
         name: "workspace.list_projects",
-        description: "Discover local projects under allowed roots without using the browser for file browsing.",
+        description: "Discover local projects under allowed roots. Use the returned project key/name for coding and git tools instead of inventing absolute paths.",
         requiresLease: false,
         handler: (args) => this.listProjects(args)
       },
       {
         name: "workspace.describe_project",
-        description: "Inspect a discovered local project path and summarize markers, stack, package metadata, and git state.",
+        description: "Inspect a discovered local project key/name or path and summarize markers, stack, package metadata, and git state.",
         requiresLease: false,
         handler: (args) => this.describeProject(args)
       }
@@ -121,7 +182,7 @@ export class WorkspaceTools {
   }
 
   async describeProject(args: JsonObject): Promise<JsonObject> {
-    const projectPath = this.workspacePolicy.resolveAllowedDirectory(requiredString(args, "path"));
+    const projectPath = this.workspacePolicy.resolveAllowedDirectory(optionalString(args, "project") ?? optionalString(args, "path"));
     const entries = await safeReadDir(projectPath);
     const markers = markerNames(entries);
     const packageJson = await readPackageJson(projectPath, markers);
@@ -154,8 +215,10 @@ export class WorkspaceTools {
     const markers = markerNames(entries);
     if (markers.length > 0) {
       const packageJson = await readPackageJson(input.current, markers);
+      const project = path.relative(input.root, input.current) || path.basename(input.current);
       input.projects.push({
         path: input.current,
+        project,
         name: packageJson?.name ?? path.basename(input.current),
         root: input.root,
         markers,
@@ -193,6 +256,82 @@ function resolveExistingCwd(candidate: string): string {
     throw new ToolExecutionError("invalid_arguments", `cwd does not exist: ${candidate}`);
   }
   return realpathSync(resolved);
+}
+
+function tryRealpath(candidate: string): string | null {
+  if (!existsSync(candidate)) {
+    return null;
+  }
+
+  try {
+    return realpathSync(candidate);
+  } catch {
+    return null;
+  }
+}
+
+function projectLookupName(candidate: string): string {
+  const normalized = candidate.replace(/[\\/]+$/, "");
+  return path.basename(normalized).trim();
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values)];
+}
+
+function scanProjectsSync(input: {
+  current: string;
+  depth: number;
+  maxDepth: number;
+  lookup: string;
+  matches: string[];
+}): void {
+  const entries = safeReadDirSync(input.current);
+  const markers = markerNames(entries);
+  const basename = path.basename(input.current);
+  const packageName = readPackageJsonNameSync(input.current, markers);
+  if (markers.length > 0 && (basename === input.lookup || packageName === input.lookup)) {
+    const resolved = tryRealpath(input.current);
+    if (resolved) {
+      input.matches.push(resolved);
+    }
+  }
+
+  if (input.depth >= input.maxDepth) {
+    return;
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory() || SKIP_DIRECTORIES.has(entry.name)) {
+      continue;
+    }
+    scanProjectsSync({
+      ...input,
+      current: path.join(input.current, entry.name),
+      depth: input.depth + 1
+    });
+  }
+}
+
+function safeReadDirSync(directory: string): Dirent[] {
+  try {
+    return readdirSync(directory, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+}
+
+function readPackageJsonNameSync(directory: string, markers: string[]): string | null {
+  if (!markers.includes("package.json")) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(readFileSync(path.join(directory, "package.json"), "utf8")) as unknown;
+    return isPlainObject(parsed) && typeof parsed.name === "string" ? parsed.name : null;
+  } catch {
+    return null;
+  }
 }
 
 const PROJECT_MARKERS = new Set([
@@ -344,14 +483,6 @@ async function runGit(cwd: string, args: string[]): Promise<{ exit_code: number;
       resolve({ exit_code: -1, stdout, stderr: `${stderr}${error.message}\n` });
     });
   });
-}
-
-function requiredString(args: JsonObject, key: string): string {
-  const value = args[key];
-  if (typeof value !== "string" || value.length === 0) {
-    throw new Error(`${key} is required`);
-  }
-  return value;
 }
 
 function optionalString(args: JsonObject, key: string): string | undefined {

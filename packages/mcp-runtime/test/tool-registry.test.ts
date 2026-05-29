@@ -276,7 +276,7 @@ test("uses lease guard auto-acquire for stateful tools without a lease id", asyn
       event_run_id: 192,
       requested_action_key: "local_runtime_45.codex",
       tool: "coding_agent.start_task",
-      arguments: { prompt: "check the repo", cwd: "/workspace/a" }
+      arguments: { prompt: "check the repo", project: "clero_back", cwd: "/workspace/a" }
     },
     {
       hasActiveLease: () => false,
@@ -295,7 +295,7 @@ test("uses lease guard auto-acquire for stateful tools without a lease id", asyn
     taskId: "192",
     requestedActionKey: "local_runtime_45.codex",
     toolName: "coding_agent.start_task",
-    workspaceKey: "/workspace/a"
+    workspaceKey: "clero_back"
   });
   if (result.status === "ok") {
     assert.deepEqual(result.result, {

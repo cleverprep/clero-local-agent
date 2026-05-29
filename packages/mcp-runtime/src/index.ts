@@ -179,6 +179,11 @@ function workspaceKeyForToolCall(tool: ToolName, args: JsonObject): string | und
     return undefined;
   }
 
+  const project = args.project;
+  if (typeof project === "string" && project.trim().length > 0) {
+    return project;
+  }
+
   const cwd = args.cwd;
   return typeof cwd === "string" && cwd.trim().length > 0 ? cwd : undefined;
 }
