@@ -207,7 +207,7 @@ export class CodexCliAdapter implements CodingAgentAdapter {
 
   async startTask(args: JsonObject, context: ToolExecutionContext): Promise<JsonObject> {
     const prompt = requiredString(args, "prompt");
-    const cwd = this.options.workspacePolicy.resolveAllowedDirectory(optionalString(args, "project") ?? optionalString(args, "cwd"));
+    const cwd = this.options.workspacePolicy.resolveProjectDirectory(optionalString(args, "project") ?? optionalString(args, "cwd"));
     await ensureExistingDirectory(cwd);
     const sandbox = sandboxArg(args, "sandbox") ?? this.options.defaultSandbox ?? "read-only";
     const approval = await this.ensureSandboxApproval(sandbox, cwd, prompt);
@@ -507,21 +507,23 @@ export class CodexCliAdapter implements CodingAgentAdapter {
     if (item.type === "agent_message" && typeof item.text === "string") {
       task.final_message = item.text;
       task.output = appendBounded(task.output, `${item.text}\n`, this.maxOutputBytes);
+      this.markBlockedFromText(task, item.text);
     }
 
     if (item.type === "command_execution" && typeof item.output === "string") {
       task.output = appendBounded(task.output, item.output, this.maxOutputBytes);
+      this.markBlockedFromText(task, item.output);
     }
   }
 
   private statusFromExit(task: StoredCodingTask, code: number | null): CodingTaskStatus {
-    if (code === 0) {
-      return "completed";
-    }
-
     if (task.blocked_reason || looksApprovalOrSandboxBlocked(task.output) || looksApprovalOrSandboxBlocked(task.stderr)) {
       task.blocked_reason ??= "Codex task stopped because approval, sandbox, or permission policy blocked progress.";
       return "blocked";
+    }
+
+    if (code === 0) {
+      return "completed";
     }
 
     return "failed";
@@ -651,7 +653,7 @@ export class AntigravityCliAdapter implements CodingAgentAdapter {
 
   async startTask(args: JsonObject, context: ToolExecutionContext): Promise<JsonObject> {
     const prompt = requiredString(args, "prompt");
-    const cwd = this.options.workspacePolicy.resolveAllowedDirectory(optionalString(args, "project") ?? optionalString(args, "cwd"));
+    const cwd = this.options.workspacePolicy.resolveProjectDirectory(optionalString(args, "project") ?? optionalString(args, "cwd"));
     await ensureExistingDirectory(cwd);
     const sandbox = sandboxArg(args, "sandbox") ?? this.options.defaultSandbox ?? "read-only";
     const approval = await this.ensureSandboxApproval(sandbox, cwd, prompt);
@@ -953,6 +955,7 @@ export class AntigravityCliAdapter implements CodingAgentAdapter {
     if (text) {
       task.final_message = text;
       task.output = appendBounded(task.output, `${text}\n`, this.maxOutputBytes);
+      this.markBlockedFromText(task, text);
     }
 
     const conversationId = stringValue(event.conversation_id) ?? stringValue(event.conversationId);
@@ -969,13 +972,13 @@ export class AntigravityCliAdapter implements CodingAgentAdapter {
   }
 
   private statusFromExit(task: StoredCodingTask, code: number | null): CodingTaskStatus {
-    if (code === 0) {
-      return "completed";
-    }
-
     if (task.blocked_reason || looksApprovalOrSandboxBlocked(task.output) || looksApprovalOrSandboxBlocked(task.stderr)) {
       task.blocked_reason ??= "Antigravity task stopped because approval, sandbox, or permission policy blocked progress.";
       return "blocked";
+    }
+
+    if (code === 0) {
+      return "completed";
     }
 
     return "failed";
@@ -1105,7 +1108,7 @@ export class ClaudeCodeAdapter implements CodingAgentAdapter {
 
   async startTask(args: JsonObject, context: ToolExecutionContext): Promise<JsonObject> {
     const prompt = requiredString(args, "prompt");
-    const cwd = this.options.workspacePolicy.resolveAllowedDirectory(optionalString(args, "project") ?? optionalString(args, "cwd"));
+    const cwd = this.options.workspacePolicy.resolveProjectDirectory(optionalString(args, "project") ?? optionalString(args, "cwd"));
     await ensureExistingDirectory(cwd);
     const permissionMode = claudePermissionModeArg(args, "permission_mode") ?? this.options.permissionMode ?? "default";
     const approval = await this.ensurePermissionApproval(permissionMode, cwd, prompt);
@@ -1365,6 +1368,7 @@ export class ClaudeCodeAdapter implements CodingAgentAdapter {
     if (text) {
       task.final_message = text;
       task.output = appendBounded(task.output, `${text}\n`, this.maxOutputBytes);
+      this.markBlockedFromText(task, text);
     }
 
     const sessionId = stringValue(event.session_id) ?? stringValue(event.sessionId);
@@ -1381,13 +1385,13 @@ export class ClaudeCodeAdapter implements CodingAgentAdapter {
   }
 
   private statusFromExit(task: StoredCodingTask, code: number | null): CodingTaskStatus {
-    if (code === 0) {
-      return "completed";
-    }
-
     if (task.blocked_reason || looksApprovalOrSandboxBlocked(task.output) || looksApprovalOrSandboxBlocked(task.stderr)) {
       task.blocked_reason ??= "Claude Code task stopped because approval, sandbox, or permission policy blocked progress.";
       return "blocked";
+    }
+
+    if (code === 0) {
+      return "completed";
     }
 
     return "failed";
@@ -1767,6 +1771,10 @@ function blockedReasonFromText(text: string): string | undefined {
   const trimmed = text.trim();
   if (!trimmed || !looksApprovalOrSandboxBlocked(trimmed)) {
     return undefined;
+  }
+  const normalized = trimmed.toLowerCase();
+  if (normalized.includes("bwrap: loopback") && normalized.includes("failed rtm_newaddr")) {
+    return "Codex Linux sandbox could not start because this host does not allow the required bubblewrap network namespace setup. Run the connector on a normal Linux host with sandbox support, or use a trusted non-sandboxed mode only after explicitly enabling it in local settings.";
   }
 
   return trimmed.slice(0, 2_000);

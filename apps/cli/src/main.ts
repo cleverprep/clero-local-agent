@@ -1,4 +1,5 @@
 #!/usr/bin/env -S node --experimental-strip-types
+import { spawn } from "node:child_process";
 import { access } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -19,6 +20,7 @@ import {
 import type { ClaudeCodePermissionMode, CodingAgentProvider, CodexSandbox } from "@clero-local-agent/coding-agents";
 
 const DEVICE_TOKEN_ACCOUNT = "device_token";
+const DEFAULT_CONNECTOR_BASE_URL = "https://media.clero.so/local-agent/latest";
 
 type CliValue = string | string[] | boolean;
 type CliArgs = Record<string, CliValue>;
@@ -99,8 +101,10 @@ Usage:
   clero-connector pair --code <connection-code> [--backend-url <url>] [--save]
   clero-connector capabilities [--config <path>]
   clero-connector status [--config <path>]
+  clero-connector update [--base-url https://media.clero.so/local-agent/latest]
   clero-connector config init|show [--config <path>]
   clero-connector workspaces list|add|remove [--path <path>] [--config <path>]
+  clero-connector browser status|enable|disable [--browser-channel chromium|chrome|chrome-beta|msedge]
   clero-connector coding status|enable|disable [--provider codex|claude-code|antigravity] [--sandbox read-only|workspace-write|danger-full-access]
 
 Compatibility:
@@ -118,6 +122,11 @@ async function main(): Promise<void> {
 
   const configPath = getString(args, "config") ?? defaultRuntimeConfigPath();
 
+  if (command === "update") {
+    await handleUpdate(args);
+    return;
+  }
+
   if (command === "config") {
     await handleConfigCommand(subcommand, configPath);
     return;
@@ -132,6 +141,11 @@ async function main(): Promise<void> {
 
   if (command === "workspaces") {
     await handleWorkspacesCommand(subcommand, args, configPath, runtimeConfig);
+    return;
+  }
+
+  if (command === "browser") {
+    await handleBrowserCommand(subcommand, args, configPath, runtimeConfig);
     return;
   }
 
@@ -162,6 +176,22 @@ async function main(): Promise<void> {
 
   printHelp();
   process.exitCode = 1;
+}
+
+async function handleUpdate(args: CliArgs): Promise<void> {
+  const baseUrl = normalizeUrl(getString(args, "base-url") ?? process.env.CLERO_CONNECTOR_BASE_URL ?? DEFAULT_CONNECTOR_BASE_URL);
+
+  if (process.platform === "win32") {
+    console.log("Stop any running clero-connector daemon, then run this in PowerShell:");
+    console.log(`$env:CLERO_CONNECTOR_BASE_URL="${baseUrl}"; irm "${baseUrl}/install.ps1" | iex`);
+    return;
+  }
+
+  console.log(`Updating clero-connector from ${baseUrl} ...`);
+  await runInteractive("sh", ["-c", 'curl -fsSL "$1" | sh', "sh", `${baseUrl}/install.sh`], {
+    ...process.env,
+    CLERO_CONNECTOR_BASE_URL: baseUrl
+  });
 }
 
 async function handleConfigCommand(subcommand: string | undefined, configPath: string): Promise<void> {
@@ -293,6 +323,39 @@ async function handleWorkspacesCommand(
 
   await saveRuntimeConfig(configPath, runtimeConfig);
   console.log(JSON.stringify({ config_path: configPath, allowed_directories: runtimeConfig.allowed_directories }, null, 2));
+}
+
+async function handleBrowserCommand(
+  subcommand: string | undefined,
+  args: CliArgs,
+  configPath: string,
+  runtimeConfig: LocalRuntimeConfig
+): Promise<void> {
+  const browser = runtimeConfig.capabilities?.browser ?? {};
+
+  if (subcommand === "status" || subcommand === undefined) {
+    console.log(JSON.stringify(browser, null, 2));
+    return;
+  }
+
+  runtimeConfig.capabilities ??= {};
+  runtimeConfig.capabilities.browser ??= {};
+
+  if (subcommand === "disable") {
+    runtimeConfig.capabilities.browser.enabled = false;
+    await saveRuntimeConfig(configPath, runtimeConfig);
+    console.log(JSON.stringify({ config_path: configPath, browser: runtimeConfig.capabilities.browser }, null, 2));
+    return;
+  }
+
+  if (subcommand !== "enable") {
+    throw new Error("browser supports: status, enable, disable");
+  }
+
+  runtimeConfig.capabilities.browser.enabled = true;
+  applyBrowserFlags(runtimeConfig, args);
+  await saveRuntimeConfig(configPath, runtimeConfig);
+  console.log(JSON.stringify({ config_path: configPath, browser: runtimeConfig.capabilities.browser }, null, 2));
 }
 
 async function handleCodingCommand(
@@ -586,6 +649,27 @@ function expandPath(value: string): string {
     return path.join(os.homedir(), value.slice(2));
   }
   return path.resolve(value);
+}
+
+function normalizeUrl(value: string): string {
+  return value.replace(/\/+$/, "");
+}
+
+async function runInteractive(command: string, args: string[], env: NodeJS.ProcessEnv): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(command, args, {
+      stdio: "inherit",
+      env
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(new Error(`${command} exited with code ${code ?? -1}`));
+    });
+  });
 }
 
 function browserProviderArg(value: string | undefined): "managed" | "mcp-chrome" | undefined {

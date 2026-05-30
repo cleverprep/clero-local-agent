@@ -86,9 +86,45 @@ export class WorkspacePolicy {
 
     throw new ToolExecutionError(
       "invalid_arguments",
-      `cwd does not exist: ${candidate}. Use workspace.list_projects and pass the returned project key/name, or omit cwd to use the default workspace.`,
+      `cwd does not exist: ${candidate}. Use workspace.list_projects and pass the returned project key/name.`,
       { allowed_roots: this.listAllowedDirectories(), project: lookup }
     );
+  }
+
+  resolveProjectDirectory(candidate?: string): string {
+    if (candidate && candidate.trim() !== "." && candidate.trim() !== "") {
+      return this.resolveAllowedDirectory(candidate);
+    }
+
+    const defaultDirectory = this.defaultDirectory();
+    if (directoryHasProjectMarkers(defaultDirectory)) {
+      return defaultDirectory;
+    }
+
+    const projects = this.findProjects();
+    if (projects.length === 1) {
+      return projects[0]!;
+    }
+    if (projects.length > 1) {
+      throw new ToolExecutionError(
+        "invalid_arguments",
+        "No project was selected. Use workspace.list_projects and pass one returned project key/name.",
+        {
+          allowed_roots: this.listAllowedDirectories(),
+          projects: projects.slice(0, 20).map((projectPath) => this.projectSuggestion(projectPath))
+        }
+      );
+    }
+
+    return defaultDirectory;
+  }
+
+  private projectSuggestion(projectPath: string): JsonObject {
+    const root = this.allowedDirectories.find((allowedRoot) => projectPath === allowedRoot || projectPath.startsWith(`${allowedRoot}${path.sep}`));
+    return {
+      project: path.relative(root ?? this.defaultDirectory(), projectPath) || path.basename(projectPath),
+      path: projectPath
+    };
   }
 
   private findProjectMatches(lookup: string): string[] {
@@ -103,6 +139,19 @@ export class WorkspacePolicy {
       });
     }
     return uniqueStrings(matches);
+  }
+
+  private findProjects(): string[] {
+    const projects: string[] = [];
+    for (const root of this.allowedDirectories) {
+      scanProjectDirectoriesSync({
+        current: root,
+        depth: 0,
+        maxDepth: 5,
+        projects
+      });
+    }
+    return uniqueStrings(projects);
   }
 
   listAllowedDirectories(): string[] {
@@ -331,6 +380,40 @@ function readPackageJsonNameSync(directory: string, markers: string[]): string |
     return isPlainObject(parsed) && typeof parsed.name === "string" ? parsed.name : null;
   } catch {
     return null;
+  }
+}
+
+function directoryHasProjectMarkers(directory: string): boolean {
+  return markerNames(safeReadDirSync(directory)).length > 0;
+}
+
+function scanProjectDirectoriesSync(input: {
+  current: string;
+  depth: number;
+  maxDepth: number;
+  projects: string[];
+}): void {
+  const entries = safeReadDirSync(input.current);
+  if (markerNames(entries).length > 0) {
+    const resolved = tryRealpath(input.current);
+    if (resolved) {
+      input.projects.push(resolved);
+    }
+  }
+
+  if (input.depth >= input.maxDepth) {
+    return;
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory() || SKIP_DIRECTORIES.has(entry.name)) {
+      continue;
+    }
+    scanProjectDirectoriesSync({
+      ...input,
+      current: path.join(input.current, entry.name),
+      depth: input.depth + 1
+    });
   }
 }
 

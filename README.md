@@ -272,8 +272,14 @@ winget install Clero.Connector
 
 CLI updates:
 
-- Initial CLI updates can be handled by rerunning the install script.
-- A future `clero-connector update` command should fetch `install.json`, compare versions, download the latest archive, verify checksum, replace the current binary atomically, and preserve `~/.clero-local-agent/config.json`.
+- macOS/Linux users can run `clero-connector update`. It reruns the latest R2 installer, verifies the archive checksum, replaces the installed runtime, and keeps `~/.clero-local-agent/config.json`.
+- Windows users should stop any running daemon and rerun the PowerShell installer:
+
+```powershell
+irm https://media.clero.so/local-agent/latest/install.ps1 | iex
+```
+
+- Re-running the install script is safe on every platform; the installer keeps the previous runtime at `current.prev` where possible.
 
 ## Connector CLI Usage
 
@@ -294,18 +300,71 @@ Then run the outbound daemon:
 clero-connector daemon
 ```
 
-Useful management commands:
+Command reference:
 
 ```bash
+# Setup and pairing
+clero-connector setup --code <connection-code> [--backend-url https://clero.so] [--allowed-dir <path>]
+clero-connector pair --code <connection-code> [--backend-url https://clero.so] [--save]
+
+# Run the connector
+clero-connector daemon
+clero-connector daemon --config ~/.clero-local-agent/config.json
+clero-connector daemon --ws-url <websocket-url> --token <device-token>
+
+# Status and capabilities
 clero-connector status
+clero-connector capabilities
+
+# Config file
+clero-connector config init
+clero-connector config show
+
+# Allowed workspaces
 clero-connector workspaces list
 clero-connector workspaces add --path ~/Projects/clero_front
+clero-connector workspaces remove --path ~/Projects/clero_front
+
+# Browser capability
+clero-connector browser status
+clero-connector browser enable --browser-channel chromium
+clero-connector browser enable --browser-channel chrome
+clero-connector browser enable --browser-headless
+clero-connector browser enable --no-browser-headless
+clero-connector browser enable --browser-profile-dir ~/.clero-local-agent/browser-profile
+clero-connector browser enable --browser-remember-session
+clero-connector browser enable --no-browser-remember-session
+clero-connector browser disable
+
+# Coding-agent capability
 clero-connector coding status
+clero-connector coding enable --provider codex --sandbox read-only
 clero-connector coding enable --provider claude-code --sandbox workspace-write --claude-permission-mode acceptEdits
 clero-connector coding enable --provider antigravity --sandbox read-only
+clero-connector coding enable --model <model-name>
+clero-connector coding enable --command <path-or-command>
+clero-connector coding enable --allow-workspace-write
+clero-connector coding enable --deny-workspace-write
+clero-connector coding enable --allow-danger-full-access
+clero-connector coding enable --deny-danger-full-access
 clero-connector coding disable
-clero-connector capabilities
+
+# Self-update
+clero-connector update
 ```
+
+Setup and `pair` also accept the same capability flags, so this is valid:
+
+```bash
+clero-connector setup \
+  --code LRA-FFBD-4222-7DA1 \
+  --allowed-dir ~/Projects \
+  --browser-channel chromium \
+  --coding-provider codex \
+  --sandbox read-only
+```
+
+Browser channels are `chromium`, `chrome`, `chrome-beta`, and `msedge`. Coding providers are `codex`, `claude-code`, and `antigravity`. Sandboxes are `read-only`, `workspace-write`, and `danger-full-access`.
 
 The coding-agent connection is local: Clero calls `coding_agent.start_task`, the daemon validates the requested `cwd` against configured workspaces, then starts the configured provider (`codex`, `claude-code`, or `antigravity`) as a child process in that workspace. The daemon returns a `task_id` immediately and Clero polls `coding_agent.get_status` / `coding_agent.get_output` for long-running results.
 

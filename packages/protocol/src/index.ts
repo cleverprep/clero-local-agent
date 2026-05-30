@@ -582,6 +582,9 @@ export function capabilityGroups(tool: string): string[] {
   if (tool.startsWith("browser.")) {
     return ["browser"];
   }
+  if (tool.startsWith("workspace.")) {
+    return ["codex", "git_read", "git_write"];
+  }
   if (tool.startsWith("coding_agent.")) {
     return ["codex"];
   }

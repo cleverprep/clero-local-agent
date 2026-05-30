@@ -87,6 +87,38 @@ test("resolves discovered projects by relative key, folder name, and wrong absol
   assert.equal(policy.resolveAllowedDirectory("/Users/aiaz/workspace/clero/clero_back"), realProject);
 });
 
+test("requires an explicit project when an allowed root contains multiple projects", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "clero-workspace-test-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const apiProject = path.join(root, "api");
+  const webProject = path.join(root, "web");
+  await mkdir(apiProject);
+  await mkdir(webProject);
+  await writeFile(path.join(apiProject, "manage.py"), "");
+  await writeFile(path.join(webProject, "package.json"), JSON.stringify({ name: "web" }));
+  const policy = new WorkspacePolicy({ allowedDirectories: [root] });
+
+  assert.throws(
+    () => policy.resolveProjectDirectory(),
+    (error: unknown) =>
+      error instanceof ToolExecutionError &&
+      error.errorCode === "invalid_arguments" &&
+      error.message.includes("No project was selected")
+  );
+});
+
+test("auto-selects the only discovered project under an allowed root", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "clero-workspace-test-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const project = path.join(root, "only-project");
+  await mkdir(project);
+  await writeFile(path.join(project, "package.json"), JSON.stringify({ name: "only-project" }));
+
+  const policy = new WorkspacePolicy({ allowedDirectories: [root] });
+
+  assert.equal(policy.resolveProjectDirectory(), realpathSync(project));
+});
+
 test("describes an allowed project", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "clero-workspace-test-"));
   t.after(() => rm(root, { recursive: true, force: true }));

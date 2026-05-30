@@ -212,6 +212,26 @@ test("marks nonzero approval or sandbox exits as blocked", async (t) => {
   assert.match(stringField(status, "blocked_reason"), /sandbox/i);
 });
 
+test("marks Codex Linux bubblewrap failures reported in final text as blocked", async (t) => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "clero-codex-test-"));
+  t.after(() => rm(workspace, { recursive: true, force: true }));
+  const fakeCodex = await createFakeCodexBwrapFailure(workspace);
+  const adapter = new CodexCliAdapter({
+    workspacePolicy: new WorkspacePolicy({ allowedDirectories: [workspace] }),
+    command: fakeCodex
+  });
+
+  const start = await adapter.startTask(
+    { prompt: "list files", cwd: workspace },
+    { requestId: "req_1", leaseId: "lease_1", agentId: "agent_1", taskId: "task_1" }
+  );
+
+  const status = await waitForTerminalStatus(adapter, stringField(start, "task_id"));
+
+  assert.equal(status.status, "blocked");
+  assert.match(stringField(status, "blocked_reason"), /Codex Linux sandbox could not start/);
+});
+
 test("marks policy-blocked codex tasks terminal even when the process keeps running", async (t) => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "clero-codex-test-"));
   t.after(() => rm(workspace, { recursive: true, force: true }));
@@ -380,6 +400,24 @@ process.stdin.resume();
 process.stdin.on("end", () => {
   console.error("exec_command failed: Rejected: blocked by policy");
   setInterval(() => {}, 1000);
+});
+`
+  );
+  await chmod(fakeCodex, 0o755);
+  return fakeCodex;
+}
+
+async function createFakeCodexBwrapFailure(workspace: string): Promise<string> {
+  const fakeCodex = path.join(workspace, "fake-codex-bwrap.js");
+  await writeFile(
+    fakeCodex,
+    `#!/usr/bin/env node
+process.stdin.resume();
+process.stdin.on("end", () => {
+  console.log(JSON.stringify({ type: "thread.started", thread_id: "thread_fake" }));
+  console.log(JSON.stringify({ type: "item.completed", item: { id: "item_1", type: "agent_message", text: "The command could not run because the sandbox wrapper failed before execution:\\n\\nbwrap: loopback: Failed RTM_NEWADDR: Operation not permitted" } }));
+  console.log(JSON.stringify({ type: "turn.completed" }));
+  process.exit(0);
 });
 `
   );

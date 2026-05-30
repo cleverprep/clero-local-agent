@@ -97,7 +97,7 @@ export class GitTools {
   }
 
   private cwd(args: JsonObject): string {
-    return this.options.workspacePolicy.resolveAllowedDirectory(optionalString(args, "project") ?? optionalString(args, "cwd"));
+    return this.options.workspacePolicy.resolveProjectDirectory(optionalString(args, "project") ?? optionalString(args, "cwd"));
   }
 }
 
