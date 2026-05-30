@@ -249,3 +249,8 @@ jobs:
             upload_r2 "$file" "local-agent/latest/${name}" \
               "$content_type" "public,max-age=60"
           done
+
+          upload_r2 "$release_dir/install.sh" "local-agent/install.sh" \
+            "application/x-sh" "public,max-age=60"
+          upload_r2 "$release_dir/install.ps1" "local-agent/install.ps1" \
+            "text/plain" "public,max-age=60"

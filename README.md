@@ -205,6 +205,8 @@ install.ps1
 Stable R2 URLs:
 
 ```text
+https://media.clero.so/local-agent/install.sh
+https://media.clero.so/local-agent/install.ps1
 https://media.clero.so/local-agent/latest/install.sh
 https://media.clero.so/local-agent/latest/install.ps1
 https://media.clero.so/local-agent/latest/clero-connector-darwin-arm64.tar.gz
