@@ -12,6 +12,8 @@ use std::{
 use tauri::{AppHandle, Manager, State};
 
 const PRODUCTION_BACKEND_URL: &str = "https://clero.so";
+const BACKEND_RECENT_WINDOW_MS: u64 = 60_000;
+const BACKEND_CONNECTING_GRACE_MS: u64 = 10_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RuntimeConfig {
@@ -179,6 +181,7 @@ struct BackendConnectionState {
     connected: bool,
     last_seen_ms: Option<u64>,
     last_error: Option<String>,
+    connecting_since_ms: Option<u64>,
 }
 
 impl Default for CapabilityConfig {
@@ -378,7 +381,7 @@ fn start_daemon(
     let config_path = config_path(&app)?;
     let mut command = daemon_command(&config_path)?;
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    clear_backend_connection(&state.backend_connection);
+    begin_backend_connection(&state.backend_connection);
     set_agents_sync(&state.agents_sync, None);
     let mut child = command.spawn().map_err(|error| error.to_string())?;
     let pid = child.id();
@@ -584,11 +587,18 @@ fn current_daemon_status(
         .map_err(|error| error.to_string())?;
     let backend_recent = connection
         .last_seen_ms
-        .and_then(|last_seen| now_ms().map(|now| now.saturating_sub(last_seen) <= 60_000))
+        .and_then(|last_seen| now_ms().map(|now| now.saturating_sub(last_seen) <= BACKEND_RECENT_WINDOW_MS))
         .unwrap_or(false);
     let backend_connected = running && connection.connected && backend_recent;
     let backend_last_seen_ms = connection.last_seen_ms;
-    let backend_error = connection.last_error.clone();
+    let backend_error = backend_connection_status_message(
+        running,
+        backend_connected,
+        connection.connected,
+        connection.last_seen_ms,
+        connection.connecting_since_ms,
+        connection.last_error.clone(),
+    );
     drop(connection);
     let log_tail = state
         .logs
@@ -856,6 +866,7 @@ fn set_backend_connection(
         }
         if connected {
             state.last_error = None;
+            state.connecting_since_ms = None;
         }
     }
 }
@@ -864,6 +875,18 @@ fn set_backend_connection_error(connection: &Arc<Mutex<BackendConnectionState>>,
     if let Ok(mut state) = connection.lock() {
         state.connected = false;
         state.last_error = Some(detail);
+        if state.connecting_since_ms.is_none() {
+            state.connecting_since_ms = now_ms();
+        }
+    }
+}
+
+fn begin_backend_connection(connection: &Arc<Mutex<BackendConnectionState>>) {
+    if let Ok(mut state) = connection.lock() {
+        state.connected = false;
+        state.last_seen_ms = None;
+        state.last_error = None;
+        state.connecting_since_ms = now_ms();
     }
 }
 
@@ -872,7 +895,45 @@ fn clear_backend_connection(connection: &Arc<Mutex<BackendConnectionState>>) {
         state.connected = false;
         state.last_seen_ms = None;
         state.last_error = None;
+        state.connecting_since_ms = None;
     }
+}
+
+fn backend_connection_status_message(
+    running: bool,
+    backend_connected: bool,
+    websocket_connected: bool,
+    last_seen_ms: Option<u64>,
+    connecting_since_ms: Option<u64>,
+    last_error: Option<String>,
+) -> Option<String> {
+    if let Some(error) = last_error {
+        return Some(error);
+    }
+    if !running || backend_connected {
+        return None;
+    }
+
+    if websocket_connected && last_seen_ms.is_some() {
+        return Some(
+            "Connection looks stale: no Clero message has been received for over 60 seconds. The daemon will reconnect automatically."
+                .to_string(),
+        );
+    }
+
+    if let (Some(started_at), Some(now)) = (connecting_since_ms, now_ms()) {
+        if now.saturating_sub(started_at) >= BACKEND_CONNECTING_GRACE_MS {
+            return Some(
+                "Clero has not confirmed the runtime connection yet. The laptop may be offline, a VPN/proxy/firewall may be blocking WebSocket traffic, or the saved device token may no longer be accepted."
+                    .to_string(),
+            );
+        }
+    }
+
+    Some(
+        "Opening secure WebSocket connection to Clero. If this stays here, check internet, VPN, firewall, or proxy settings."
+            .to_string(),
+    )
 }
 
 fn set_agents_sync(
