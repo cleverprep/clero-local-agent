@@ -6,9 +6,12 @@ import test from "node:test";
 import {
   capabilitiesFromConfig,
   capabilityOptionsFromConfig,
+  defaultAgentsSyncPath,
   defaultRuntimeConfig,
+  loadAgentsSyncSnapshot,
   mergeRuntimeConfig,
   resolveDeviceToken,
+  saveAgentsSyncSnapshot,
   saveRuntimeConfig,
   loadRuntimeConfig
 } from "../src/runtime-config.ts";
@@ -146,6 +149,47 @@ test("saves and loads runtime config", async (t) => {
   assert.match(raw, /Test Device/);
   assert.equal(loaded.device_name, "Test Device");
   assert.deepEqual(loaded.allowed_directories, [directory]);
+});
+
+test("saves and loads synced agents snapshot", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "clero-agents-sync-test-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const configPath = path.join(directory, "config.json");
+  const syncPath = defaultAgentsSyncPath(configPath);
+
+  await saveAgentsSyncSnapshot(syncPath, {
+    type: "agents_sync",
+    connection_id: 45,
+    agents: [
+      {
+        agent_id: 12,
+        name: "Browser Agent",
+        browser_enabled: true,
+        coding_enabled: false,
+        git_read_enabled: true,
+        git_write_enabled: false,
+        browser_profile_key: "agent-12"
+      }
+    ]
+  });
+
+  const loaded = await loadAgentsSyncSnapshot(syncPath);
+
+  assert.equal(loaded.connection_id, 45);
+  assert.match(loaded.synced_at, /^\d{4}-\d{2}-\d{2}T/);
+  assert.deepEqual(loaded.agents, [
+    {
+      agent_id: 12,
+      name: "Browser Agent",
+      icon: undefined,
+      avatar_url: undefined,
+      browser_enabled: true,
+      coding_enabled: false,
+      git_read_enabled: true,
+      git_write_enabled: false,
+      browser_profile_key: "agent-12"
+    }
+  ]);
 });
 
 test("resolves device token from config JSON before the token store", async () => {

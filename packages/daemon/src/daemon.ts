@@ -28,6 +28,7 @@ import {
   isControlRequestMessage,
   isJsonObject,
   isToolCallMessage,
+  type AgentsSyncMessage,
   type ApprovalRequestMessage,
   type ApprovalResponseMessage,
   okControlResult,
@@ -42,6 +43,7 @@ import { ConsoleAuditLogger, type AuditLogger } from "./audit-log.ts";
 import { LeaseManager } from "./lease-manager.ts";
 import { ConsoleLogger, type Logger } from "./logger.ts";
 import { RuntimeWebSocketClient } from "./websocket-client.ts";
+import { saveAgentsSyncSnapshot } from "./runtime-config.ts";
 
 export type LocalRuntimeDaemonOptions = {
   wsUrl: string;
@@ -54,6 +56,7 @@ export type LocalRuntimeDaemonOptions = {
   browserRememberSession?: boolean;
   browserHeadless?: boolean;
   browserChannel?: "chromium" | "chrome" | "chrome-beta" | "msedge";
+  agentsSyncPath?: string;
   logger?: Logger;
   auditLogger?: AuditLogger;
   interactiveApprovals?: boolean;
@@ -213,6 +216,7 @@ export class LocalRuntimeDaemon {
         connectionId: message.connection_id,
         agentCount: message.agents.length
       });
+      await this.persistAgentsSync(message);
       return;
     }
 
@@ -350,6 +354,26 @@ export class LocalRuntimeDaemon {
       return 0;
     }
     return intervalMs;
+  }
+
+  private async persistAgentsSync(message: AgentsSyncMessage): Promise<void> {
+    if (!this.options.agentsSyncPath) {
+      return;
+    }
+
+    try {
+      await saveAgentsSyncSnapshot(this.options.agentsSyncPath, message);
+      this.logger.info("saved local runtime agents sync", {
+        path: this.options.agentsSyncPath,
+        agentCount: message.agents.length
+      });
+    } catch (error: unknown) {
+      const detail = error instanceof Error ? error.message : String(error);
+      this.logger.warn("failed to save local runtime agents sync", {
+        path: this.options.agentsSyncPath,
+        error: detail
+      });
+    }
   }
 
   private sendHeartbeat(): void {

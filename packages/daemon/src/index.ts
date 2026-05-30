@@ -4,11 +4,15 @@ export { createPairingClient, PairingClient } from "./pairing-client.ts";
 export {
   capabilityOptionsFromConfig,
   capabilitiesFromConfig,
+  defaultAgentsSyncPath,
   defaultRuntimeConfig,
   defaultRuntimeConfigPath,
+  loadAgentsSyncSnapshot,
   loadRuntimeConfig,
   resolveDeviceToken,
+  saveAgentsSyncSnapshot,
   saveRuntimeConfig,
+  type AgentsSyncSnapshot,
   type LocalRuntimeConfig
 } from "./runtime-config.ts";
 export { createTokenStore, FileTokenStore, MacOSKeychainTokenStore, type TokenStore } from "./token-store.ts";

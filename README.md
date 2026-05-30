@@ -315,6 +315,10 @@ clero-connector daemon --ws-url <websocket-url> --token <device-token>
 # Status and capabilities
 clero-connector status
 clero-connector capabilities
+clero-connector agents list
+clero-connector agents browser
+clero-connector agents coding
+clero-connector agents list --json
 
 # Config file
 clero-connector config init
@@ -367,6 +371,8 @@ clero-connector setup \
 Browser channels are `chromium`, `chrome`, `chrome-beta`, and `msedge`. Coding providers are `codex`, `claude-code`, and `antigravity`. Sandboxes are `read-only`, `workspace-write`, and `danger-full-access`.
 
 The coding-agent connection is local: Clero calls `coding_agent.start_task`, the daemon validates the requested `cwd` against configured workspaces, then starts the configured provider (`codex`, `claude-code`, or `antigravity`) as a child process in that workspace. The daemon returns a `task_id` immediately and Clero polls `coding_agent.get_status` / `coding_agent.get_output` for long-running results.
+
+`clero-connector agents list` shows the latest agents Clero synced to this local runtime. `agents browser` filters to agents with browser access, and `agents coding` filters to agents with coding-agent access. The daemon writes this cache when it receives backend `agents_sync`, so start `clero-connector daemon` at least once after pairing before using the command.
 
 The original `clero-local-agent` command still works as an alias:
 

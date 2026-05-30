@@ -8,7 +8,7 @@ import type {
   CodexReasoningEffort,
   CodexSandbox
 } from "@clero-local-agent/coding-agents";
-import { defaultCapabilities, type Capability } from "@clero-local-agent/protocol";
+import { defaultCapabilities, type AgentsSyncMessage, type BrokerId, type Capability, type SyncedAgent } from "@clero-local-agent/protocol";
 import type { LocalRuntimeCapabilityOptions } from "./daemon.ts";
 import { createTokenStore, type TokenStore } from "./token-store.ts";
 
@@ -54,6 +54,12 @@ export type LocalRuntimeConfig = {
       write_enabled?: boolean;
     };
   };
+};
+
+export type AgentsSyncSnapshot = {
+  synced_at: string;
+  connection_id?: BrokerId;
+  agents: SyncedAgent[];
 };
 
 export function defaultRuntimeConfig(): LocalRuntimeConfig {
@@ -128,6 +134,26 @@ export async function saveRuntimeConfig(configPath: string, config: LocalRuntime
 
 export function defaultRuntimeConfigPath(): string {
   return path.join(os.homedir(), ".clero-local-agent", "config.json");
+}
+
+export function defaultAgentsSyncPath(configPath = defaultRuntimeConfigPath()): string {
+  return path.join(path.dirname(configPath), "agents-sync.json");
+}
+
+export async function saveAgentsSyncSnapshot(filePath: string, message: AgentsSyncMessage): Promise<AgentsSyncSnapshot> {
+  const snapshot: AgentsSyncSnapshot = {
+    synced_at: new Date().toISOString(),
+    connection_id: message.connection_id,
+    agents: message.agents
+  };
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await writeFile(filePath, `${JSON.stringify(snapshot, null, 2)}\n`);
+  return snapshot;
+}
+
+export async function loadAgentsSyncSnapshot(filePath: string): Promise<AgentsSyncSnapshot> {
+  const raw = await readFile(filePath, "utf8");
+  return parseAgentsSyncSnapshot(JSON.parse(raw) as unknown);
 }
 
 export function capabilityOptionsFromConfig(config: LocalRuntimeConfig): LocalRuntimeCapabilityOptions {
@@ -234,4 +260,64 @@ export function mergeRuntimeConfig(base: LocalRuntimeConfig, override: LocalRunt
       }
     }
   };
+}
+
+function parseAgentsSyncSnapshot(value: unknown): AgentsSyncSnapshot {
+  if (!isRecord(value) || typeof value.synced_at !== "string" || !Array.isArray(value.agents)) {
+    throw new Error("Invalid agents sync cache");
+  }
+
+  return {
+    synced_at: value.synced_at,
+    connection_id: brokerIdValue(value.connection_id),
+    agents: value.agents.map(parseSyncedAgent).filter((agent): agent is SyncedAgent => Boolean(agent))
+  };
+}
+
+function parseSyncedAgent(value: unknown): SyncedAgent | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const agentId = brokerIdValue(value.agent_id);
+  if (agentId === undefined) {
+    return null;
+  }
+
+  return {
+    agent_id: agentId,
+    name: stringValue(value.name),
+    icon: stringValue(value.icon),
+    avatar_url: stringOrNullValue(value.avatar_url),
+    browser_enabled: booleanValue(value.browser_enabled),
+    coding_enabled: booleanValue(value.coding_enabled),
+    git_read_enabled: booleanValue(value.git_read_enabled),
+    git_write_enabled: booleanValue(value.git_write_enabled),
+    browser_profile_key: stringValue(value.browser_profile_key)
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function brokerIdValue(value: unknown): BrokerId | undefined {
+  if (typeof value === "string" || typeof value === "number" || value === null) {
+    return value;
+  }
+  return undefined;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function stringOrNullValue(value: unknown): string | null | undefined {
+  if (value === null || typeof value === "string") {
+    return value;
+  }
+  return undefined;
+}
+
+function booleanValue(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
 }

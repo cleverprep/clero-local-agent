@@ -10,14 +10,18 @@ import {
   createDaemon,
   createPairingClient,
   createTokenStore,
+  defaultAgentsSyncPath,
   defaultRuntimeConfig,
   defaultRuntimeConfigPath,
+  loadAgentsSyncSnapshot,
   loadRuntimeConfig,
   resolveDeviceToken,
   saveRuntimeConfig,
+  type AgentsSyncSnapshot,
   type LocalRuntimeConfig
 } from "@clero-local-agent/daemon";
 import type { ClaudeCodePermissionMode, CodingAgentProvider, CodexSandbox } from "@clero-local-agent/coding-agents";
+import type { SyncedAgent } from "@clero-local-agent/protocol";
 
 const DEVICE_TOKEN_ACCOUNT = "device_token";
 const DEFAULT_CONNECTOR_BASE_URL = "https://media.clero.so/local-agent/latest";
@@ -102,6 +106,7 @@ Usage:
   clero-connector capabilities [--config <path>]
   clero-connector status [--config <path>]
   clero-connector update [--base-url https://media.clero.so/local-agent/latest]
+  clero-connector agents list|browser|coding [--json] [--config <path>]
   clero-connector config init|show [--config <path>]
   clero-connector workspaces list|add|remove [--path <path>] [--config <path>]
   clero-connector browser status|enable|disable [--browser-channel chromium|chrome|chrome-beta|msedge]
@@ -154,6 +159,11 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "agents") {
+    await handleAgentsCommand(subcommand, args, configPath);
+    return;
+  }
+
   if (command === "capabilities") {
     console.log(JSON.stringify(capabilitiesFromConfig(runtimeConfig), null, 2));
     return;
@@ -170,7 +180,7 @@ async function main(): Promise<void> {
   }
 
   if (command === "daemon") {
-    await runDaemon(args, runtimeConfig);
+    await runDaemon(args, runtimeConfig, configPath);
     return;
   }
 
@@ -390,7 +400,66 @@ async function handleCodingCommand(
   console.log(JSON.stringify({ config_path: configPath, coding: runtimeConfig.capabilities.codex }, null, 2));
 }
 
-async function runDaemon(args: CliArgs, runtimeConfig: LocalRuntimeConfig): Promise<void> {
+async function handleAgentsCommand(
+  subcommand: string | undefined,
+  args: CliArgs,
+  configPath: string
+): Promise<void> {
+  if (subcommand !== undefined && subcommand !== "list" && subcommand !== "browser" && subcommand !== "coding") {
+    throw new Error("agents supports: list, browser, coding");
+  }
+
+  const syncPath = defaultAgentsSyncPath(configPath);
+  let snapshot: AgentsSyncSnapshot | null = null;
+  try {
+    snapshot = await loadAgentsSyncSnapshot(syncPath);
+  } catch {
+    if (getBoolean(args, "json")) {
+      console.log(
+        JSON.stringify(
+          {
+            synced: false,
+            sync_path: syncPath,
+            agents: []
+          },
+          null,
+          2
+        )
+      );
+      return;
+    }
+
+    console.log(`No synced agents found at ${syncPath}.`);
+    console.log("Run `clero-connector daemon`; after it connects, Clero sends the current agent access list.");
+    return;
+  }
+
+  const agents = filterAgents(snapshot.agents, {
+    browser: subcommand === "browser" || getBoolean(args, "browser"),
+    coding: subcommand === "coding" || getBoolean(args, "coding")
+  });
+
+  if (getBoolean(args, "json")) {
+    console.log(
+      JSON.stringify(
+        {
+          synced: true,
+          sync_path: syncPath,
+          synced_at: snapshot.synced_at,
+          connection_id: snapshot.connection_id,
+          agents
+        },
+        null,
+        2
+      )
+    );
+    return;
+  }
+
+  printAgents(snapshot, agents, syncPath);
+}
+
+async function runDaemon(args: CliArgs, runtimeConfig: LocalRuntimeConfig, configPath: string): Promise<void> {
   const wsUrl = getString(args, "ws-url") ?? process.env.CLERO_LOCAL_RUNTIME_WS_URL ?? runtimeConfig.websocket_url;
   const token =
     nonEmptyString(getString(args, "token")) ??
@@ -431,6 +500,7 @@ async function runDaemon(args: CliArgs, runtimeConfig: LocalRuntimeConfig): Prom
         process.env.CLERO_BROWSER_CHANNEL ??
         runtimeConfig.capabilities?.browser?.browser_channel
     ),
+    agentsSyncPath: defaultAgentsSyncPath(configPath),
     capabilities: capabilityOptionsFromConfig(runtimeConfig)
   });
 
@@ -619,6 +689,63 @@ function localStatus(configPath: string, runtimeConfig: LocalRuntimeConfig): Rec
       git_write: runtimeConfig.capabilities?.git?.write_enabled === true
     }
   };
+}
+
+function filterAgents(
+  agents: SyncedAgent[],
+  filters: {
+    browser: boolean;
+    coding: boolean;
+  }
+): SyncedAgent[] {
+  if (!filters.browser && !filters.coding) {
+    return agents;
+  }
+
+  return agents.filter((agent) => {
+    if (filters.browser && agent.browser_enabled) {
+      return true;
+    }
+    if (filters.coding && agent.coding_enabled) {
+      return true;
+    }
+    return false;
+  });
+}
+
+function printAgents(snapshot: AgentsSyncSnapshot, agents: SyncedAgent[], syncPath: string): void {
+  console.log(`Agents synced from Clero at ${snapshot.synced_at}`);
+  if (snapshot.connection_id !== undefined && snapshot.connection_id !== null) {
+    console.log(`Connection: ${snapshot.connection_id}`);
+  }
+  console.log(`Cache: ${syncPath}`);
+  console.log("");
+
+  if (agents.length === 0) {
+    console.log("No agents match this filter.");
+    return;
+  }
+
+  const rows = [
+    ["ID", "Name", "Browser", "Coding", "Git read", "Git write", "Profile"],
+    ...agents.map((agent) => [
+      String(agent.agent_id ?? ""),
+      agent.name?.trim() || `Agent ${agent.agent_id ?? ""}`.trim(),
+      yesNo(agent.browser_enabled),
+      yesNo(agent.coding_enabled),
+      yesNo(agent.git_read_enabled),
+      yesNo(agent.git_write_enabled),
+      agent.browser_profile_key ?? ""
+    ])
+  ];
+  const widths = rows[0].map((_, columnIndex) => Math.max(...rows.map((row) => row[columnIndex].length)));
+  for (const row of rows) {
+    console.log(row.map((cell, index) => cell.padEnd(widths[index])).join("  ").trimEnd());
+  }
+}
+
+function yesNo(value: boolean | undefined): string {
+  return value ? "yes" : "no";
 }
 
 async function loadRuntimeConfigIfExists(configPath: string): Promise<LocalRuntimeConfig> {
