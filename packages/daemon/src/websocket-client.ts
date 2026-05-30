@@ -92,13 +92,17 @@ export class RuntimeWebSocketClient extends EventEmitter {
       }
     });
 
-    socket.addEventListener("close", () => {
+    socket.addEventListener("close", (event: { code?: number; reason?: string; wasClean?: boolean }) => {
       if (this.socket !== socket) {
         return;
       }
       this.socket = null;
       this.authenticated = false;
-      this.options.logger.warn("local runtime websocket closed");
+      this.options.logger.warn("local runtime websocket closed", {
+        code: event.code,
+        reason: event.reason,
+        wasClean: event.wasClean
+      });
       this.emit("close");
       if (this.shouldReconnect) {
         setTimeout(() => this.connect(), this.reconnectDelayMs);
@@ -106,7 +110,7 @@ export class RuntimeWebSocketClient extends EventEmitter {
     });
 
     socket.addEventListener("error", (event: unknown) => {
-      this.options.logger.error("local runtime websocket error", { event: String(event) });
+      this.options.logger.error("local runtime websocket error", { event: websocketEventDetail(event) });
     });
   }
 }
@@ -117,4 +121,19 @@ function isAuthAcknowledgementMessage(value: unknown): value is { type: string }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function websocketEventDetail(event: unknown): string {
+  if (!isRecord(event)) {
+    return String(event);
+  }
+
+  const detail = [event.message, event.error, event.reason, event.type]
+    .map((value) => {
+      if (typeof value === "string") return value;
+      if (value instanceof Error) return value.message;
+      return "";
+    })
+    .find((value) => value.trim().length > 0);
+  return detail ?? "WebSocket error";
 }

@@ -57,6 +57,7 @@ export type LocalRuntimeDaemonOptions = {
   logger?: Logger;
   auditLogger?: AuditLogger;
   interactiveApprovals?: boolean;
+  connectionRefreshIntervalMs?: number;
   capabilities?: LocalRuntimeCapabilityOptions;
 };
 
@@ -110,6 +111,8 @@ type BackendErrorMessage = {
 
 const LOCAL_TASK_COMPLETION_RETRY_DELAYS_MS = [1_000, 3_000, 10_000];
 const LOCAL_TASK_COMPLETION_RETENTION_MS = 2 * 60_000;
+const DEFAULT_CONNECTION_REFRESH_INTERVAL_MS = 60 * 60 * 1_000;
+const CONNECTION_REFRESH_APPROVAL_DELAY_MS = 60_000;
 
 export class LocalRuntimeDaemon {
   private readonly logger: Logger;
@@ -121,6 +124,7 @@ export class LocalRuntimeDaemon {
   private messageQueue: Promise<void> = Promise.resolve();
   private browserAdapter: BrowserAdapter | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private connectionRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   private lastRuntimeMessageAtMs = 0;
   private readonly pendingRuntimeMessages: RuntimeMessage[] = [];
   private readonly pendingApprovalRequests = new Map<string, PendingApprovalRequest>();
@@ -148,6 +152,7 @@ export class LocalRuntimeDaemon {
       this.leaseManager.clearActiveLease();
       this.rejectPendingApprovalRequests("WebSocket closed before approval response");
       this.stopHeartbeat();
+      this.stopConnectionRefresh();
     });
     await this.websocket.start();
   }
@@ -155,6 +160,7 @@ export class LocalRuntimeDaemon {
   async stop(): Promise<void> {
     await this.websocket.stop();
     this.stopHeartbeat();
+    this.stopConnectionRefresh();
     this.leaseManager.clearActiveLease();
     this.rejectPendingApprovalRequests("Daemon stopped before approval response");
     this.clearPendingLocalTaskCompletions();
@@ -193,6 +199,7 @@ export class LocalRuntimeDaemon {
       this.sendHello();
       this.flushPendingRuntimeMessages();
       this.startHeartbeat();
+      this.startConnectionRefresh();
       return;
     }
 
@@ -293,6 +300,56 @@ export class LocalRuntimeDaemon {
     }
     clearInterval(this.heartbeatTimer);
     this.heartbeatTimer = null;
+  }
+
+  private startConnectionRefresh(): void {
+    const intervalMs = this.connectionRefreshIntervalMs();
+    if (intervalMs <= 0) {
+      return;
+    }
+    this.scheduleConnectionRefresh(intervalMs);
+  }
+
+  private scheduleConnectionRefresh(delayMs: number): void {
+    this.stopConnectionRefresh();
+    this.connectionRefreshTimer = setTimeout(() => this.refreshConnection(), delayMs);
+  }
+
+  private stopConnectionRefresh(): void {
+    if (!this.connectionRefreshTimer) {
+      return;
+    }
+    clearTimeout(this.connectionRefreshTimer);
+    this.connectionRefreshTimer = null;
+  }
+
+  private refreshConnection(): void {
+    this.connectionRefreshTimer = null;
+    const intervalMs = this.connectionRefreshIntervalMs();
+    if (intervalMs <= 0) {
+      return;
+    }
+
+    if (this.pendingApprovalRequests.size > 0) {
+      this.logger.info("delaying scheduled local runtime websocket refresh until approvals complete", {
+        pendingApprovals: this.pendingApprovalRequests.size
+      });
+      this.scheduleConnectionRefresh(CONNECTION_REFRESH_APPROVAL_DELAY_MS);
+      return;
+    }
+
+    this.logger.info("refreshing local runtime websocket connection", {
+      intervalMs
+    });
+    this.websocket.reconnect();
+  }
+
+  private connectionRefreshIntervalMs(): number {
+    const intervalMs = this.options.connectionRefreshIntervalMs ?? DEFAULT_CONNECTION_REFRESH_INTERVAL_MS;
+    if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
+      return 0;
+    }
+    return intervalMs;
   }
 
   private sendHeartbeat(): void {

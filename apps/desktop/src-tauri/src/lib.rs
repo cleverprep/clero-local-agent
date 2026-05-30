@@ -117,6 +117,7 @@ struct DaemonProcessStatus {
     pid: Option<u32>,
     backend_connected: bool,
     backend_last_seen_ms: Option<u64>,
+    backend_error: Option<String>,
     last_exit_code: Option<i32>,
     log_tail: Vec<String>,
     agents_sync: Option<AgentsSyncStatus>,
@@ -177,6 +178,7 @@ struct DaemonSupervisor {
 struct BackendConnectionState {
     connected: bool,
     last_seen_ms: Option<u64>,
+    last_error: Option<String>,
 }
 
 impl Default for CapabilityConfig {
@@ -376,7 +378,7 @@ fn start_daemon(
     let config_path = config_path(&app)?;
     let mut command = daemon_command(&config_path)?;
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    set_backend_connection(&state.backend_connection, false, None);
+    clear_backend_connection(&state.backend_connection);
     set_agents_sync(&state.agents_sync, None);
     let mut child = command.spawn().map_err(|error| error.to_string())?;
     let pid = child.id();
@@ -473,7 +475,7 @@ fn stop_daemon_process(state: &State<'_, DaemonSupervisor>) -> Result<DaemonProc
     if let Some(mut child) = child_guard.take() {
         let _ = child.kill();
         let status = child.wait().map_err(|error| error.to_string())?;
-        set_backend_connection(&state.backend_connection, false, None);
+        clear_backend_connection(&state.backend_connection);
         set_agents_sync(&state.agents_sync, None);
         *state
             .last_exit_code
@@ -538,7 +540,16 @@ fn current_daemon_status(
     if let Some(child) = child_guard.as_mut() {
         match child.try_wait().map_err(|error| error.to_string())? {
             Some(status) => {
-                set_backend_connection(&state.backend_connection, false, None);
+                set_backend_connection_error(
+                    &state.backend_connection,
+                    format!(
+                        "Runtime process exited before Clero confirmed the connection (exit code {}). Open logs for details.",
+                        status
+                            .code()
+                            .map(|code| code.to_string())
+                            .unwrap_or_else(|| "signal".to_string())
+                    ),
+                );
                 set_agents_sync(&state.agents_sync, None);
                 *state
                     .last_exit_code
@@ -577,6 +588,7 @@ fn current_daemon_status(
         .unwrap_or(false);
     let backend_connected = running && connection.connected && backend_recent;
     let backend_last_seen_ms = connection.last_seen_ms;
+    let backend_error = connection.last_error.clone();
     drop(connection);
     let log_tail = state
         .logs
@@ -593,6 +605,7 @@ fn current_daemon_status(
         pid,
         backend_connected,
         backend_last_seen_ms,
+        backend_error,
         last_exit_code,
         log_tail,
         agents_sync,
@@ -717,17 +730,116 @@ fn update_backend_connection_from_log(connection: &Arc<Mutex<BackendConnectionSt
         .and_then(|inbound| inbound.get("type"))
         .and_then(serde_json::Value::as_str);
 
-    match (message, inbound_type) {
-        ("local runtime session established", _) | (_, Some(_)) => {
-            set_backend_connection(connection, true, now_ms());
-        }
-        ("local runtime websocket closed", _)
-        | ("local runtime websocket error", _)
-        | ("failed to send local runtime heartbeat", _) => {
-            set_backend_connection(connection, false, None);
-        }
-        _ => {}
+    if is_backend_ready_signal(message, inbound_type) {
+        set_backend_connection(connection, true, now_ms());
+        return;
     }
+
+    if let Some(error) = connection_error_from_inbound(value.get("inbound")) {
+        set_backend_connection_error(connection, error);
+        return;
+    }
+
+    if let Some(error) = connection_error_from_log(&value, message) {
+        set_backend_connection_error(connection, error);
+    }
+}
+
+fn is_backend_ready_signal(message: &str, inbound_type: Option<&str>) -> bool {
+    matches!(
+        message,
+        "local runtime session established"
+            | "local runtime websocket authenticated"
+            | "local runtime hello acknowledged"
+            | "local runtime agents synchronized"
+    ) || matches!(
+        inbound_type,
+        Some(
+            "connected"
+                | "auth_ack"
+                | "authenticated"
+                | "hello_ack"
+                | "agents_sync"
+                | "heartbeat_ack"
+                | "tool_call"
+                | "approval_response"
+        )
+    )
+}
+
+fn connection_error_from_inbound(inbound: Option<&serde_json::Value>) -> Option<String> {
+    let inbound = inbound?;
+    if inbound.get("type").and_then(serde_json::Value::as_str) != Some("error") {
+        return None;
+    }
+
+    let code =
+        json_string(inbound.get("error_code")).unwrap_or_else(|| "backend_error".to_string());
+    if !is_connection_error_code(&code) {
+        return None;
+    }
+    let message = json_string(inbound.get("message"))
+        .unwrap_or_else(|| "Clero rejected the runtime connection.".to_string());
+    Some(format!("Clero rejected the connection ({code}): {message}"))
+}
+
+fn connection_error_from_log(value: &serde_json::Value, message: &str) -> Option<String> {
+    match message {
+        "local runtime websocket closed" => Some(
+            "Connection to Clero closed. The app will retry automatically; check internet, VPN, firewall, or proxy settings if this repeats."
+                .to_string(),
+        ),
+        "local runtime websocket error" => {
+            let detail = json_string(value.get("event")).unwrap_or_default();
+            if detail.is_empty() {
+                Some(
+                    "Could not open the WebSocket connection to Clero. Check internet, VPN, firewall, or proxy settings."
+                        .to_string(),
+                )
+            } else {
+                Some(format!(
+                    "Could not open the WebSocket connection to Clero: {detail}"
+                ))
+            }
+        }
+        "local runtime websocket heartbeat timed out" => Some(
+            "Clero stopped responding to runtime heartbeats for more than 60 seconds. The app is reconnecting."
+                .to_string(),
+        ),
+        "failed to send local runtime heartbeat" => {
+            let detail = json_string(value.get("error"))
+                .unwrap_or_else(|| "WebSocket is not connected".to_string());
+            Some(format!("Failed to send a heartbeat to Clero: {detail}"))
+        }
+        "local runtime backend error" => {
+            let code =
+                json_string(value.get("errorCode")).unwrap_or_else(|| "backend_error".to_string());
+            if !is_connection_error_code(&code) {
+                return None;
+            }
+            let detail = json_string(value.get("backendMessage"))
+                .unwrap_or_else(|| "Clero rejected the runtime connection.".to_string());
+            Some(format!("Clero rejected the connection ({code}): {detail}"))
+        }
+        "failed to handle runtime message" => {
+            let detail = json_string(value.get("error"))
+                .unwrap_or_else(|| "Unknown runtime message error".to_string());
+            Some(format!("Failed to handle a Clero runtime message: {detail}"))
+        }
+        _ => None,
+    }
+}
+
+fn is_connection_error_code(code: &str) -> bool {
+    let normalized = code.to_ascii_lowercase();
+    normalized.contains("auth")
+        || normalized.contains("token")
+        || normalized.contains("unauthorized")
+        || normalized.contains("forbidden")
+        || normalized.contains("connection")
+        || normalized.contains("session")
+        || normalized == "invalid_device"
+        || normalized == "device_disabled"
 }
 
 fn set_backend_connection(
@@ -742,6 +854,24 @@ fn set_backend_connection(
         } else if !connected {
             state.last_seen_ms = None;
         }
+        if connected {
+            state.last_error = None;
+        }
+    }
+}
+
+fn set_backend_connection_error(connection: &Arc<Mutex<BackendConnectionState>>, detail: String) {
+    if let Ok(mut state) = connection.lock() {
+        state.connected = false;
+        state.last_error = Some(detail);
+    }
+}
+
+fn clear_backend_connection(connection: &Arc<Mutex<BackendConnectionState>>) {
+    if let Ok(mut state) = connection.lock() {
+        state.connected = false;
+        state.last_seen_ms = None;
+        state.last_error = None;
     }
 }
 

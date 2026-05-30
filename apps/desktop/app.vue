@@ -119,6 +119,10 @@
           <dt>Last exit</dt>
           <dd>{{ daemonStatus.last_exit_code ?? "none" }}</dd>
         </div>
+        <div>
+          <dt>Connection error</dt>
+          <dd class="long-value">{{ daemonStatus.backend_error || "none" }}</dd>
+        </div>
       </dl>
 
       <section class="update-panel">
@@ -224,6 +228,14 @@
             <small>{{ taskActivityDetail }}</small>
           </div>
         </button>
+
+        <Transition name="expand">
+          <div v-if="connectionTroubleText" class="connection-warning">
+            <strong>Connection issue</strong>
+            <span>{{ connectionTroubleText }}</span>
+            <button class="text-link" type="button" @click="showDeveloperLogs">View logs</button>
+          </div>
+        </Transition>
       </section>
 
       <section class="capability-stack" aria-label="Local capabilities">
@@ -614,6 +626,7 @@ type DaemonStatus = {
   pid: number | null;
   backend_connected: boolean;
   backend_last_seen_ms: number | null;
+  backend_error: string | null;
   last_exit_code: number | null;
   log_tail: string[];
   agents_sync: AgentsSyncPayload | null;
@@ -934,9 +947,14 @@ const activityState = computed(() => {
 
 const taskActivityDetail = computed(() => {
   if (taskRunning.value) return "A local coding task is still active.";
-  if (daemonStatus.running && !daemonStatus.backend_connected) return "Waiting for Clero to reconnect.";
+  if (daemonStatus.running && !daemonStatus.backend_connected) return daemonStatus.backend_error || "Waiting for Clero to reconnect.";
   if (daemonStatus.running) return enabledToolGroups.value.length ? `${enabledToolGroups.value.join(", ")} enabled` : "No capabilities enabled";
   return hasConnection.value ? "Turn on the runtime to accept requests." : "Connect this computer first.";
+});
+
+const connectionTroubleText = computed(() => {
+  if (!daemonStatus.running || daemonStatus.backend_connected) return "";
+  return daemonStatus.backend_error || "";
 });
 
 const daemonLog = computed(() => daemonStatus.log_tail.join("\n") || "No daemon logs yet.");
@@ -1121,6 +1139,11 @@ async function checkForUpdates(install: boolean, options: CheckForUpdatesOptions
 }
 
 function showUpdates(): void {
+  taskActivityMode.value = false;
+  developerMode.value = true;
+}
+
+function showDeveloperLogs(): void {
   taskActivityMode.value = false;
   developerMode.value = true;
 }
@@ -1351,6 +1374,7 @@ function applyDaemonStatus(status: DaemonStatus): void {
     pid: status.pid ?? null,
     backend_connected: status.backend_connected ?? false,
     backend_last_seen_ms: status.backend_last_seen_ms ?? null,
+    backend_error: status.backend_error ?? null,
     last_exit_code: status.last_exit_code ?? null,
     log_tail: status.log_tail ?? [],
     agents_sync: status.agents_sync ?? null
@@ -1525,6 +1549,7 @@ function defaultDaemonStatus(): DaemonStatus {
     pid: null,
     backend_connected: false,
     backend_last_seen_ms: null,
+    backend_error: null,
     last_exit_code: null,
     log_tail: [],
     agents_sync: null

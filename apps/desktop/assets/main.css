@@ -488,6 +488,36 @@ button.activity-card[data-state="running"] > span {
   box-shadow: 0 0 0 5px rgba(209, 139, 40, 0.13);
 }
 
+.connection-warning {
+  display: grid;
+  gap: 7px;
+  border: 1px solid #e7c06a;
+  border-radius: 14px;
+  background: #fff8e6;
+  padding: 12px;
+  color: #6f4c08;
+}
+
+.connection-warning strong {
+  color: #5e4108;
+  font-size: 0.86rem;
+  font-weight: 850;
+}
+
+.connection-warning span {
+  color: #795916;
+  font-size: 0.82rem;
+  font-weight: 680;
+  line-height: 1.4;
+}
+
+.connection-warning .text-link {
+  justify-self: start;
+  min-height: auto;
+  padding: 0;
+  color: #14181f;
+}
+
 .activity-card strong,
 .activity-card small {
   display: block;
@@ -969,6 +999,13 @@ button.capability-toggle:focus-visible {
   font-weight: 800;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.status-grid dd.long-value {
+  overflow: visible;
+  line-height: 1.35;
+  text-overflow: clip;
+  white-space: normal;
 }
 
 .update-panel,
