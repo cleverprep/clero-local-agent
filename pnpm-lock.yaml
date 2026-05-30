@@ -20,6 +20,9 @@ importers:
 
   apps/cli:
     dependencies:
+      '@clero-local-agent/coding-agents':
+        specifier: workspace:*
+        version: link:../../packages/coding-agents
       '@clero-local-agent/daemon':
         specifier: workspace:*
         version: link:../../packages/daemon

@@ -18,7 +18,7 @@ Because Clero Local Agent can control local browser, coding, workspace, and git 
 ## What Is Included
 
 - TypeScript monorepo scaffold.
-- CLI entrypoint: `clero-local-agent`.
+- CLI entrypoint: `clero-connector` (`clero-local-agent` remains an alias).
 - Nuxt 3 + Tauri desktop scaffold.
 - Pairing/token storage interfaces with macOS Keychain support.
 - Authenticated outbound WebSocket client.
@@ -168,7 +168,154 @@ Prefer returning that URL from the backend `local-runtime/install-url/` response
 
 Override the updater endpoint with `CLERO_UPDATER_ENDPOINT` before running `pnpm build:tauri-updater-config`.
 
-## CLI Usage
+## Connector CLI Distribution
+
+The desktop app is the default user experience. The CLI is for developers, CI machines, servers, and users who prefer a terminal workflow. Users should not need to clone this repository, install Node, or run `pnpm` to use it.
+
+Target user install flow:
+
+```bash
+curl -fsSL https://media.clero.so/local-agent/install.sh | sh
+```
+
+Then:
+
+```bash
+clero-connector setup \
+  --code LRA-FFBD-4222-7DA1 \
+  --allowed-dir ~/Projects \
+  --coding-provider codex
+
+clero-connector daemon
+```
+
+Expected release artifacts:
+
+```text
+clero-connector-darwin-arm64.tar.gz
+clero-connector-darwin-x64.tar.gz
+clero-connector-linux-arm64.tar.gz
+clero-connector-linux-x64.tar.gz
+clero-connector-win-x64.zip
+checksums.txt
+install.sh
+install.ps1
+```
+
+Stable R2 URLs:
+
+```text
+https://media.clero.so/local-agent/latest/install.sh
+https://media.clero.so/local-agent/latest/install.ps1
+https://media.clero.so/local-agent/latest/clero-connector-darwin-arm64.tar.gz
+https://media.clero.so/local-agent/latest/clero-connector-darwin-x64.tar.gz
+https://media.clero.so/local-agent/latest/clero-connector-linux-arm64.tar.gz
+https://media.clero.so/local-agent/latest/clero-connector-linux-x64.tar.gz
+https://media.clero.so/local-agent/latest/clero-connector-win-x64.zip
+https://media.clero.so/local-agent/latest/checksums.txt
+https://media.clero.so/local-agent/releases/<version>/...
+```
+
+Installer script behavior:
+
+- Detect OS and CPU architecture.
+- Download the matching archive from `https://media.clero.so/local-agent/latest/`.
+- Verify the downloaded archive against `checksums.txt`.
+- Install the binary as `clero-connector`.
+- Prefer a user-writable install path such as `~/.local/bin`; only use `/usr/local/bin` when the user explicitly chooses a system install.
+- Print the exact installed path and warn if that directory is not on `PATH`.
+- Never write a device token into shell history or a plaintext config file. Pairing tokens should continue to use the existing token store where available.
+
+Manual install fallback:
+
+```bash
+curl -L -o clero-connector.tar.gz \
+  https://media.clero.so/local-agent/latest/clero-connector-darwin-arm64.tar.gz
+tar -xzf clero-connector.tar.gz
+mkdir -p ~/.local/bin
+mv clero-connector ~/.local/bin/clero-connector
+chmod +x ~/.local/bin/clero-connector
+```
+
+Windows target flow:
+
+```powershell
+irm https://media.clero.so/local-agent/latest/install.ps1 | iex
+clero-connector setup --code LRA-FFBD-4222-7DA1 --allowed-dir "$env:USERPROFILE\Projects" --coding-provider codex
+clero-connector daemon
+```
+
+Release automation guideline:
+
+1. Build standalone CLI binaries for macOS arm64/x64, Linux arm64/x64, and Windows x64.
+2. Package each binary with a short README and license file.
+3. Generate `checksums.txt` with SHA-256 checksums for every archive.
+4. Upload versioned artifacts to `local-agent/releases/<version>/`.
+5. Copy the same artifacts to `local-agent/latest/` only after all uploads and checksum verification pass.
+6. Keep GitHub Releases as the audit trail and R2 as the user-facing download channel.
+
+Package-manager roadmap:
+
+- Homebrew should be the first package-manager target for macOS and Linux:
+
+```bash
+brew install cleverprep/tap/clero-connector
+```
+
+- Windows can start with `install.ps1`, then add Winget when the CLI is stable:
+
+```powershell
+winget install Clero.Connector
+```
+
+CLI updates:
+
+- Initial CLI updates can be handled by rerunning the install script.
+- A future `clero-connector update` command should fetch `install.json`, compare versions, download the latest archive, verify checksum, replace the current binary atomically, and preserve `~/.clero-local-agent/config.json`.
+
+## Connector CLI Usage
+
+`clero-connector` is the terminal-first control surface for the same daemon used by the desktop app. It keeps the config at `~/.clero-local-agent/config.json` for compatibility with existing installs.
+
+One-command setup and pair:
+
+```bash
+clero-connector setup \
+  --code LRA-FFBD-4222-7DA1 \
+  --allowed-dir ~/Projects \
+  --coding-provider codex
+```
+
+Then run the outbound daemon:
+
+```bash
+clero-connector daemon
+```
+
+Useful management commands:
+
+```bash
+clero-connector status
+clero-connector workspaces list
+clero-connector workspaces add --path ~/Projects/clero_front
+clero-connector coding status
+clero-connector coding enable --provider claude-code --sandbox workspace-write --claude-permission-mode acceptEdits
+clero-connector coding enable --provider antigravity --sandbox read-only
+clero-connector coding disable
+clero-connector capabilities
+```
+
+The coding-agent connection is local: Clero calls `coding_agent.start_task`, the daemon validates the requested `cwd` against configured workspaces, then starts the configured provider (`codex`, `claude-code`, or `antigravity`) as a child process in that workspace. The daemon returns a `task_id` immediately and Clero polls `coding_agent.get_status` / `coding_agent.get_output` for long-running results.
+
+The original `clero-local-agent` command still works as an alias:
+
+```bash
+clero-local-agent daemon
+```
+
+### Development CLI
+
+During local development, use `pnpm dev:cli` in place of `clero-connector`:
 
 Create a local runtime config:
 

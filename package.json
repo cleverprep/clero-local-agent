@@ -6,7 +6,8 @@
   "type": "module",
   "packageManager": "pnpm@10.33.0",
   "bin": {
-    "clero-local-agent": "apps/cli/src/main.ts"
+    "clero-local-agent": "apps/cli/src/main.ts",
+    "clero-connector": "apps/cli/src/main.ts"
   },
   "scripts": {
     "build:daemon-runtime": "node scripts/build-daemon-runtime.mjs",

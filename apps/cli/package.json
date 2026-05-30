@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@clero-local-agent/coding-agents": "workspace:*",
     "@clero-local-agent/daemon": "workspace:*"
   }
 }
-
