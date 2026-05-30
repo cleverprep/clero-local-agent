@@ -172,6 +172,8 @@ jobs:
 
             if [[ "$file" = /* ]]; then
               printf "%s" "$file"
+            elif [[ -f "$file" ]]; then
+              printf "%s" "$file"
             else
               printf "%s/%s" "$release_dir" "$file"
             fi
