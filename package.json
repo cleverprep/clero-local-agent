@@ -10,6 +10,8 @@
     "clero-connector": "apps/cli/src/main.ts"
   },
   "scripts": {
+    "build:connector-package": "node scripts/build-connector-package.mjs",
+    "build:connector-installers": "node scripts/build-connector-installers.mjs",
     "build:daemon-runtime": "node scripts/build-daemon-runtime.mjs",
     "build:macos-dmg": "node scripts/create-macos-dmg.mjs",
     "build:r2-release-assets": "node scripts/prepare-r2-release-assets.mjs",
