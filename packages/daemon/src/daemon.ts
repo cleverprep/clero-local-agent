@@ -4,7 +4,13 @@ import {
   WebSocketApprovalProvider,
   type ApprovalProvider
 } from "@clero-local-agent/approvals";
-import { AgentScopedManagedBrowserAdapter, BrowserTools, McpChromeBrowserAdapter, type BrowserAdapter } from "@clero-local-agent/browser";
+import {
+  AgentScopedManagedBrowserAdapter,
+  BrowserTools,
+  McpChromeBrowserAdapter,
+  type BrowserAdapter,
+  type BrowserViewport
+} from "@clero-local-agent/browser";
 import {
   AntigravityCliAdapter,
   ClaudeCodeAdapter,
@@ -56,6 +62,7 @@ export type LocalRuntimeDaemonOptions = {
   browserRememberSession?: boolean;
   browserHeadless?: boolean;
   browserChannel?: "chromium" | "chrome" | "chrome-beta" | "msedge";
+  browserViewport?: BrowserViewport;
   agentsSyncPath?: string;
   logger?: Logger;
   auditLogger?: AuditLogger;
@@ -706,7 +713,8 @@ export class LocalRuntimeDaemon {
             userDataDir: this.options.browserProfileDir,
             rememberSession: this.options.browserRememberSession,
             headless: this.options.browserHeadless,
-            browserChannel: this.options.browserChannel
+            browserChannel: this.options.browserChannel,
+            viewport: this.options.browserViewport
           });
     this.browserAdapter = browserAdapter;
     const browserTools = new BrowserTools(browserAdapter);

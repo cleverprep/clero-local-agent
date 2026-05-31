@@ -21,10 +21,12 @@ import {
   type LocalRuntimeConfig
 } from "@clero-local-agent/daemon";
 import type { ClaudeCodePermissionMode, CodingAgentProvider, CodexSandbox } from "@clero-local-agent/coding-agents";
+import type { BrowserViewport } from "@clero-local-agent/browser";
 import type { SyncedAgent } from "@clero-local-agent/protocol";
 
 const DEVICE_TOKEN_ACCOUNT = "device_token";
 const DEFAULT_CONNECTOR_BASE_URL = "https://media.clero.so/local-agent/latest";
+const DEFAULT_HEADLESS_BROWSER_VIEWPORT: BrowserViewport = { width: 1440, height: 900 };
 
 type CliValue = string | string[] | boolean;
 type CliArgs = Record<string, CliValue>;
@@ -109,7 +111,7 @@ Usage:
   clero-connector agents list|browser|coding [--json] [--config <path>]
   clero-connector config init|show [--config <path>]
   clero-connector workspaces list|add|remove [--path <path>] [--config <path>]
-  clero-connector browser status|enable|disable [--browser-channel chromium|chrome|chrome-beta|msedge]
+  clero-connector browser status|enable|disable [--browser-channel chromium|chrome|chrome-beta|msedge] [--browser-width 1440 --browser-height 900]
   clero-connector coding status|enable|disable [--provider codex|claude-code|antigravity] [--sandbox read-only|workspace-write|danger-full-access]
 
 Compatibility:
@@ -470,6 +472,10 @@ async function runDaemon(args: CliArgs, runtimeConfig: LocalRuntimeConfig, confi
       "daemon requires --ws-url and a token from --token, CLERO_LOCAL_RUNTIME_TOKEN, config JSON, token store, or setup/pair --save"
     );
   }
+  const browserHeadless =
+    getBoolean(args, "browser-headless") ||
+    process.env.CLERO_BROWSER_HEADLESS === "true" ||
+    runtimeConfig.capabilities?.browser?.browser_headless;
 
   const daemon = createDaemon({
     wsUrl,
@@ -491,15 +497,13 @@ async function runDaemon(args: CliArgs, runtimeConfig: LocalRuntimeConfig, confi
           : process.env.CLERO_BROWSER_REMEMBER_SESSION === "false"
             ? false
             : runtimeConfig.capabilities?.browser?.remember_session !== false,
-    browserHeadless:
-      getBoolean(args, "browser-headless") ||
-      process.env.CLERO_BROWSER_HEADLESS === "true" ||
-      runtimeConfig.capabilities?.browser?.browser_headless,
+    browserHeadless,
     browserChannel: browserChannelArg(
       getString(args, "browser-channel") ??
         process.env.CLERO_BROWSER_CHANNEL ??
         runtimeConfig.capabilities?.browser?.browser_channel
     ),
+    browserViewport: browserViewportFromInputs(args, runtimeConfig, Boolean(browserHeadless)),
     agentsSyncPath: defaultAgentsSyncPath(configPath),
     capabilities: capabilityOptionsFromConfig(runtimeConfig)
   });
@@ -591,6 +595,15 @@ function applyBrowserFlags(config: LocalRuntimeConfig, args: CliArgs): void {
   }
   if (getBoolean(args, "no-browser-headless")) {
     config.capabilities.browser.browser_headless = false;
+  }
+  const browserWidth = getString(args, "browser-width");
+  const browserHeight = getString(args, "browser-height");
+  if (browserWidth || browserHeight) {
+    config.capabilities.browser.browser_viewport = browserViewportFromParts(
+      browserWidth,
+      browserHeight,
+      config.capabilities.browser.browser_viewport ?? DEFAULT_HEADLESS_BROWSER_VIEWPORT
+    );
   }
   if (getBoolean(args, "browser-remember-session")) {
     config.capabilities.browser.remember_session = true;
@@ -780,6 +793,52 @@ function expandPath(value: string): string {
 
 function normalizeUrl(value: string): string {
   return value.replace(/\/+$/, "");
+}
+
+function browserViewportFromInputs(
+  args: CliArgs,
+  runtimeConfig: LocalRuntimeConfig,
+  headless: boolean
+): BrowserViewport | undefined {
+  const width = getString(args, "browser-width") ?? process.env.CLERO_BROWSER_WIDTH;
+  const height = getString(args, "browser-height") ?? process.env.CLERO_BROWSER_HEIGHT;
+  const configured = normalizedBrowserViewport(runtimeConfig.capabilities?.browser?.browser_viewport);
+  if (width || height) {
+    return browserViewportFromParts(width, height, configured ?? DEFAULT_HEADLESS_BROWSER_VIEWPORT);
+  }
+  if (configured) {
+    return configured;
+  }
+  return headless ? DEFAULT_HEADLESS_BROWSER_VIEWPORT : undefined;
+}
+
+function browserViewportFromParts(
+  width: string | undefined,
+  height: string | undefined,
+  fallback: BrowserViewport
+): BrowserViewport {
+  return {
+    width: width ? browserDimensionArg(width, "--browser-width") : fallback.width,
+    height: height ? browserDimensionArg(height, "--browser-height") : fallback.height
+  };
+}
+
+function normalizedBrowserViewport(value: BrowserViewport | undefined): BrowserViewport | undefined {
+  if (!value) {
+    return undefined;
+  }
+  return {
+    width: browserDimensionArg(String(value.width), "browser_viewport.width"),
+    height: browserDimensionArg(String(value.height), "browser_viewport.height")
+  };
+}
+
+function browserDimensionArg(value: string, label: string): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 320 || parsed > 8192) {
+    throw new Error(`${label} must be an integer from 320 to 8192`);
+  }
+  return parsed;
 }
 
 async function runInteractive(command: string, args: string[], env: NodeJS.ProcessEnv): Promise<void> {

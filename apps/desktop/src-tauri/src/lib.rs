@@ -58,7 +58,15 @@ struct BrowserConfig {
     #[serde(default)]
     browser_headless: bool,
     #[serde(default)]
+    browser_viewport: Option<BrowserViewport>,
+    #[serde(default)]
     mcp_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BrowserViewport {
+    width: u32,
+    height: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -204,6 +212,7 @@ impl Default for BrowserConfig {
             browser_profile_dir: default_browser_profile_dir().to_string_lossy().to_string(),
             remember_session: true,
             browser_headless: false,
+            browser_viewport: None,
             mcp_url: None,
         }
     }

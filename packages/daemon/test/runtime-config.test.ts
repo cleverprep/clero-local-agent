@@ -141,6 +141,7 @@ test("saves and loads runtime config", async (t) => {
   const config = defaultRuntimeConfig();
   config.device_name = "Test Device";
   config.allowed_directories = [directory];
+  config.capabilities!.browser!.browser_viewport = { width: 1440, height: 900 };
 
   await saveRuntimeConfig(configPath, config);
   const raw = await readFile(configPath, "utf8");
@@ -149,6 +150,7 @@ test("saves and loads runtime config", async (t) => {
   assert.match(raw, /Test Device/);
   assert.equal(loaded.device_name, "Test Device");
   assert.deepEqual(loaded.allowed_directories, [directory]);
+  assert.deepEqual(loaded.capabilities?.browser?.browser_viewport, { width: 1440, height: 900 });
 });
 
 test("saves and loads synced agents snapshot", async (t) => {

@@ -593,6 +593,10 @@ type RuntimeConfig = {
       browser_profile_dir: string;
       remember_session: boolean;
       browser_headless: boolean;
+      browser_viewport?: {
+        width: number;
+        height: number;
+      };
       mcp_url?: string;
     };
     workspace: {
@@ -1514,7 +1518,8 @@ function defaultConfig(): RuntimeConfig {
         browser_channel: "chrome",
         browser_profile_dir: "",
         remember_session: true,
-        browser_headless: false
+        browser_headless: false,
+        browser_viewport: undefined
       },
       workspace: {
         enabled: true

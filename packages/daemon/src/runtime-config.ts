@@ -1,6 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import type { BrowserViewport } from "@clero-local-agent/browser";
 import type {
   ClaudeCodePermissionMode,
   ClaudeCodeReasoningEffort,
@@ -28,6 +29,7 @@ export type LocalRuntimeConfig = {
       browser_profile_dir?: string;
       remember_session?: boolean;
       browser_headless?: boolean;
+      browser_viewport?: BrowserViewport;
       mcp_url?: string;
     };
     workspace?: {
@@ -74,7 +76,8 @@ export function defaultRuntimeConfig(): LocalRuntimeConfig {
         browser_channel: "chrome",
         browser_profile_dir: path.join(os.homedir(), ".clero-local-agent", "browser-profile"),
         remember_session: true,
-        browser_headless: false
+        browser_headless: false,
+        browser_viewport: undefined
       },
       workspace: {
         enabled: true

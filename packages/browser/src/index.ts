@@ -163,6 +163,12 @@ export type ManagedBrowserAdapterOptions = {
   rememberSession?: boolean;
   headless?: boolean;
   browserChannel?: "chromium" | "chrome" | "chrome-beta" | "msedge";
+  viewport?: BrowserViewport;
+};
+
+export type BrowserViewport = {
+  width: number;
+  height: number;
 };
 
 type ManagedPage = any;
@@ -210,6 +216,7 @@ export class ManagedBrowserAdapter implements BrowserAdapter {
   private readonly removeUserDataDirOnDispose: boolean;
   private readonly headless: boolean;
   private readonly browserChannel?: string;
+  private readonly viewport?: BrowserViewport;
   private playwright: PlaywrightModule | null = null;
   private context: ManagedContext | null = null;
   private contextPromise: Promise<ManagedContext> | null = null;
@@ -231,6 +238,7 @@ export class ManagedBrowserAdapter implements BrowserAdapter {
     this.removeUserDataDirOnDispose = !rememberSession;
     this.headless = options.headless ?? false;
     this.browserChannel = options.browserChannel === "chromium" ? undefined : options.browserChannel;
+    this.viewport = normalizeBrowserViewport(options.viewport);
   }
 
   async listTabs(_args: JsonObject = {}): Promise<JsonObject> {
@@ -730,11 +738,19 @@ export class ManagedBrowserAdapter implements BrowserAdapter {
     }
 
     let context: ManagedContext;
+    const viewportOptions = this.viewport
+      ? {
+          viewport: this.viewport,
+          screen: this.viewport
+        }
+      : {
+          viewport: null
+        };
     try {
       context = await this.playwright.chromium.launchPersistentContext(this.userDataDir, {
         channel: this.browserChannel,
         headless: this.headless,
-        viewport: null
+        ...viewportOptions
       });
     } catch (error: unknown) {
       if (isBrowserProfileInUseError(error)) {
@@ -968,6 +984,21 @@ export class ManagedBrowserAdapter implements BrowserAdapter {
       events.splice(0, events.length - maxEvents);
     }
   }
+}
+
+function normalizeBrowserViewport(value: BrowserViewport | undefined): BrowserViewport | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  if (!Number.isInteger(value.width) || !Number.isInteger(value.height) || value.width <= 0 || value.height <= 0) {
+    return undefined;
+  }
+
+  return {
+    width: value.width,
+    height: value.height
+  };
 }
 
 type ManagedBrowserSession = {

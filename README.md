@@ -335,6 +335,7 @@ clero-connector browser enable --browser-channel chromium
 clero-connector browser enable --browser-channel chrome
 clero-connector browser enable --browser-headless
 clero-connector browser enable --no-browser-headless
+clero-connector browser enable --browser-headless --browser-width 1440 --browser-height 900
 clero-connector browser enable --browser-profile-dir ~/.clero-local-agent/browser-profile
 clero-connector browser enable --browser-remember-session
 clero-connector browser enable --no-browser-remember-session
@@ -368,7 +369,7 @@ clero-connector setup \
   --sandbox read-only
 ```
 
-Browser channels are `chromium`, `chrome`, `chrome-beta`, and `msedge`. Coding providers are `codex`, `claude-code`, and `antigravity`. Sandboxes are `read-only`, `workspace-write`, and `danger-full-access`.
+Browser channels are `chromium`, `chrome`, `chrome-beta`, and `msedge`. Headless browser sessions default to a `1440x900` viewport unless `--browser-width` and `--browser-height` are configured. Coding providers are `codex`, `claude-code`, and `antigravity`. Sandboxes are `read-only`, `workspace-write`, and `danger-full-access`.
 
 The coding-agent connection is local: Clero calls `coding_agent.start_task`, the daemon validates the requested `cwd` against configured workspaces, then starts the configured provider (`codex`, `claude-code`, or `antigravity`) as a child process in that workspace. The daemon returns a `task_id` immediately and Clero polls `coding_agent.get_status` / `coding_agent.get_output` for long-running results.
 

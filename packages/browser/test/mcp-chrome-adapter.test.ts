@@ -130,10 +130,13 @@ test("close_tab closes the active tab when no tab id is provided", async () => {
 
 test("agent-scoped managed browser keeps separate persistent profile directories", async () => {
   const createdProfileDirs: string[] = [];
+  const createdViewports: Array<{ width: number; height: number } | undefined> = [];
   const adapter = new AgentScopedManagedBrowserAdapter({
     userDataDir: "/tmp/clero-browser-root",
+    viewport: { width: 1440, height: 900 },
     sessionFactory: (options) => {
       createdProfileDirs.push(options.userDataDir ?? "");
+      createdViewports.push(options.viewport);
       return fakeBrowserAdapter({ profile_dir: options.userDataDir ?? "" });
     }
   });
@@ -145,6 +148,10 @@ test("agent-scoped managed browser keeps separate persistent profile directories
   assert.deepEqual(createdProfileDirs, [
     path.join("/tmp/clero-browser-root", "agent-15"),
     path.join("/tmp/clero-browser-root", "agent-22")
+  ]);
+  assert.deepEqual(createdViewports, [
+    { width: 1440, height: 900 },
+    { width: 1440, height: 900 }
   ]);
   assert.equal(first.browser_session_id, "agent-15");
   assert.equal(first.agent_id, "15");
