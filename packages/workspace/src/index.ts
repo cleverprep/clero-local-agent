@@ -12,14 +12,26 @@ export type WorkspacePolicyOptions = {
 
 export class WorkspacePolicy {
   private readonly allowedDirectories: string[];
+  private readonly unavailableDirectories: string[];
 
   constructor(options: WorkspacePolicyOptions) {
-    const allowedDirectories = options.allowedDirectories.filter((directory) => directory.trim().length > 0);
-    if (allowedDirectories.length === 0) {
-      throw new Error("At least one allowed directory is required");
+    const configuredDirectories = uniqueStrings(
+      options.allowedDirectories.filter((directory) => directory.trim().length > 0).map((directory) => path.resolve(directory))
+    );
+    const allowedDirectories: string[] = [];
+    const unavailableDirectories: string[] = [];
+
+    for (const directory of configuredDirectories) {
+      const resolved = tryRealpath(directory);
+      if (resolved) {
+        allowedDirectories.push(resolved);
+      } else {
+        unavailableDirectories.push(directory);
+      }
     }
 
-    this.allowedDirectories = allowedDirectories.map((directory) => realpathSync(path.resolve(directory)));
+    this.allowedDirectories = uniqueStrings(allowedDirectories);
+    this.unavailableDirectories = uniqueStrings(unavailableDirectories);
   }
 
   resolveAllowedDirectory(candidate?: string): string {
@@ -49,6 +61,10 @@ export class WorkspacePolicy {
   }
 
   private resolveCandidateDirectory(candidate: string): string {
+    if (this.allowedDirectories.length === 0) {
+      throw this.noAllowedDirectoriesError();
+    }
+
     const trimmed = candidate.trim();
     const directCandidates = path.isAbsolute(trimmed)
       ? [trimmed]
@@ -158,8 +174,28 @@ export class WorkspacePolicy {
     return [...this.allowedDirectories];
   }
 
+  listUnavailableDirectories(): string[] {
+    return [...this.unavailableDirectories];
+  }
+
   defaultDirectory(): string {
-    return this.allowedDirectories[0]!;
+    const defaultDirectory = this.allowedDirectories[0];
+    if (!defaultDirectory) {
+      throw this.noAllowedDirectoriesError();
+    }
+    return defaultDirectory;
+  }
+
+  private noAllowedDirectoriesError(): ToolExecutionError {
+    const missing = this.unavailableDirectories.length > 0 ? ` Missing configured roots: ${this.unavailableDirectories.join(", ")}` : "";
+    return new ToolExecutionError(
+      "invalid_arguments",
+      `No allowed workspace directories are available. Add an existing folder in Clero Local Agent settings.${missing}`,
+      {
+        allowed_roots: this.listAllowedDirectories(),
+        unavailable_roots: this.listUnavailableDirectories()
+      }
+    );
   }
 }
 
@@ -198,7 +234,8 @@ export class WorkspaceTools {
       roots: this.workspacePolicy.listAllowedDirectories().map((root) => ({
         path: root,
         name: path.basename(root)
-      }))
+      })),
+      unavailable_roots: this.workspacePolicy.listUnavailableDirectories()
     };
   }
 
@@ -225,6 +262,7 @@ export class WorkspaceTools {
 
     return {
       roots,
+      unavailable_roots: this.workspacePolicy.listUnavailableDirectories(),
       max_depth: maxDepth,
       projects
     };

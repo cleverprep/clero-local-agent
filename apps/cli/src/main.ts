@@ -778,7 +778,7 @@ function allowedDirectories(args: CliArgs, runtimeConfig: LocalRuntimeConfig): s
   if (runtimeConfig.allowed_directories && runtimeConfig.allowed_directories.length > 0) {
     return runtimeConfig.allowed_directories;
   }
-  return [process.cwd()];
+  return [];
 }
 
 function expandPath(value: string): string {

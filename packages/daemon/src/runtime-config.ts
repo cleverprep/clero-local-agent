@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -68,7 +69,7 @@ export function defaultRuntimeConfig(): LocalRuntimeConfig {
   return {
     backend_url: process.env.CLERO_BACKEND_URL ?? "https://clero.so",
     device_name: os.hostname(),
-    allowed_directories: [path.join(os.homedir(), "Projects")],
+    allowed_directories: defaultAllowedDirectories(),
     capabilities: {
       browser: {
         enabled: true,
@@ -104,6 +105,11 @@ export function defaultRuntimeConfig(): LocalRuntimeConfig {
       }
     }
   };
+}
+
+function defaultAllowedDirectories(): string[] {
+  const projectsDirectory = path.join(os.homedir(), "Projects");
+  return existsSync(projectsDirectory) ? [projectsDirectory] : [];
 }
 
 export async function loadRuntimeConfig(configPath: string): Promise<LocalRuntimeConfig> {

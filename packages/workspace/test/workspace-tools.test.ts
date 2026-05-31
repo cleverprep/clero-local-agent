@@ -42,6 +42,35 @@ test("rejects a missing cwd with an invalid arguments error", async (t) => {
   assert.throws(() => policy.isAllowed(missing), isMissingCwdError);
 });
 
+test("ignores missing configured roots and reports them as unavailable", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "clero-workspace-test-"));
+  const missing = path.join(root, "Projects");
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const policy = new WorkspacePolicy({ allowedDirectories: [missing] });
+  const tools = new WorkspaceTools(policy);
+
+  assert.deepEqual(policy.listAllowedDirectories(), []);
+  assert.deepEqual(policy.listUnavailableDirectories(), [missing]);
+  assert.deepEqual(tools.listRoots(), {
+    roots: [],
+    unavailable_roots: [missing]
+  });
+  assert.deepEqual(await tools.listProjects(), {
+    roots: [],
+    unavailable_roots: [missing],
+    max_depth: 3,
+    projects: []
+  });
+  assert.throws(
+    () => policy.resolveAllowedDirectory(),
+    (error: unknown) =>
+      error instanceof ToolExecutionError &&
+      error.errorCode === "invalid_arguments" &&
+      error.message.includes("No allowed workspace directories are available") &&
+      error.message.includes(missing)
+  );
+});
+
 test("discovers projects under allowed roots", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "clero-workspace-test-"));
   t.after(() => rm(root, { recursive: true, force: true }));

@@ -1443,8 +1443,11 @@ fn normalize_runtime_config(config: &mut RuntimeConfig) -> bool {
     }
 
     if config.allowed_directories.is_empty() {
-        config.allowed_directories = default_allowed_directories();
-        changed = true;
+        let default_directories = default_allowed_directories();
+        if !default_directories.is_empty() {
+            config.allowed_directories = default_directories;
+            changed = true;
+        }
     }
 
     if config.capabilities.codex.provider == "codex" || config.capabilities.codex.provider == "antigravity" {
@@ -1484,7 +1487,9 @@ fn default_device_name() -> String {
 
 fn default_allowed_directories() -> Vec<String> {
     dirs::home_dir()
-        .map(|home| vec![home.join("Projects").to_string_lossy().to_string()])
+        .map(|home| home.join("Projects"))
+        .filter(|projects| projects.is_dir())
+        .map(|projects| vec![projects.to_string_lossy().to_string()])
         .unwrap_or_default()
 }
 
