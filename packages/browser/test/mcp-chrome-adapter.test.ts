@@ -96,23 +96,44 @@ test("mouse tools map to chrome_computer actions", async () => {
   ]);
 });
 
-test("type fills targeted fields and types raw text otherwise", async () => {
+test("type clicks targeted fields before typing and fill replaces targeted fields", async () => {
   const client = new FakeMcpClient();
   const adapter = new McpChromeBrowserAdapter({ client });
 
   await adapter.type({ ref: "ref_7", text: "user@example.com" });
   await adapter.type({ text: "hello" });
+  await adapter.fill({ selector: "#email", text: "admin@example.com" });
 
-  assert.equal(client.calls[0]?.name, "chrome_fill_or_select");
+  assert.equal(client.calls[0]?.name, "chrome_click_element");
   assert.deepEqual(client.calls[0]?.args, {
-    ref: "ref_7",
-    value: "user@example.com"
+    ref: "ref_7"
   });
   assert.equal(client.calls[1]?.name, "chrome_computer");
   assert.deepEqual(client.calls[1]?.args, {
     action: "type",
+    text: "user@example.com"
+  });
+  assert.equal(client.calls[2]?.name, "chrome_computer");
+  assert.deepEqual(client.calls[2]?.args, {
+    action: "type",
     text: "hello"
   });
+  assert.equal(client.calls[3]?.name, "chrome_fill_or_select");
+  assert.deepEqual(client.calls[3]?.args, {
+    selector: "#email",
+    value: "admin@example.com"
+  });
+});
+
+test("fill requires a target field", async () => {
+  const client = new FakeMcpClient();
+  const adapter = new McpChromeBrowserAdapter({ client });
+
+  await assert.rejects(
+    () => adapter.fill({ text: "admin@example.com" }),
+    (error: unknown) => error instanceof ToolExecutionError && error.errorCode === "invalid_arguments"
+  );
+  assert.equal(client.calls.length, 0);
 });
 
 test("close_tab closes the active tab when no tab id is provided", async () => {
@@ -222,6 +243,7 @@ function fakeBrowserAdapter(result: JsonObject): BrowserAdapter {
     mouseUp: call,
     drag: call,
     type: call,
+    fill: call,
     pressKey: call,
     screenshot: call,
     getConsoleLogs: call,

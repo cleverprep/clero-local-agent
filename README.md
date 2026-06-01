@@ -541,6 +541,7 @@ Browser tools, passive and agent-scoped:
 - `browser.mouse_up`
 - `browser.drag`
 - `browser.type`
+- `browser.fill`
 - `browser.press_key`
 - `browser.screenshot`
 - `browser.get_console_logs`
@@ -550,7 +551,7 @@ Browser tools, passive and agent-scoped:
 - `browser.close_tab`
 - `browser.close_page`
 
-`browser.close_page` is a compatibility alias for `browser.close_tab`.
+`browser.type` sends keyboard input and does not clear existing text. Use `browser.fill` when an agent should replace a targeted field value. `browser.close_page` is a compatibility alias for `browser.close_tab`.
 
 Browser tools are lease-free. The managed browser adapter keeps agent sessions separated by `agent_id`, so one agent browsing does not block another agent from using browser or coding-agent tools.
 

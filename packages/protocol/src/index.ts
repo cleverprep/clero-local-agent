@@ -18,6 +18,7 @@ export type ToolName =
   | "browser.mouse_up"
   | "browser.drag"
   | "browser.type"
+  | "browser.fill"
   | "browser.press_key"
   | "browser.screenshot"
   | "browser.get_console_logs"
@@ -415,9 +416,19 @@ export function inputSchemaForTool(tool: string): JsonSchema {
       return objectSchema(
         {
           page_id: stringSchema("Optional page id. Defaults to the active page."),
+          ref: stringSchema("Optional element ref from browser.get_snapshot or browser.get_interactive_elements. The field is clicked before typing."),
+          selector: stringSchema("Optional CSS selector of the field to click before typing."),
+          text: stringSchema("Text to type using keyboard input. Existing field text is not cleared.")
+        },
+        ["text"]
+      );
+    case "browser.fill":
+      return objectSchema(
+        {
+          page_id: stringSchema("Optional page id. Defaults to the active page."),
           ref: stringSchema("Element ref from browser.get_snapshot or browser.get_interactive_elements."),
           selector: stringSchema("CSS selector of the field to fill."),
-          text: stringSchema("Text to type or fill into the target field.")
+          text: stringSchema("Text to set as the field value, replacing existing text.")
         },
         ["text"]
       );
@@ -545,7 +556,8 @@ export function defaultCapabilities(): Capability[] {
     capability("browser.mouse_down", "Press and hold a mouse button."),
     capability("browser.mouse_up", "Release a mouse button."),
     capability("browser.drag", "Drag from one page coordinate to another."),
-    capability("browser.type", "Type text or fill a targeted field."),
+    capability("browser.type", "Type text using keyboard input. With a target field, click first and append without clearing existing text."),
+    capability("browser.fill", "Replace the value of a targeted input field by ref or selector."),
     capability("browser.press_key", "Press a keyboard key or shortcut in the browser."),
     capability("browser.screenshot", "Capture a screenshot from the active tab."),
     capability("browser.get_console_logs", "Return captured console output."),

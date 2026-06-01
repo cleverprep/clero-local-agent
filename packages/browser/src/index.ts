@@ -31,6 +31,7 @@ export interface BrowserAdapter {
   mouseUp(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject>;
   drag(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject>;
   type(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject>;
+  fill(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject>;
   pressKey(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject>;
   screenshot(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject>;
   getConsoleLogs(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject>;
@@ -111,8 +112,13 @@ export class BrowserTools {
       },
       {
         name: "browser.type",
-        description: "Type text, or fill a targeted field when a ref or selector is provided.",
+        description: "Type text like keyboard input. When a ref or selector is provided, click that field first and append text without clearing it.",
         handler: (args, context) => this.adapter.type(args, context)
+      },
+      {
+        name: "browser.fill",
+        description: "Replace the value of a targeted input field by ref or selector.",
+        handler: (args, context) => this.adapter.fill(args, context)
       },
       {
         name: "browser.press_key",
@@ -415,10 +421,13 @@ export class ManagedBrowserAdapter implements BrowserAdapter {
     if (target.selector) {
       const frameOrPage = target.frame ?? page;
       const locator = frameOrPage.locator(target.selector).first();
-      await locator.fill(text, { timeout: 10_000 }).catch(async () => {
-        await locator.click({ timeout: 10_000 });
-        await page.keyboard.type(text);
+      await locator.click({ timeout: 10_000 }).catch(async (error: unknown) => {
+        if (target.x === undefined || target.y === undefined) {
+          throw error;
+        }
+        await page.mouse.click(target.x, target.y);
       });
+      await page.keyboard.type(text);
       return compactJsonObject({
         typed: true,
         page_id: this.pageId(page),
@@ -431,6 +440,26 @@ export class ManagedBrowserAdapter implements BrowserAdapter {
 
     await page.keyboard.type(text);
     return { typed: true, page_id: this.pageId(page), length: text.length };
+  }
+
+  async fill(args: JsonObject): Promise<JsonObject> {
+    const page = await this.ensurePage(pageIdArg(args));
+    const text = requiredText(args);
+    const target = this.resolveTarget(args, page);
+    if (!target.selector) {
+      throw new ToolExecutionError("invalid_arguments", "ref or selector is required");
+    }
+
+    const frameOrPage = target.frame ?? page;
+    await frameOrPage.locator(target.selector).first().fill(text, { timeout: 10_000 });
+    return compactJsonObject({
+      filled: true,
+      page_id: this.pageId(page),
+      selector: target.selector,
+      length: text.length,
+      frame_url: target.frameUrl,
+      frame_name: target.frameName
+    });
   }
 
   async pressKey(args: JsonObject): Promise<JsonObject> {
@@ -1080,6 +1109,10 @@ export class AgentScopedManagedBrowserAdapter implements BrowserAdapter {
     return this.withSession(context, (adapter) => adapter.type(args));
   }
 
+  async fill(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject> {
+    return this.withSession(context, (adapter) => adapter.fill(args));
+  }
+
   async pressKey(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject> {
     return this.withSession(context, (adapter) => adapter.pressKey(args));
   }
@@ -1400,17 +1433,41 @@ export class McpChromeBrowserAdapter implements BrowserAdapter {
     const ref = optionalString(args, "ref");
     const selector = optionalString(args, "selector");
     if (ref || selector) {
-      return this.callJsonTool("chrome_fill_or_select", compactJsonObject({
+      await this.callJsonTool("chrome_click_element", compactJsonObject({ ref, selector }));
+      await this.callJsonTool("chrome_computer", {
+        action: "type",
+        text
+      });
+      return compactJsonObject({
+        typed: true,
         ref,
         selector,
-        value: text
-      }));
+        length: text.length
+      });
     }
 
     return this.callJsonTool("chrome_computer", {
       action: "type",
       text
     });
+  }
+
+  async fill(args: JsonObject): Promise<JsonObject> {
+    const text = requiredText(args);
+    const ref = optionalString(args, "ref");
+    const selector = optionalString(args, "selector");
+    if (!ref && !selector) {
+      throw new ToolExecutionError("invalid_arguments", "ref or selector is required");
+    }
+
+    return this.callJsonTool(
+      "chrome_fill_or_select",
+      compactJsonObject({
+        ref,
+        selector,
+        value: text
+      })
+    );
   }
 
   async pressKey(args: JsonObject): Promise<JsonObject> {
