@@ -38,6 +38,7 @@ export type CodingTask = {
   approved: boolean | null;
   approval_reason?: string;
   output: string;
+  agent_output: string;
   stdout: string;
   stderr: string;
   final_message: string | null;
@@ -90,7 +91,7 @@ export class CodingAgentTools {
       },
       {
         name: "coding_agent.get_output",
-        description: "Get local coding-agent task output and JSONL events.",
+        description: "Get the local coding-agent message output. Raw events and streams are opt-in for diagnostics.",
         handler: (args) => this.adapter.getOutput(requiredString(args, "task_id"), args)
       },
       {
@@ -176,6 +177,13 @@ type CodingSessionPlan = {
   resumed: boolean;
 };
 
+type CodingOutputOptions = {
+  includeEvents: boolean;
+  includeRaw: boolean;
+  sinceEventIndex?: number;
+  maxEvents?: number;
+};
+
 const SANDBOX_VALUES: CodexSandbox[] = ["read-only", "workspace-write", "danger-full-access"];
 const REASONING_EFFORT_VALUES: CodexReasoningEffort[] = ["low", "medium", "high", "xhigh"];
 const CLAUDE_PERMISSION_MODES: ClaudeCodePermissionMode[] = [
@@ -232,6 +240,7 @@ export class CodexCliAdapter implements CodingAgentAdapter {
       approved: approval.approved,
       approval_reason: approval.reason,
       output: "",
+      agent_output: "",
       stdout: "",
       stderr: "",
       final_message: null,
@@ -309,18 +318,12 @@ export class CodexCliAdapter implements CodingAgentAdapter {
 
   async getOutput(taskId: string, args: JsonObject = {}): Promise<JsonObject> {
     const task = this.requireTask(taskId);
-    const sinceEventIndex = optionalNumber(args, "since_event_index");
-    const maxEvents = optionalNumber(args, "max_events");
-    const events = this.selectEvents(task, sinceEventIndex, maxEvents);
-    return {
-      ...this.publicTask(task),
-      output: task.output,
-      stdout: task.stdout,
-      stderr: task.stderr,
-      final_message: task.final_message,
-      events,
-      next_event_index: task.nextEventIndex
-    };
+    const options = outputOptions(args);
+    const result = codingTaskOutputResult(task, options);
+    if (options.includeEvents) {
+      result.events = this.selectEvents(task, options.sinceEventIndex, options.maxEvents) as unknown as JsonValue;
+    }
+    return result;
   }
 
   async cancel(taskId: string): Promise<JsonObject> {
@@ -507,6 +510,7 @@ export class CodexCliAdapter implements CodingAgentAdapter {
     if (item.type === "agent_message" && typeof item.text === "string") {
       task.final_message = item.text;
       task.output = appendBounded(task.output, `${item.text}\n`, this.maxOutputBytes);
+      appendAgentOutput(task, item.text, this.maxOutputBytes);
       this.markBlockedFromText(task, item.text);
     }
 
@@ -540,6 +544,9 @@ export class CodexCliAdapter implements CodingAgentAdapter {
     task.blocked_reason ??= reason;
     if (!task.output.includes(reason)) {
       task.output = appendBounded(task.output, `${reason}\n`, this.maxOutputBytes);
+    }
+    if (!task.agent_output.includes(reason)) {
+      appendAgentOutput(task, reason, this.maxOutputBytes);
     }
     if (task.status !== "running") {
       return;
@@ -676,6 +683,7 @@ export class AntigravityCliAdapter implements CodingAgentAdapter {
       approved: approval.approved,
       approval_reason: approval.reason,
       output: "",
+      agent_output: "",
       stdout: "",
       stderr: "",
       final_message: null,
@@ -782,18 +790,12 @@ export class AntigravityCliAdapter implements CodingAgentAdapter {
 
   async getOutput(taskId: string, args: JsonObject = {}): Promise<JsonObject> {
     const task = this.requireTask(taskId);
-    const sinceEventIndex = optionalNumber(args, "since_event_index");
-    const maxEvents = optionalNumber(args, "max_events");
-    const events = this.selectEvents(task, sinceEventIndex, maxEvents);
-    return {
-      ...this.publicTask(task),
-      output: task.output,
-      stdout: task.stdout,
-      stderr: task.stderr,
-      final_message: task.final_message,
-      events,
-      next_event_index: task.nextEventIndex
-    };
+    const options = outputOptions(args);
+    const result = codingTaskOutputResult(task, options);
+    if (options.includeEvents) {
+      result.events = this.selectEvents(task, options.sinceEventIndex, options.maxEvents) as unknown as JsonValue;
+    }
+    return result;
   }
 
   async cancel(taskId: string): Promise<JsonObject> {
@@ -934,6 +936,7 @@ export class AntigravityCliAdapter implements CodingAgentAdapter {
     if (!event) {
       task.final_message = line;
       task.output = appendBounded(task.output, `${line}\n`, this.maxOutputBytes);
+      appendAgentOutput(task, line, this.maxOutputBytes);
       this.appendTextEvent(task, "stdout", "stdout.line", line);
       this.markBlockedFromText(task, line);
       return;
@@ -955,6 +958,7 @@ export class AntigravityCliAdapter implements CodingAgentAdapter {
     if (text) {
       task.final_message = text;
       task.output = appendBounded(task.output, `${text}\n`, this.maxOutputBytes);
+      appendAgentOutput(task, text, this.maxOutputBytes);
       this.markBlockedFromText(task, text);
     }
 
@@ -995,6 +999,9 @@ export class AntigravityCliAdapter implements CodingAgentAdapter {
     task.blocked_reason ??= reason;
     if (!task.output.includes(reason)) {
       task.output = appendBounded(task.output, `${reason}\n`, this.maxOutputBytes);
+    }
+    if (!task.agent_output.includes(reason)) {
+      appendAgentOutput(task, reason, this.maxOutputBytes);
     }
     if (task.status !== "running") {
       return;
@@ -1137,6 +1144,7 @@ export class ClaudeCodeAdapter implements CodingAgentAdapter {
       approved: approval.approved,
       approval_reason: approval.reason,
       output: "",
+      agent_output: "",
       stdout: "",
       stderr: "",
       final_message: null,
@@ -1214,18 +1222,12 @@ export class ClaudeCodeAdapter implements CodingAgentAdapter {
 
   async getOutput(taskId: string, args: JsonObject = {}): Promise<JsonObject> {
     const task = this.requireTask(taskId);
-    const sinceEventIndex = optionalNumber(args, "since_event_index");
-    const maxEvents = optionalNumber(args, "max_events");
-    const events = this.selectEvents(task, sinceEventIndex, maxEvents);
-    return {
-      ...this.publicTask(task),
-      output: task.output,
-      stdout: task.stdout,
-      stderr: task.stderr,
-      final_message: task.final_message,
-      events,
-      next_event_index: task.nextEventIndex
-    };
+    const options = outputOptions(args);
+    const result = codingTaskOutputResult(task, options);
+    if (options.includeEvents) {
+      result.events = this.selectEvents(task, options.sinceEventIndex, options.maxEvents) as unknown as JsonValue;
+    }
+    return result;
   }
 
   async cancel(taskId: string): Promise<JsonObject> {
@@ -1368,6 +1370,7 @@ export class ClaudeCodeAdapter implements CodingAgentAdapter {
     if (text) {
       task.final_message = text;
       task.output = appendBounded(task.output, `${text}\n`, this.maxOutputBytes);
+      appendAgentOutput(task, text, this.maxOutputBytes);
       this.markBlockedFromText(task, text);
     }
 
@@ -1408,6 +1411,9 @@ export class ClaudeCodeAdapter implements CodingAgentAdapter {
     task.blocked_reason ??= reason;
     if (!task.output.includes(reason)) {
       task.output = appendBounded(task.output, `${reason}\n`, this.maxOutputBytes);
+    }
+    if (!task.agent_output.includes(reason)) {
+      appendAgentOutput(task, reason, this.maxOutputBytes);
     }
     if (task.status !== "running") {
       return;
@@ -1524,6 +1530,21 @@ function optionalNumber(args: JsonObject, key: string): number | undefined {
 
 function booleanArg(args: JsonObject, key: string): boolean {
   return args[key] === true;
+}
+
+function outputOptions(args: JsonObject): CodingOutputOptions {
+  const sinceEventIndex = optionalNumber(args, "since_event_index");
+  const maxEvents = optionalNumber(args, "max_events");
+  return {
+    includeEvents:
+      booleanArg(args, "include_events") ||
+      booleanArg(args, "debug") ||
+      sinceEventIndex !== undefined ||
+      maxEvents !== undefined,
+    includeRaw: booleanArg(args, "include_raw") || booleanArg(args, "debug"),
+    sinceEventIndex,
+    maxEvents
+  };
 }
 
 function sandboxArg(args: JsonObject, key: string): CodexSandbox | undefined {
@@ -1656,6 +1677,38 @@ function publicTask(task: CodingTask): JsonObject {
     result.lease_id = task.lease_id;
   }
   return result;
+}
+
+function codingTaskOutputResult(task: StoredCodingTask, options: CodingOutputOptions): JsonObject {
+  const output = agentVisibleOutput(task);
+  const result: JsonObject = {
+    ...publicTask(task),
+    output,
+    message: output,
+    final_message: task.final_message,
+    next_event_index: task.nextEventIndex
+  };
+
+  if (options.includeRaw) {
+    result.raw_output = task.output;
+    result.stdout = task.stdout;
+    result.stderr = task.stderr;
+  }
+
+  return result;
+}
+
+function agentVisibleOutput(task: CodingTask): string {
+  return task.agent_output || task.final_message || task.blocked_reason || "";
+}
+
+function appendAgentOutput(task: StoredCodingTask, text: string, maxBytes: number): void {
+  const trimmed = text.trimEnd();
+  if (!trimmed) {
+    return;
+  }
+
+  task.agent_output = appendBounded(task.agent_output, `${trimmed}\n`, maxBytes);
 }
 
 function stringValue(value: JsonValue | undefined): string | undefined {
@@ -1817,17 +1870,24 @@ function findStringField(value: JsonValue, keys: string[]): string | undefined {
 function looksApprovalOrSandboxBlocked(text: string): boolean {
   const normalized = text.toLowerCase();
   return (
-    normalized.includes("approval") ||
-    normalized.includes("sandbox") ||
+    normalized.includes("approval denied") ||
+    normalized.includes("approval is required") ||
+    normalized.includes("approval required") ||
+    normalized.includes("requires approval") ||
     normalized.includes("blocked by policy") ||
     normalized.includes("blocked by local policy") ||
     normalized.includes("blocked by sandbox policy") ||
+    normalized.includes("sandbox policy") ||
+    normalized.includes("sandbox prevented") ||
+    normalized.includes("sandbox blocked") ||
+    normalized.includes("sandbox wrapper failed") ||
     normalized.includes("rejected(\"") ||
     normalized.includes("rejected(") ||
     normalized.includes("rejected: blocked") ||
     normalized.includes("permission denied") ||
     normalized.includes("operation not permitted") ||
-    normalized.includes("read-only")
+    normalized.includes("read-only file system") ||
+    normalized.includes("cannot write to read-only")
   );
 }
 

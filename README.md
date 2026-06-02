@@ -581,7 +581,7 @@ Supported `coding_agent.start_task` arguments:
 - `ephemeral` to avoid persisting Codex session rollout files.
 - `skip_git_repo_check` to allow one-off non-git directories.
 
-`coding_agent.get_output` returns captured stdout/stderr, the final agent message, and parsed coding-agent events. Use `since_event_index` and `max_events` for polling long-running tasks.
+`coding_agent.get_output` returns the coding agent's own message text by default, plus task status metadata. It intentionally omits raw stdout/stderr, command execution output, and edited-file event payloads from the normal response. For diagnostics, pass `include_events: true` to include parsed JSONL events, `include_raw: true` to include `stdout`, `stderr`, and `raw_output`, or `debug: true` to include both. Use `since_event_index` and `max_events` with `include_events` for event polling.
 
 Git tools:
 

@@ -505,8 +505,11 @@ export function inputSchemaForTool(tool: string): JsonSchema {
       return objectSchema(
         {
           task_id: stringSchema("Local coding task id returned by coding_agent.start_task."),
-          since_event_index: numberSchema("Return coding-agent JSONL events starting at this event index."),
-          max_events: numberSchema("Maximum number of events to return.")
+          include_events: booleanSchema("Include parsed coding-agent JSONL events for diagnostics. Defaults to false."),
+          include_raw: booleanSchema("Include raw stdout, stderr, and mixed raw output for diagnostics. Defaults to false."),
+          debug: booleanSchema("Include both raw streams and parsed events. Defaults to false."),
+          since_event_index: numberSchema("When including events, return coding-agent JSONL events starting at this event index."),
+          max_events: numberSchema("When including events, maximum number of events to return.")
         },
         ["task_id"]
       );
@@ -571,7 +574,7 @@ export function defaultCapabilities(): Capability[] {
     capability("workspace.describe_project", "Inspect a discovered local project key/name or path and summarize markers, stack, package metadata, and git state."),
     capability("coding_agent.start_task", "Start a local Codex, Claude Code, or Antigravity task in a discovered project. Prefer project over absolute cwd. Set continue_session=true to resume prior context for the same agent/project when available. Returns immediately with task_id; poll coding_agent.get_status/get_output."),
     capability("coding_agent.get_status", "Get local coding-agent task status by task_id."),
-    capability("coding_agent.get_output", "Read local coding-agent task output and streamed events by task_id."),
+    capability("coding_agent.get_output", "Read local coding-agent message output by task_id. Raw streams and events are opt-in diagnostics."),
     capability("coding_agent.cancel", "Cancel a running local coding-agent task."),
     capability("git.status", "Read git status for a discovered project. Prefer project over absolute cwd."),
     capability("git.diff", "Read git diff for a discovered project. Prefer project over absolute cwd."),

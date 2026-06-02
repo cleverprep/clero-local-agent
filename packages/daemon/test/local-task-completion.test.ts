@@ -51,6 +51,7 @@ test("retries local coding task completion when backend has not recorded the tas
     approval_required: false,
     approved: null,
     output: "script: tcgetattr/ioctl: Operation not supported on socket\n",
+    agent_output: "",
     stdout: "",
     stderr: "script: tcgetattr/ioctl: Operation not supported on socket\n",
     final_message: null,

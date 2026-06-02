@@ -55,9 +55,18 @@ test("runs codex exec as an async JSONL task", async (t) => {
 
   const output = await adapter.getOutput(taskId);
   assert.equal(output.final_message, "done: inspect repo");
-  assert.match(stringField(output, "stderr"), /fake stderr/);
+  assert.match(stringField(output, "output"), /done: inspect repo/);
+  assert.match(stringField(output, "message"), /done: inspect repo/);
+  assert.doesNotMatch(stringField(output, "output"), /edited README/);
+  assert.equal("events" in output, false);
+  assert.equal("stderr" in output, false);
+  assert.equal("raw_output" in output, false);
 
-  const events = eventArray(output.events);
+  const debugOutput = await adapter.getOutput(taskId, { include_events: true, include_raw: true });
+  assert.match(stringField(debugOutput, "stderr"), /fake stderr/);
+  assert.match(stringField(debugOutput, "raw_output"), /edited README/);
+
+  const events = eventArray(debugOutput.events);
   assert.equal(events.some((event) => event.type === "thread.started"), true);
   assert.equal(events.some((event) => event.type === "item.completed"), true);
 
@@ -105,7 +114,7 @@ test("resumes codex exec when continue_session uses the same session key", async
   const secondStatus = await waitForTerminalStatus(adapter, stringField(second, "task_id"));
   assert.equal(secondStatus.status, "completed");
 
-  const output = await adapter.getOutput(stringField(second, "task_id"));
+  const output = await adapter.getOutput(stringField(second, "task_id"), { include_events: true });
   const events = eventArray(output.events);
   const processStarted = events.find((event) => event.type === "process.started");
   assert.ok(processStarted);
@@ -232,6 +241,32 @@ test("marks Codex Linux bubblewrap failures reported in final text as blocked", 
   assert.match(stringField(status, "blocked_reason"), /Codex Linux sandbox could not start/);
 });
 
+test("does not mark normal sandbox wording in Codex final text as blocked", async (t) => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "clero-codex-test-"));
+  t.after(() => rm(workspace, { recursive: true, force: true }));
+  const message =
+    "The test suite starts, but it cannot reach the configured PostgreSQL host db from this sandbox.";
+  const fakeCodex = await createFakeCodexFinalMessage(workspace, message);
+  const adapter = new CodexCliAdapter({
+    workspacePolicy: new WorkspacePolicy({ allowedDirectories: [workspace] }),
+    command: fakeCodex,
+    allowWorkspaceWrite: true
+  });
+
+  const start = await adapter.startTask(
+    { prompt: "run tests", cwd: workspace, sandbox: "workspace-write" },
+    { requestId: "req_1", leaseId: "lease_1", agentId: "agent_1", taskId: "task_1" }
+  );
+
+  const status = await waitForTerminalStatus(adapter, stringField(start, "task_id"));
+
+  assert.equal(status.status, "completed");
+  assert.equal(status.blocked_reason, undefined);
+
+  const output = await adapter.getOutput(stringField(start, "task_id"));
+  assert.match(stringField(output, "output"), /PostgreSQL host db/);
+});
+
 test("marks policy-blocked codex tasks terminal even when the process keeps running", async (t) => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "clero-codex-test-"));
   t.after(() => rm(workspace, { recursive: true, force: true }));
@@ -257,7 +292,7 @@ test("marks policy-blocked codex tasks terminal even when the process keeps runn
   assert.match(stringField(status, "blocked_reason"), /blocked by policy/i);
   assert.equal(terminalTasks.length, 1);
 
-  const output = await adapter.getOutput(taskId);
+  const output = await adapter.getOutput(taskId, { include_events: true });
   const events = eventArray(output.events);
   assert.equal(events.some((event) => event.type === "process.blocked"), true);
 });
@@ -286,7 +321,7 @@ test("runs claude code print mode as an async JSONL task", async (t) => {
   assert.equal(status.status, "completed");
   assert.equal(status.final_message, "done: inspect repo");
 
-  const output = await adapter.getOutput(stringField(start, "task_id"));
+  const output = await adapter.getOutput(stringField(start, "task_id"), { include_events: true });
   const events = eventArray(output.events);
   const processStarted = events.find((event) => event.type === "process.started");
   assert.ok(processStarted);
@@ -358,9 +393,13 @@ test("runs antigravity cli as an async text task", async (t) => {
   assert.equal(status.final_message, "done: inspect repo");
 
   const output = await adapter.getOutput(stringField(start, "task_id"));
-  assert.match(stringField(output, "stdout"), /done: inspect repo/);
+  assert.match(stringField(output, "output"), /done: inspect repo/);
+  assert.equal("stdout" in output, false);
+  assert.equal("events" in output, false);
 
-  const events = eventArray(output.events);
+  const debugOutput = await adapter.getOutput(stringField(start, "task_id"), { include_events: true, include_raw: true });
+  assert.match(stringField(debugOutput, "stdout"), /done: inspect repo/);
+  const events = eventArray(debugOutput.events);
   const processStarted = events.find((event) => event.type === "process.started");
   assert.ok(processStarted);
   const processData = objectField(processStarted, "data");
@@ -382,6 +421,7 @@ process.stdin.on("end", () => {
   console.error(${JSON.stringify(errorMessage ?? "fake stderr")});
   console.log(JSON.stringify({ type: "thread.started", thread_id: "thread_fake" }));
   console.log(JSON.stringify({ type: "item.completed", item: { id: "item_1", type: "agent_message", text: "done: " + prompt.trim() } }));
+  console.log(JSON.stringify({ type: "item.completed", item: { id: "item_2", type: "command_execution", output: "edited README.md\\nM README.md\\n" } }));
   console.log(JSON.stringify({ type: ${JSON.stringify(errorMessage ? "error" : "turn.completed")}, message: ${JSON.stringify(errorMessage ?? "ok")} }));
   process.exit(${exitCode});
 });
@@ -416,6 +456,24 @@ process.stdin.resume();
 process.stdin.on("end", () => {
   console.log(JSON.stringify({ type: "thread.started", thread_id: "thread_fake" }));
   console.log(JSON.stringify({ type: "item.completed", item: { id: "item_1", type: "agent_message", text: "The command could not run because the sandbox wrapper failed before execution:\\n\\nbwrap: loopback: Failed RTM_NEWADDR: Operation not permitted" } }));
+  console.log(JSON.stringify({ type: "turn.completed" }));
+  process.exit(0);
+});
+`
+  );
+  await chmod(fakeCodex, 0o755);
+  return fakeCodex;
+}
+
+async function createFakeCodexFinalMessage(workspace: string, message: string): Promise<string> {
+  const fakeCodex = path.join(workspace, "fake-codex-final-message.js");
+  await writeFile(
+    fakeCodex,
+    `#!/usr/bin/env node
+process.stdin.resume();
+process.stdin.on("end", () => {
+  console.log(JSON.stringify({ type: "thread.started", thread_id: "thread_fake" }));
+  console.log(JSON.stringify({ type: "item.completed", item: { id: "item_1", type: "agent_message", text: ${JSON.stringify(message)} } }));
   console.log(JSON.stringify({ type: "turn.completed" }));
   process.exit(0);
 });
