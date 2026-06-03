@@ -477,7 +477,7 @@ export function inputSchemaForTool(tool: string): JsonSchema {
           session_key: stringSchema("Optional stable session key. Use the same key with continue_session=true to resume a specific coding-agent session."),
           sandbox: stringEnumSchema(
             ["read-only", "workspace-write", "danger-full-access"],
-            "Coding-agent sandbox policy. Defaults to read-only. workspace-write and danger-full-access require approval."
+            "Requested coding-agent sandbox policy. Local connector settings may force danger-full-access when the user explicitly enabled full local access."
           ),
           model: stringSchema("Optional coding-agent model override."),
           reasoning_effort: stringEnumSchema(

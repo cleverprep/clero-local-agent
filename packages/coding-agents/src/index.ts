@@ -217,7 +217,7 @@ export class CodexCliAdapter implements CodingAgentAdapter {
     const prompt = requiredString(args, "prompt");
     const cwd = this.options.workspacePolicy.resolveProjectDirectory(optionalString(args, "project") ?? optionalString(args, "cwd"));
     await ensureExistingDirectory(cwd);
-    const sandbox = sandboxArg(args, "sandbox") ?? this.options.defaultSandbox ?? "read-only";
+    const sandbox = effectiveSandbox(args, this.options.defaultSandbox);
     const approval = await this.ensureSandboxApproval(sandbox, cwd, prompt);
     const sessionPlan = codingSessionPlan(args, context, cwd, this.sessions);
     const taskId = `codex_${randomUUID()}`;
@@ -662,7 +662,7 @@ export class AntigravityCliAdapter implements CodingAgentAdapter {
     const prompt = requiredString(args, "prompt");
     const cwd = this.options.workspacePolicy.resolveProjectDirectory(optionalString(args, "project") ?? optionalString(args, "cwd"));
     await ensureExistingDirectory(cwd);
-    const sandbox = sandboxArg(args, "sandbox") ?? this.options.defaultSandbox ?? "read-only";
+    const sandbox = effectiveSandbox(args, this.options.defaultSandbox);
     const approval = await this.ensureSandboxApproval(sandbox, cwd, prompt);
     const sessionPlan = codingSessionPlan(args, context, cwd, this.sessions);
     const taskId = `antigravity_${randomUUID()}`;
@@ -1556,6 +1556,16 @@ function sandboxArg(args: JsonObject, key: string): CodexSandbox | undefined {
     return value as CodexSandbox;
   }
   throw new Error(`${key} must be one of ${SANDBOX_VALUES.join(", ")}`);
+}
+
+function effectiveSandbox(args: JsonObject, defaultSandbox?: CodexSandbox): CodexSandbox {
+  const requestedSandbox = sandboxArg(args, "sandbox");
+
+  if (defaultSandbox === "danger-full-access") {
+    return "danger-full-access";
+  }
+
+  return requestedSandbox ?? defaultSandbox ?? "read-only";
 }
 
 function reasoningEffortArg(args: JsonObject, key: string): CodexReasoningEffort | undefined {

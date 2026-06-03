@@ -180,6 +180,48 @@ test("uses local workspace-write setting as Codex sandbox approval", async (t) =
   assert.equal(status.status, "completed");
 });
 
+test("uses local Codex danger-full-access default over a remote workspace-write request", async (t) => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "clero-codex-test-"));
+  t.after(() => rm(workspace, { recursive: true, force: true }));
+  const resolvedWorkspace = await realpath(workspace);
+  const fakeCodex = await createFakeCodex(workspace, 0);
+  const adapter = new CodexCliAdapter({
+    workspacePolicy: new WorkspacePolicy({ allowedDirectories: [workspace] }),
+    command: fakeCodex,
+    defaultSandbox: "danger-full-access",
+    allowDangerFullAccess: true
+  });
+
+  const start = await adapter.startTask(
+    { prompt: "edit files", cwd: workspace, sandbox: "workspace-write" },
+    { requestId: "req_1", leaseId: "lease_1", agentId: "agent_1", taskId: "task_1" }
+  );
+
+  assert.equal(start.sandbox, "danger-full-access");
+  assert.equal(start.approved, true);
+  assert.equal(start.approval_reason, "Approved by local full-access setting");
+
+  const output = await adapter.getOutput(stringField(start, "task_id"), { include_events: true });
+  const events = eventArray(output.events);
+  const processStarted = events.find((event) => event.type === "process.started");
+  assert.ok(processStarted);
+  const processData = objectField(processStarted, "data");
+  const args = stringArrayField(processData, "args");
+  assert.deepEqual(args.slice(0, 8), [
+    "--ask-for-approval",
+    "never",
+    "exec",
+    "--json",
+    "--sandbox",
+    "danger-full-access",
+    "--cd",
+    resolvedWorkspace
+  ]);
+
+  const status = await waitForTerminalStatus(adapter, stringField(start, "task_id"));
+  assert.equal(status.status, "completed");
+});
+
 test("rejects a missing coding-agent working directory before spawning", async (t) => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "clero-coding-cwd-test-"));
   t.after(() => rm(workspace, { recursive: true, force: true }));

@@ -369,7 +369,7 @@ clero-connector setup \
   --sandbox read-only
 ```
 
-Browser channels are `chromium`, `chrome`, `chrome-beta`, and `msedge`. Headless browser sessions default to a `1440x900` viewport unless `--browser-width` and `--browser-height` are configured. Coding providers are `codex`, `claude-code`, and `antigravity`. Sandboxes are `read-only`, `workspace-write`, and `danger-full-access`.
+Browser channels are `chromium`, `chrome`, `chrome-beta`, and `msedge`. Headless browser sessions default to a `1440x900` viewport unless `--browser-width` and `--browser-height` are configured. Coding providers are `codex`, `claude-code`, and `antigravity`. Sandboxes are `read-only`, `workspace-write`, and `danger-full-access`. If the local connector is configured with `--sandbox danger-full-access`, that explicit local setting wins over a remote task request that asks for `read-only` or `workspace-write`.
 
 The coding-agent connection is local: Clero calls `coding_agent.start_task`, the daemon validates the requested `cwd` against configured workspaces, then starts the configured provider (`codex`, `claude-code`, or `antigravity`) as a child process in that workspace. The daemon returns a `task_id` immediately and Clero polls `coding_agent.get_status` / `coding_agent.get_output` for long-running results.
 
@@ -570,7 +570,7 @@ Coding-agent tools:
 - `coding_agent.get_output` passive
 - `coding_agent.cancel` passive
 
-`coding_agent.start_task` runs Codex, Claude Code, or Antigravity as a background job and returns a local `task_id` immediately. By default it uses the `read-only` sandbox setting. If `sandbox` is `workspace-write` or `danger-full-access`, local approval is required before the coding process starts. Runtime approval prompts from the coding CLI are not used in this mode; if sandbox or permission policy blocks progress, the task is marked `blocked` and the details are returned through `coding_agent.get_status` / `coding_agent.get_output`. While the child coding process is running, the daemon keeps that workspace lease alive.
+`coding_agent.start_task` runs Codex, Claude Code, or Antigravity as a background job and returns a local `task_id` immediately. By default it uses the `read-only` sandbox setting. If `sandbox` is `workspace-write` or `danger-full-access`, local approval is required before the coding process starts. When the connector's local default sandbox is `danger-full-access`, that local user setting is authoritative and is not downgraded by a remote task argument. Runtime approval prompts from the coding CLI are not used in this mode; if sandbox or permission policy blocks progress, the task is marked `blocked` and the details are returned through `coding_agent.get_status` / `coding_agent.get_output`. While the child coding process is running, the daemon keeps that workspace lease alive.
 
 Supported `coding_agent.start_task` arguments:
 
