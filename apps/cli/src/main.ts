@@ -27,6 +27,7 @@ import type { SyncedAgent } from "@clero-local-agent/protocol";
 const DEVICE_TOKEN_ACCOUNT = "device_token";
 const DEFAULT_CONNECTOR_BASE_URL = "https://media.clero.so/local-agent/latest";
 const DEFAULT_HEADLESS_BROWSER_VIEWPORT: BrowserViewport = { width: 1440, height: 900 };
+const CONNECTOR_VERSION = "0.1.37";
 
 type CliValue = string | string[] | boolean;
 type CliArgs = Record<string, CliValue>;
@@ -505,6 +506,7 @@ async function runDaemon(args: CliArgs, runtimeConfig: LocalRuntimeConfig, confi
     ),
     browserViewport: browserViewportFromInputs(args, runtimeConfig, Boolean(browserHeadless)),
     agentsSyncPath: defaultAgentsSyncPath(configPath),
+    daemonVersion: CONNECTOR_VERSION,
     capabilities: capabilityOptionsFromConfig(runtimeConfig)
   });
 
@@ -524,7 +526,7 @@ async function pairWithBackend(
   code: string,
   config: LocalRuntimeConfig
 ): Promise<{ connection_id: number; device_token: string; websocket_url: string }> {
-  const client = createPairingClient({ backendUrl });
+  const client = createPairingClient({ backendUrl, daemonVersion: CONNECTOR_VERSION });
   return client.pair({
     code,
     deviceName: config.device_name,

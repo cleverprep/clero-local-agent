@@ -72,8 +72,7 @@ export class RuntimeWebSocketClient extends EventEmitter {
     this.authenticated = false;
 
     socket.addEventListener("open", () => {
-      socket.send(JSON.stringify({ type: "auth", token: this.options.token }));
-      this.options.logger.info("local runtime websocket connected; auth message sent");
+      this.options.logger.info("local runtime websocket connected; waiting for backend authentication");
     });
 
     socket.addEventListener("message", (event: { data: string }) => {
@@ -111,6 +110,16 @@ export class RuntimeWebSocketClient extends EventEmitter {
 
     socket.addEventListener("error", (event: unknown) => {
       this.options.logger.error("local runtime websocket error", { event: websocketEventDetail(event) });
+      if (this.socket !== socket) {
+        return;
+      }
+      this.socket = null;
+      this.authenticated = false;
+      this.emit("close");
+      socket.close();
+      if (this.shouldReconnect) {
+        setTimeout(() => this.connect(), this.reconnectDelayMs);
+      }
     });
   }
 }

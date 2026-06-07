@@ -331,7 +331,7 @@ async fn pair_runtime(
         "pairing_code": pairing_code,
         "device_name": config.device_name,
         "platform": std::env::consts::OS,
-        "daemon_version": "0.1.6",
+        "daemon_version": env!("CARGO_PKG_VERSION"),
         "capabilities": { "tools": capabilities }
     });
     let response = reqwest::Client::new()
