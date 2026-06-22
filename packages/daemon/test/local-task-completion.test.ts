@@ -67,6 +67,10 @@ test("retries local coding task completion when backend has not recorded the tas
 
   assert.equal(sentMessages.length, 1);
   assert.equal(sentMessages[0]?.type, "local_task_completed");
+  if (sentMessages[0]?.type !== "local_task_completed") {
+    throw new Error("Expected local_task_completed");
+  }
+  assert.equal(sentMessages[0].event_run_id, "223");
 
   await daemonInternals.handleMessage({
     type: "error",
@@ -84,6 +88,7 @@ test("retries local coding task completion when backend has not recorded the tas
     throw new Error("Expected local_task_completed retry");
   }
   assert.equal(retriedMessage.task_id, "antigravity_1");
+  assert.equal(retriedMessage.event_run_id, "223");
 
   daemonInternals.clearPendingLocalTaskCompletions();
 });

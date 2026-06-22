@@ -33,6 +33,12 @@ export type LocalRuntimeConfig = {
       browser_viewport?: BrowserViewport;
       mcp_url?: string;
     };
+    browser_debug?: {
+      enabled?: boolean;
+      command?: string;
+      args?: string[];
+      browser_url?: string;
+    };
     workspace?: {
       enabled?: boolean;
     };
@@ -79,6 +85,12 @@ export function defaultRuntimeConfig(): LocalRuntimeConfig {
         remember_session: true,
         browser_headless: false,
         browser_viewport: undefined
+      },
+      browser_debug: {
+        enabled: false,
+        command: "",
+        args: undefined,
+        browser_url: ""
       },
       workspace: {
         enabled: true
@@ -182,6 +194,12 @@ export function capabilityOptionsFromConfig(config: LocalRuntimeConfig): LocalRu
     browser: {
       enabled: config.capabilities?.browser?.enabled
     },
+    browserDebug: {
+      enabled: config.capabilities?.browser_debug?.enabled,
+      command: nonEmptyString(config.capabilities?.browser_debug?.command),
+      args: config.capabilities?.browser_debug?.args,
+      browserUrl: nonEmptyString(config.capabilities?.browser_debug?.browser_url)
+    },
     workspace: {
       enabled: config.capabilities?.workspace?.enabled
     },
@@ -226,6 +244,9 @@ export function capabilitiesFromConfig(config: LocalRuntimeConfig): Capability[]
     if (capability.name.startsWith("browser.")) {
       return options.browser?.enabled !== false;
     }
+    if (capability.name.startsWith("browser_debug.")) {
+      return options.browserDebug?.enabled === true;
+    }
     if (capability.name.startsWith("workspace.")) {
       return options.workspace?.enabled !== false;
     }
@@ -254,6 +275,10 @@ export function mergeRuntimeConfig(base: LocalRuntimeConfig, override: LocalRunt
       browser: {
         ...base.capabilities?.browser,
         ...override.capabilities?.browser
+      },
+      browser_debug: {
+        ...base.capabilities?.browser_debug,
+        ...override.capabilities?.browser_debug
       },
       workspace: {
         ...base.capabilities?.workspace,

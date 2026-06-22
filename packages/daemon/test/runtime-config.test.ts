@@ -46,16 +46,37 @@ class MemoryTokenStore implements TokenStore {
 test("filters advertised capabilities from runtime config", () => {
   const config = defaultRuntimeConfig();
   config.capabilities!.browser!.enabled = false;
+  config.capabilities!.browser_debug!.enabled = false;
   config.capabilities!.codex!.enabled = false;
   config.capabilities!.git!.write_enabled = false;
 
   const names = capabilitiesFromConfig(config).map((capability) => capability.name);
 
   assert.equal(names.some((name) => name.startsWith("browser.")), false);
+  assert.equal(names.some((name) => name.startsWith("browser_debug.")), false);
   assert.equal(names.some((name) => name.startsWith("coding_agent.")), false);
   assert.equal(names.includes("git.status"), true);
   assert.equal(names.includes("git.commit"), false);
   assert.equal(names.includes("workspace.list_projects"), true);
+});
+
+test("advertises browser debug capabilities only when enabled", () => {
+  const config = defaultRuntimeConfig();
+
+  assert.equal(capabilitiesFromConfig(config).some((capability) => capability.name.startsWith("browser_debug.")), false);
+
+  config.capabilities!.browser_debug!.enabled = true;
+  config.capabilities!.browser_debug!.browser_url = "http://127.0.0.1:9222";
+  config.capabilities!.browser_debug!.command = "";
+
+  const capabilities = capabilitiesFromConfig(config);
+  const callTool = capabilities.find((capability) => capability.name === "browser_debug.call_tool");
+
+  assert.ok(callTool);
+  assert.deepEqual(callTool.groups, ["browser_debug"]);
+  assert.equal(capabilityOptionsFromConfig(config).browserDebug?.enabled, true);
+  assert.equal(capabilityOptionsFromConfig(config).browserDebug?.browserUrl, "http://127.0.0.1:9222");
+  assert.equal(capabilityOptionsFromConfig(config).browserDebug?.command, undefined);
 });
 
 test("advertises Antigravity through coding-agent tool capabilities", () => {
@@ -91,6 +112,12 @@ test("maps runtime config to daemon capability options", () => {
     defaultSandbox: "workspace-write",
     allowWorkspaceWrite: true,
     allowDangerFullAccess: false
+  });
+  assert.deepEqual(capabilityOptionsFromConfig(config).browserDebug, {
+    enabled: false,
+    command: undefined,
+    args: undefined,
+    browserUrl: undefined
   });
 });
 

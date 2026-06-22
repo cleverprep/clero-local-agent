@@ -27,6 +27,8 @@ export type ToolName =
   | "browser.go_forward"
   | "browser.close_tab"
   | "browser.close_page"
+  | "browser_debug.list_tools"
+  | "browser_debug.call_tool"
   | "workspace.list_roots"
   | "workspace.list_projects"
   | "workspace.describe_project"
@@ -454,6 +456,16 @@ export function inputSchemaForTool(tool: string): JsonSchema {
       return objectSchema({
         page_id: stringSchema("Optional page id. Defaults to the active page.")
       });
+    case "browser_debug.list_tools":
+      return emptyObjectSchema();
+    case "browser_debug.call_tool":
+      return objectSchema(
+        {
+          name: stringSchema("Chrome DevTools MCP tool name from browser_debug.list_tools."),
+          arguments: jsonObjectSchema("Arguments to pass through to the selected Chrome DevTools MCP tool.")
+        },
+        ["name"]
+      );
     case "workspace.list_roots":
       return emptyObjectSchema();
     case "workspace.list_projects":
@@ -569,6 +581,8 @@ export function defaultCapabilities(): Capability[] {
     capability("browser.go_forward", "Navigate the active tab forward."),
     capability("browser.close_tab", "Close the active or selected browser tab."),
     capability("browser.close_page", "Compatibility alias for browser.close_tab."),
+    capability("browser_debug.list_tools", "List Chrome DevTools MCP debugging tools available for the local browser."),
+    capability("browser_debug.call_tool", "Call a Chrome DevTools MCP debugging tool by name. Use browser_debug.list_tools first."),
     capability("workspace.list_roots", "List local filesystem roots the agent is allowed to inspect. Use this before choosing a project path."),
     capability("workspace.list_projects", "Discover local projects under allowed roots. Use the returned project key/name for coding and git tools instead of inventing absolute paths."),
     capability("workspace.describe_project", "Inspect a discovered local project key/name or path and summarize markers, stack, package metadata, and git state."),
@@ -596,6 +610,9 @@ function capability(name: ToolName, description: string): Capability {
 export function capabilityGroups(tool: string): string[] {
   if (tool.startsWith("browser.")) {
     return ["browser"];
+  }
+  if (tool.startsWith("browser_debug.")) {
+    return ["browser_debug"];
   }
   if (tool.startsWith("workspace.")) {
     return ["codex", "git_read", "git_write"];
@@ -638,6 +655,10 @@ function numberSchema(description: string): JsonSchema {
 
 function booleanSchema(description: string): JsonSchema {
   return { type: "boolean", description };
+}
+
+function jsonObjectSchema(description: string): JsonSchema {
+  return { type: "object", description, additionalProperties: true };
 }
 
 function stringArraySchema(description: string): JsonSchema {

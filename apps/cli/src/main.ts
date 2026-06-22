@@ -27,7 +27,7 @@ import type { SyncedAgent } from "@clero-local-agent/protocol";
 const DEVICE_TOKEN_ACCOUNT = "device_token";
 const DEFAULT_CONNECTOR_BASE_URL = "https://media.clero.so/local-agent/latest";
 const DEFAULT_HEADLESS_BROWSER_VIEWPORT: BrowserViewport = { width: 1440, height: 900 };
-const CONNECTOR_VERSION = "0.1.37";
+const CONNECTOR_VERSION = "0.1.38";
 
 type CliValue = string | string[] | boolean;
 type CliArgs = Record<string, CliValue>;
@@ -113,6 +113,7 @@ Usage:
   clero-connector config init|show [--config <path>]
   clero-connector workspaces list|add|remove [--path <path>] [--config <path>]
   clero-connector browser status|enable|disable [--browser-channel chromium|chrome|chrome-beta|msedge] [--browser-width 1440 --browser-height 900]
+  clero-connector browser-debug status|enable|disable [--browser-debug-command npx] [--browser-debug-arg <arg>] [--browser-debug-url http://127.0.0.1:9222]
   clero-connector coding status|enable|disable [--provider codex|claude-code|antigravity] [--sandbox read-only|workspace-write|danger-full-access]
 
 Compatibility:
@@ -154,6 +155,11 @@ async function main(): Promise<void> {
 
   if (command === "browser") {
     await handleBrowserCommand(subcommand, args, configPath, runtimeConfig);
+    return;
+  }
+
+  if (command === "browser-debug") {
+    await handleBrowserDebugCommand(subcommand, args, configPath, runtimeConfig);
     return;
   }
 
@@ -371,6 +377,39 @@ async function handleBrowserCommand(
   console.log(JSON.stringify({ config_path: configPath, browser: runtimeConfig.capabilities.browser }, null, 2));
 }
 
+async function handleBrowserDebugCommand(
+  subcommand: string | undefined,
+  args: CliArgs,
+  configPath: string,
+  runtimeConfig: LocalRuntimeConfig
+): Promise<void> {
+  const browserDebug = runtimeConfig.capabilities?.browser_debug ?? {};
+
+  if (subcommand === "status" || subcommand === undefined) {
+    console.log(JSON.stringify(browserDebug, null, 2));
+    return;
+  }
+
+  runtimeConfig.capabilities ??= {};
+  runtimeConfig.capabilities.browser_debug ??= {};
+
+  if (subcommand === "disable") {
+    runtimeConfig.capabilities.browser_debug.enabled = false;
+    await saveRuntimeConfig(configPath, runtimeConfig);
+    console.log(JSON.stringify({ config_path: configPath, browser_debug: runtimeConfig.capabilities.browser_debug }, null, 2));
+    return;
+  }
+
+  if (subcommand !== "enable") {
+    throw new Error("browser-debug supports: status, enable, disable");
+  }
+
+  runtimeConfig.capabilities.browser_debug.enabled = true;
+  applyBrowserDebugFlags(runtimeConfig, args);
+  await saveRuntimeConfig(configPath, runtimeConfig);
+  console.log(JSON.stringify({ config_path: configPath, browser_debug: runtimeConfig.capabilities.browser_debug }, null, 2));
+}
+
 async function handleCodingCommand(
   subcommand: string | undefined,
   args: CliArgs,
@@ -562,6 +601,7 @@ function applyCommonConfigFlags(config: LocalRuntimeConfig, args: CliArgs): Loca
   }
 
   applyBrowserFlags(next, args);
+  applyBrowserDebugFlags(next, args);
   applyCodingFlags(
     next,
     args,
@@ -612,6 +652,31 @@ function applyBrowserFlags(config: LocalRuntimeConfig, args: CliArgs): void {
   }
   if (getBoolean(args, "no-browser-remember-session")) {
     config.capabilities.browser.remember_session = false;
+  }
+}
+
+function applyBrowserDebugFlags(config: LocalRuntimeConfig, args: CliArgs): void {
+  config.capabilities ??= {};
+  config.capabilities.browser_debug ??= {};
+  const browserDebug = config.capabilities.browser_debug;
+
+  if (getBoolean(args, "enable-browser-debug")) {
+    browserDebug.enabled = true;
+  }
+  if (getBoolean(args, "disable-browser-debug")) {
+    browserDebug.enabled = false;
+  }
+  const command = getString(args, "browser-debug-command");
+  if (command) {
+    browserDebug.command = command;
+  }
+  const toolArgs = getStrings(args, "browser-debug-arg");
+  if (toolArgs.length > 0) {
+    browserDebug.args = toolArgs;
+  }
+  const browserUrl = getString(args, "browser-debug-url") ?? getString(args, "browser-debug-browser-url");
+  if (browserUrl) {
+    browserDebug.browser_url = browserUrl;
   }
 }
 
@@ -697,6 +762,7 @@ function localStatus(configPath: string, runtimeConfig: LocalRuntimeConfig): Rec
     allowed_directories: runtimeConfig.allowed_directories ?? [],
     capabilities: {
       browser: runtimeConfig.capabilities?.browser?.enabled !== false,
+      browser_debug: runtimeConfig.capabilities?.browser_debug?.enabled === true,
       workspace: runtimeConfig.capabilities?.workspace?.enabled !== false,
       coding: runtimeConfig.capabilities?.codex?.enabled !== false,
       coding_provider: runtimeConfig.capabilities?.codex?.provider,

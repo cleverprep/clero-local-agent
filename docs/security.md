@@ -73,6 +73,8 @@ Managed browser sessions use a dedicated profile. This avoids requiring a preins
 
 Browser tools should avoid exposing more data than requested. Snapshots, screenshots, console logs, network events, and page content are sensitive and should be audited.
 
+The optional `browser_debug` capability bridges to Chrome DevTools MCP. It can expose DevTools data, page content, console output, network details, and performance traces to agents. Keep it disabled by default and grant it only to agents that should debug browser sessions.
+
 ## Coding Agents
 
 Codex, Claude Code, and Antigravity adapters execute local CLI processes. Sandbox and approval settings must be visible to the user before enabling the capability.

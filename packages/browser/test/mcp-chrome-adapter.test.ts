@@ -2,7 +2,14 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
 import { ToolExecutionError } from "@clero-local-agent/mcp-runtime";
-import { AgentScopedManagedBrowserAdapter, McpChromeBrowserAdapter, type BrowserAdapter, type McpToolClient } from "../src/index.ts";
+import {
+  AgentScopedManagedBrowserAdapter,
+  BrowserDebugTools,
+  ChromeDevToolsBrowserDebugAdapter,
+  McpChromeBrowserAdapter,
+  type BrowserAdapter,
+  type McpToolClient
+} from "../src/index.ts";
 import type { JsonObject, JsonValue } from "@clero-local-agent/protocol";
 
 class FakeMcpClient implements McpToolClient {
@@ -214,6 +221,37 @@ test("agent-scoped managed browser restarts a stale closed session once", async 
   assert.deepEqual(disposed, [path.join("/tmp/clero-browser-root", "agent-15")]);
   assert.equal(result.profile_dir, path.join("/tmp/clero-browser-root", "agent-15"));
   assert.equal(result.browser_session_id, "agent-15");
+});
+
+test("browser debug tools list and proxy Chrome DevTools MCP tools", async () => {
+  const client = new FakeMcpClient();
+  const adapter = new ChromeDevToolsBrowserDebugAdapter({ client });
+  const tools = new BrowserDebugTools(adapter);
+  const definitions = tools.definitions();
+
+  const listTools = definitions.find((definition) => definition.name === "browser_debug.list_tools");
+  const callTool = definitions.find((definition) => definition.name === "browser_debug.call_tool");
+
+  assert.ok(listTools);
+  assert.ok(callTool);
+  assert.deepEqual(await listTools.handler({}, { requestId: "req_1" }), { tools: [{ name: "chrome_navigate" }] });
+  assert.deepEqual(await callTool.handler({ name: "performance_start_trace", arguments: { reload: true } }, { requestId: "req_2" }), {
+    success: true,
+    name: "performance_start_trace",
+    args: { reload: true }
+  });
+  assert.deepEqual(client.calls.at(-1), {
+    name: "performance_start_trace",
+    args: { reload: true }
+  });
+});
+
+test("browser debug call_tool requires a tool name", async () => {
+  const client = new FakeMcpClient();
+  const adapter = new ChromeDevToolsBrowserDebugAdapter({ client });
+
+  await assert.rejects(() => adapter.callTool({ arguments: {} }), /name is required/);
+  assert.equal(client.calls.length, 0);
 });
 
 function mcpTextResult(value: JsonValue): JsonObject {

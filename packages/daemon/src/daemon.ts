@@ -6,9 +6,12 @@ import {
 } from "@clero-local-agent/approvals";
 import {
   AgentScopedManagedBrowserAdapter,
+  BrowserDebugTools,
   BrowserTools,
+  ChromeDevToolsBrowserDebugAdapter,
   McpChromeBrowserAdapter,
   type BrowserAdapter,
+  type BrowserDebugAdapter,
   type BrowserViewport
 } from "@clero-local-agent/browser";
 import {
@@ -75,6 +78,12 @@ export type LocalRuntimeCapabilityOptions = {
   browser?: {
     enabled?: boolean;
   };
+  browserDebug?: {
+    enabled?: boolean;
+    command?: string;
+    args?: string[];
+    browserUrl?: string;
+  };
   workspace?: {
     enabled?: boolean;
   };
@@ -139,6 +148,7 @@ export class LocalRuntimeDaemon {
   private readonly pendingRuntimeMessages: RuntimeMessage[] = [];
   private readonly pendingApprovalRequests = new Map<string, PendingApprovalRequest>();
   private readonly pendingLocalTaskCompletions = new Map<string, PendingLocalTaskCompletion>();
+  private browserDebugAdapter: BrowserDebugAdapter | null = null;
 
   constructor(options: LocalRuntimeDaemonOptions) {
     this.options = options;
@@ -174,7 +184,7 @@ export class LocalRuntimeDaemon {
     this.leaseManager.clearActiveLease();
     this.rejectPendingApprovalRequests("Daemon stopped before approval response");
     this.clearPendingLocalTaskCompletions();
-    await this.browserAdapter?.dispose?.();
+    await Promise.all([this.browserAdapter?.dispose?.(), this.browserDebugAdapter?.dispose?.()]);
   }
 
   getLeaseManager(): LeaseManager {
@@ -721,9 +731,21 @@ export class LocalRuntimeDaemon {
     const workspaceTools = new WorkspaceTools(workspacePolicy);
     const codingAgentTools = new CodingAgentTools(this.createCodingAgentAdapter(workspacePolicy, approvalProvider));
     const gitTools = new GitTools({ workspacePolicy, approvalProvider });
+    const browserDebugConfig = this.options.capabilities?.browserDebug;
 
     if (this.options.capabilities?.browser?.enabled !== false) {
       for (const definition of browserTools.definitions()) {
+        this.registry.register(definition);
+      }
+    }
+    if (browserDebugConfig?.enabled === true) {
+      const browserDebugAdapter = new ChromeDevToolsBrowserDebugAdapter({
+        command: browserDebugConfig.command,
+        args: browserDebugConfig.args,
+        browserUrl: browserDebugConfig.browserUrl
+      });
+      this.browserDebugAdapter = browserDebugAdapter;
+      for (const definition of new BrowserDebugTools(browserDebugAdapter).definitions()) {
         this.registry.register(definition);
       }
     }

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -44,6 +45,12 @@ export interface BrowserAdapter {
 export interface McpToolClient {
   callTool(name: string, args: JsonObject): Promise<JsonValue>;
   listTools(): Promise<JsonValue>;
+}
+
+export interface BrowserDebugAdapter {
+  dispose?(): Promise<void>;
+  listTools(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject>;
+  callTool(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject>;
 }
 
 export class BrowserTools {
@@ -159,6 +166,29 @@ export class BrowserTools {
         name: "browser.close_page",
         description: "Compatibility alias for browser.close_tab.",
         handler: (args, context) => this.adapter.closeTab(args, context)
+      }
+    ];
+  }
+}
+
+export class BrowserDebugTools {
+  private readonly adapter: BrowserDebugAdapter;
+
+  constructor(adapter: BrowserDebugAdapter) {
+    this.adapter = adapter;
+  }
+
+  definitions(): ToolDefinition[] {
+    return [
+      {
+        name: "browser_debug.list_tools",
+        description: "List Chrome DevTools MCP debugging tools available for the local browser.",
+        handler: (args, context) => this.adapter.listTools(args, context)
+      },
+      {
+        name: "browser_debug.call_tool",
+        description: "Call a Chrome DevTools MCP debugging tool by name. Use browser_debug.list_tools first.",
+        handler: (args, context) => this.adapter.callTool(args, context)
       }
     ];
   }
@@ -1314,6 +1344,279 @@ export class StreamableHttpMcpClient implements McpToolClient {
 
     return JSON.parse(body) as JsonValue;
   }
+}
+
+type PendingStdioRequest = {
+  resolve: (value: JsonValue) => void;
+  reject: (error: Error) => void;
+  timeout: ReturnType<typeof setTimeout>;
+};
+
+export type StdioMcpClientOptions = {
+  command?: string;
+  args?: string[];
+  env?: Record<string, string | undefined>;
+  cwd?: string;
+  clientName?: string;
+  clientVersion?: string;
+  protocolVersion?: string;
+  requestTimeoutMs?: number;
+};
+
+export class StdioMcpClient implements McpToolClient {
+  private nextId = 1;
+  private child: ChildProcessWithoutNullStreams | null = null;
+  private initializePromise: Promise<void> | null = null;
+  private stdoutBuffer = "";
+  private stderrTail = "";
+  private readonly pending = new Map<number, PendingStdioRequest>();
+  private readonly command: string;
+  private readonly args: string[];
+  private readonly env?: Record<string, string | undefined>;
+  private readonly cwd?: string;
+  private readonly clientName: string;
+  private readonly clientVersion: string;
+  private readonly protocolVersion: string;
+  private readonly requestTimeoutMs: number;
+
+  constructor(options: StdioMcpClientOptions = {}) {
+    this.command = options.command ?? "npx";
+    this.args = options.args ?? [
+      "-y",
+      "chrome-devtools-mcp@latest",
+      "--no-usage-statistics",
+      "--no-performance-crux"
+    ];
+    this.env = options.env;
+    this.cwd = options.cwd;
+    this.clientName = options.clientName ?? "clero-local-agent";
+    this.clientVersion = options.clientVersion ?? "0.1.0";
+    this.protocolVersion = options.protocolVersion ?? "2025-06-18";
+    this.requestTimeoutMs = options.requestTimeoutMs ?? 60_000;
+  }
+
+  async callTool(name: string, args: JsonObject): Promise<JsonValue> {
+    await this.ensureInitialized();
+    return this.request("tools/call", {
+      name,
+      arguments: args
+    });
+  }
+
+  async listTools(): Promise<JsonValue> {
+    await this.ensureInitialized();
+    return this.request("tools/list", {});
+  }
+
+  async dispose(): Promise<void> {
+    const child = this.child;
+    this.child = null;
+    this.initializePromise = null;
+    this.rejectPending(new Error("MCP stdio client was disposed"));
+    child?.kill();
+  }
+
+  private async ensureInitialized(): Promise<void> {
+    this.initializePromise ??= (async () => {
+      await this.request("initialize", {
+        protocolVersion: this.protocolVersion,
+        capabilities: {},
+        clientInfo: {
+          name: this.clientName,
+          version: this.clientVersion
+        }
+      });
+      this.notify("notifications/initialized", {});
+    })();
+
+    await this.initializePromise;
+  }
+
+  private notify(method: string, params: JsonObject): void {
+    this.write({
+      jsonrpc: "2.0",
+      method,
+      params
+    });
+  }
+
+  private async request(method: string, params: JsonObject): Promise<JsonValue> {
+    const id = this.nextId;
+    this.nextId += 1;
+
+    return new Promise<JsonValue>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`MCP stdio request timed out: ${method}${this.stderrSummary()}`));
+      }, this.requestTimeoutMs);
+
+      this.pending.set(id, { resolve, reject, timeout });
+      try {
+        this.write({
+          jsonrpc: "2.0",
+          id,
+          method,
+          params
+        });
+      } catch (error: unknown) {
+        clearTimeout(timeout);
+        this.pending.delete(id);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    });
+  }
+
+  private write(payload: JsonObject): void {
+    const child = this.ensureChild();
+    child.stdin.write(`${JSON.stringify(payload)}\n`);
+  }
+
+  private ensureChild(): ChildProcessWithoutNullStreams {
+    if (this.child) {
+      return this.child;
+    }
+
+    const child = spawn(this.command, this.args, {
+      cwd: this.cwd,
+      env: {
+        ...process.env,
+        CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS: "1",
+        ...this.env
+      },
+      stdio: "pipe"
+    });
+    this.child = child;
+
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => this.handleStdout(chunk));
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk: string) => {
+      this.stderrTail = `${this.stderrTail}${chunk}`.slice(-4000);
+    });
+    child.on("error", (error) => {
+      this.child = null;
+      this.initializePromise = null;
+      this.rejectPending(new Error(`Failed to start MCP stdio command: ${error.message}`));
+    });
+    child.on("close", (code, signal) => {
+      this.child = null;
+      this.initializePromise = null;
+      this.rejectPending(new Error(`MCP stdio command exited with code ${code ?? "null"} signal ${signal ?? "null"}${this.stderrSummary()}`));
+    });
+
+    return child;
+  }
+
+  private handleStdout(chunk: string): void {
+    this.stdoutBuffer += chunk;
+    let newlineIndex = this.stdoutBuffer.indexOf("\n");
+    while (newlineIndex >= 0) {
+      const line = this.stdoutBuffer.slice(0, newlineIndex).trim();
+      this.stdoutBuffer = this.stdoutBuffer.slice(newlineIndex + 1);
+      if (line) {
+        this.handleStdoutLine(line);
+      }
+      newlineIndex = this.stdoutBuffer.indexOf("\n");
+    }
+  }
+
+  private handleStdoutLine(line: string): void {
+    let parsed: JsonValue;
+    try {
+      parsed = JSON.parse(line) as JsonValue;
+    } catch {
+      this.stderrTail = `${this.stderrTail}\n${line}`.slice(-4000);
+      return;
+    }
+
+    if (!isJsonObject(parsed) || parsed.id === undefined || parsed.id === null) {
+      return;
+    }
+
+    const id = Number(parsed.id);
+    const pending = this.pending.get(id);
+    if (!pending) {
+      return;
+    }
+
+    this.pending.delete(id);
+    clearTimeout(pending.timeout);
+
+    const response = parsed as JsonRpcResponse;
+    if (response.error) {
+      pending.reject(new Error(response.error.message ?? `MCP stdio request failed for id ${id}`));
+      return;
+    }
+
+    pending.resolve(response.result ?? null);
+  }
+
+  private rejectPending(error: Error): void {
+    for (const [id, pending] of this.pending) {
+      this.pending.delete(id);
+      clearTimeout(pending.timeout);
+      pending.reject(error);
+    }
+  }
+
+  private stderrSummary(): string {
+    const detail = this.stderrTail.trim();
+    return detail ? `: ${detail}` : "";
+  }
+}
+
+export type ChromeDevToolsBrowserDebugAdapterOptions = {
+  client?: McpToolClient;
+  command?: string;
+  args?: string[];
+  browserUrl?: string;
+  env?: Record<string, string | undefined>;
+  requestTimeoutMs?: number;
+};
+
+export class ChromeDevToolsBrowserDebugAdapter implements BrowserDebugAdapter {
+  private readonly client: McpToolClient & { dispose?: () => Promise<void> };
+
+  constructor(options: ChromeDevToolsBrowserDebugAdapterOptions = {}) {
+    if (options.client) {
+      this.client = options.client;
+      return;
+    }
+
+    this.client = new StdioMcpClient({
+      command: options.command,
+      args: chromeDevToolsMcpArgs(options.args, options.browserUrl),
+      env: options.env,
+      requestTimeoutMs: options.requestTimeoutMs
+    });
+  }
+
+  async dispose(): Promise<void> {
+    await this.client.dispose?.();
+  }
+
+  async listTools(): Promise<JsonObject> {
+    return normalizeMcpToolResult(await this.client.listTools());
+  }
+
+  async callTool(args: JsonObject): Promise<JsonObject> {
+    const name = requiredString(args, "name");
+    const toolArgs = isJsonObject(args.arguments) ? args.arguments : {};
+    return normalizeMcpToolResult(await this.client.callTool(name, toolArgs));
+  }
+}
+
+function chromeDevToolsMcpArgs(args: string[] | undefined, browserUrl: string | undefined): string[] {
+  const resolved = args ?? [
+    "-y",
+    "chrome-devtools-mcp@latest",
+    "--no-usage-statistics",
+    "--no-performance-crux"
+  ];
+  if (!browserUrl || resolved.some((item) => item.startsWith("--browser-url"))) {
+    return resolved;
+  }
+  return [...resolved, `--browser-url=${browserUrl}`];
 }
 
 export type McpChromeBrowserAdapterOptions = {

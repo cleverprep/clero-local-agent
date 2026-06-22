@@ -36,6 +36,8 @@ struct CapabilityConfig {
     #[serde(default)]
     browser: BrowserConfig,
     #[serde(default)]
+    browser_debug: BrowserDebugConfig,
+    #[serde(default)]
     workspace: WorkspaceConfig,
     #[serde(default)]
     codex: CodexConfig,
@@ -67,6 +69,18 @@ struct BrowserConfig {
 struct BrowserViewport {
     width: u32,
     height: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BrowserDebugConfig {
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    command: String,
+    #[serde(default)]
+    args: Option<Vec<String>>,
+    #[serde(default)]
+    browser_url: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -196,6 +210,7 @@ impl Default for CapabilityConfig {
     fn default() -> Self {
         Self {
             browser: BrowserConfig::default(),
+            browser_debug: BrowserDebugConfig::default(),
             workspace: WorkspaceConfig::default(),
             codex: CodexConfig::default(),
             git: GitConfig::default(),
@@ -214,6 +229,17 @@ impl Default for BrowserConfig {
             browser_headless: false,
             browser_viewport: None,
             mcp_url: None,
+        }
+    }
+}
+
+impl Default for BrowserDebugConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            command: String::new(),
+            args: None,
+            browser_url: String::new(),
         }
     }
 }
@@ -1418,6 +1444,17 @@ fn normalize_runtime_config(config: &mut RuntimeConfig) -> bool {
     if config.capabilities.browser.provider == "mcp-chrome" {
         config.capabilities.browser.provider = default_browser_provider();
         config.capabilities.browser.mcp_url = None;
+        changed = true;
+    }
+
+    let browser_debug_command = config.capabilities.browser_debug.command.trim().to_string();
+    if browser_debug_command != config.capabilities.browser_debug.command {
+        config.capabilities.browser_debug.command = browser_debug_command;
+        changed = true;
+    }
+    let browser_debug_url = config.capabilities.browser_debug.browser_url.trim().to_string();
+    if browser_debug_url != config.capabilities.browser_debug.browser_url {
+        config.capabilities.browser_debug.browser_url = browser_debug_url;
         changed = true;
     }
 

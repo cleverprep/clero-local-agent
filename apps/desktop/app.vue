@@ -291,6 +291,13 @@
                   Reset session
                 </button>
               </div>
+              <label class="check wide">
+                <input v-model="config.capabilities.browser_debug.enabled" type="checkbox" />
+                DevTools debugging
+              </label>
+              <div class="setting-action-row wide">
+                <span>Lets approved agents inspect console, network, performance traces, and live page state.</span>
+              </div>
 
               <section class="profile-tools wide">
                 <div class="folder-tools-header">
@@ -599,6 +606,12 @@ type RuntimeConfig = {
       };
       mcp_url?: string;
     };
+    browser_debug: {
+      enabled: boolean;
+      command: string;
+      args?: string[];
+      browser_url: string;
+    };
     workspace: {
       enabled: boolean;
     };
@@ -867,6 +880,7 @@ const toggleCapability = (panel: CapabilityPanel) => {
 
 const browserStatusText = computed(() => {
   if (browserUnavailable.value) return dependencyStatus.browser.message;
+  if (config.capabilities.browser_debug.enabled) return "Browsing with DevTools debugging";
   return dependencyStatus.browser.path ? `${dependencyStatus.browser.label} ready` : "Managed Chrome browsing";
 });
 
@@ -887,6 +901,7 @@ const codingProviderLabel = computed(() => {
 const enabledToolGroups = computed(() => {
   const groups: string[] = [];
   if (browserEnabled.value) groups.push("Browser");
+  if (config.capabilities.browser_debug.enabled) groups.push("Debug");
   if (codexEnabled.value) groups.push(codingProviderLabel.value);
   if (writeAccessEnabled.value) groups.push("Write");
   return groups;
@@ -1427,6 +1442,10 @@ function normalizeLoadedConfig(nextConfig: RuntimeConfig): RuntimeConfig {
   const normalized = nextConfig;
   normalized.capabilities ??= defaultConfig().capabilities;
   normalized.capabilities.browser ??= defaultConfig().capabilities.browser;
+  normalized.capabilities.browser_debug = {
+    ...defaultConfig().capabilities.browser_debug,
+    ...normalized.capabilities.browser_debug
+  };
   normalized.capabilities.codex = {
     ...defaultConfig().capabilities.codex,
     ...normalized.capabilities.codex
@@ -1520,6 +1539,12 @@ function defaultConfig(): RuntimeConfig {
         remember_session: true,
         browser_headless: false,
         browser_viewport: undefined
+      },
+      browser_debug: {
+        enabled: false,
+        command: "",
+        args: undefined,
+        browser_url: ""
       },
       workspace: {
         enabled: true

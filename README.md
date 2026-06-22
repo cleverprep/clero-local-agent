@@ -341,6 +341,13 @@ clero-connector browser enable --browser-remember-session
 clero-connector browser enable --no-browser-remember-session
 clero-connector browser disable
 
+# Browser debugging capability
+clero-connector browser-debug status
+clero-connector browser-debug enable
+clero-connector browser-debug enable --browser-debug-url http://127.0.0.1:9222
+clero-connector browser-debug enable --browser-debug-command npx --browser-debug-arg -y --browser-debug-arg chrome-devtools-mcp@latest
+clero-connector browser-debug disable
+
 # Coding-agent capability
 clero-connector coding status
 clero-connector coding enable --provider codex --sandbox read-only
@@ -370,6 +377,8 @@ clero-connector setup \
 ```
 
 Browser channels are `chromium`, `chrome`, `chrome-beta`, and `msedge`. Headless browser sessions default to a `1440x900` viewport unless `--browser-width` and `--browser-height` are configured. Coding providers are `codex`, `claude-code`, and `antigravity`. Sandboxes are `read-only`, `workspace-write`, and `danger-full-access`. If the local connector is configured with `--sandbox danger-full-access`, that explicit local setting wins over a remote task request that asks for `read-only` or `workspace-write`.
+
+`browser-debug` is disabled by default. When enabled, the daemon advertises a separate `browser_debug` capability with `browser_debug.list_tools` and `browser_debug.call_tool`. The bridge starts Chrome DevTools MCP with `npx -y chrome-devtools-mcp@latest --no-usage-statistics --no-performance-crux` and sets `CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS=1`. If `--browser-debug-url` is configured, it is passed through as `--browser-url=<url>` so DevTools MCP can attach to an existing Chrome remote-debugging endpoint. This capability can expose page content, console output, network details, and DevTools state to agents, so enable it only for agents that should debug local browser sessions.
 
 The coding-agent connection is local: Clero calls `coding_agent.start_task`, the daemon validates the requested `cwd` against configured workspaces, then starts the configured provider (`codex`, `claude-code`, or `antigravity`) as a child process in that workspace. The daemon returns a `task_id` immediately and Clero polls `coding_agent.get_status` / `coding_agent.get_output` for long-running results.
 
