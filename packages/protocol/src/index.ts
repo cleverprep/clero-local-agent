@@ -32,6 +32,7 @@ export type ToolName =
   | "workspace.list_roots"
   | "workspace.list_projects"
   | "workspace.describe_project"
+  | "shell.run"
   | "coding_agent.start_task"
   | "coding_agent.get_status"
   | "coding_agent.get_output"
@@ -320,7 +321,7 @@ export function isApprovalResponseMessage(value: unknown): value is ApprovalResp
 }
 
 export function toolRequiresLease(tool: string): boolean {
-  if (tool === "coding_agent.start_task") {
+  if (tool === "coding_agent.start_task" || tool === "shell.run") {
     return true;
   }
 
@@ -479,6 +480,22 @@ export function inputSchemaForTool(tool: string): JsonSchema {
         project: stringSchema("Preferred project key/name from workspace.list_projects. Use this instead of inventing absolute paths."),
         path: stringSchema("Optional allowed local project directory to describe.")
       });
+    case "shell.run":
+      return objectSchema(
+        {
+          command: stringSchema("Shell command to run. Prefer simple inspection commands. Output is bounded."),
+          project: stringSchema("Preferred project key/name from workspace.list_projects. Use this instead of inventing absolute paths."),
+          cwd: stringSchema("Optional allowed working directory. Prefer project unless the user provided an exact path."),
+          access: stringEnumSchema(
+            ["read-only", "workspace-write", "danger-full-access"],
+            "Requested shell access. The local connector must explicitly allow write or full local access."
+          ),
+          timeout_ms: numberSchema("Maximum runtime in milliseconds. Defaults to 30000 and is capped by local settings."),
+          max_output_bytes: numberSchema("Maximum stdout/stderr bytes to retain per stream. Defaults to 200000 and is capped by local settings."),
+          shell: stringSchema("Optional shell executable configured locally. Most agents should omit this.")
+        },
+        ["command"]
+      );
     case "coding_agent.start_task":
       return objectSchema(
         {
@@ -586,7 +603,8 @@ export function defaultCapabilities(): Capability[] {
     capability("workspace.list_roots", "List local filesystem roots the agent is allowed to inspect. Use this before choosing a project path."),
     capability("workspace.list_projects", "Discover local projects under allowed roots. Use the returned project key/name for coding and git tools instead of inventing absolute paths."),
     capability("workspace.describe_project", "Inspect a discovered local project key/name or path and summarize markers, stack, package metadata, and git state."),
-    capability("coding_agent.start_task", "Start a local Codex, Claude Code, or Antigravity task in a discovered project. Prefer project over absolute cwd. Set continue_session=true to resume prior context for the same agent/project when available. Returns immediately with task_id; poll coding_agent.get_status/get_output."),
+    capability("shell.run", "Run a bounded local shell command in a discovered project. Shell is disabled by default and write/full access require local user settings."),
+    capability("coding_agent.start_task", "Start a local Codex, Claude Code, Antigravity, or Cursor task in a discovered project. Prefer project over absolute cwd. Set continue_session=true to resume prior context for the same agent/project when available. Returns immediately with task_id; poll coding_agent.get_status/get_output."),
     capability("coding_agent.get_status", "Get local coding-agent task status by task_id."),
     capability("coding_agent.get_output", "Read local coding-agent message output by task_id. Raw streams and events are opt-in diagnostics."),
     capability("coding_agent.cancel", "Cancel a running local coding-agent task."),
@@ -615,7 +633,10 @@ export function capabilityGroups(tool: string): string[] {
     return ["browser_debug"];
   }
   if (tool.startsWith("workspace.")) {
-    return ["codex", "git_read", "git_write"];
+    return ["codex", "git_read", "git_write", "shell"];
+  }
+  if (tool.startsWith("shell.")) {
+    return ["shell"];
   }
   if (tool.startsWith("coding_agent.")) {
     return ["codex"];

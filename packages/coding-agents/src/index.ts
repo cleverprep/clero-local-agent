@@ -9,7 +9,7 @@ import { isJsonObject, type JsonObject, type JsonValue } from "@clero-local-agen
 import type { WorkspacePolicy } from "@clero-local-agent/workspace";
 
 export type CodingTaskStatus = "running" | "completed" | "failed" | "blocked" | "cancelled";
-export type CodingAgentProvider = "codex" | "claude-code" | "antigravity";
+export type CodingAgentProvider = "codex" | "claude-code" | "antigravity" | "cursor";
 export type CodexSandbox = "read-only" | "workspace-write" | "danger-full-access";
 export type CodexReasoningEffort = "low" | "medium" | "high" | "xhigh";
 export type ClaudeCodePermissionMode = "default" | "acceptEdits" | "plan" | "auto" | "dontAsk" | "bypassPermissions";
@@ -18,7 +18,7 @@ export type ClaudeCodeReasoningEffort = "low" | "medium" | "high" | "xhigh" | "m
 export type CodingTaskEvent = {
   index: number;
   at: string;
-  source: "codex" | "claude" | "antigravity" | "stdout" | "stderr" | "process";
+  source: "codex" | "claude" | "antigravity" | "cursor" | "stdout" | "stderr" | "process";
   type: string;
   data?: JsonObject;
   text?: string;
@@ -61,6 +61,7 @@ export type CodingTask = {
   antigravity_conversation_id?: string;
   antigravity_log_file?: string;
   antigravity_log_start_byte?: number;
+  cursor_chat_id?: string;
 };
 
 export interface CodingAgentAdapter {
@@ -81,7 +82,7 @@ export class CodingAgentTools {
     return [
       {
         name: "coding_agent.start_task",
-        description: "Start a non-interactive local coding-agent task in a discovered project. Prefer project over absolute cwd.",
+        description: "Start a non-interactive local Codex, Claude Code, Antigravity, or Cursor task in a discovered project. Prefer project over absolute cwd.",
         handler: (args, context) => this.adapter.startTask(args, context)
       },
       {
@@ -139,6 +140,21 @@ export type AntigravityCliAdapterOptions = {
   workspacePolicy: WorkspacePolicy;
   approvalProvider?: ApprovalProvider;
   command?: string;
+  defaultSandbox?: CodexSandbox;
+  allowWorkspaceWrite?: boolean;
+  allowDangerFullAccess?: boolean;
+  maxEvents?: number;
+  maxOutputBytes?: number;
+  onTaskHeartbeat?: (task: CodingTask) => void;
+  onTaskEvent?: (task: CodingTask, event: CodingTaskEvent) => void;
+  onTaskTerminal?: (task: CodingTask) => void;
+};
+
+export type CursorCliAdapterOptions = {
+  workspacePolicy: WorkspacePolicy;
+  approvalProvider?: ApprovalProvider;
+  command?: string;
+  defaultModel?: string;
   defaultSandbox?: CodexSandbox;
   allowWorkspaceWrite?: boolean;
   allowDangerFullAccess?: boolean;
@@ -1098,6 +1114,482 @@ export class AntigravityCliAdapter implements CodingAgentAdapter {
   }
 }
 
+export class CursorCliAdapter implements CodingAgentAdapter {
+  private readonly command: string;
+  private readonly tasks = new Map<string, StoredCodingTask>();
+  private readonly sessions = new Map<string, CodingSessionState>();
+  private readonly options: CursorCliAdapterOptions;
+  private readonly maxEvents: number;
+  private readonly maxOutputBytes: number;
+
+  constructor(options: CursorCliAdapterOptions) {
+    this.options = options;
+    this.command = options.command ?? "agent";
+    this.maxEvents = options.maxEvents ?? DEFAULT_MAX_EVENTS;
+    this.maxOutputBytes = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
+  }
+
+  async startTask(args: JsonObject, context: ToolExecutionContext): Promise<JsonObject> {
+    const prompt = requiredString(args, "prompt");
+    const cwd = this.options.workspacePolicy.resolveProjectDirectory(optionalString(args, "project") ?? optionalString(args, "cwd"));
+    await ensureExistingDirectory(cwd);
+    const sandbox = effectiveSandbox(args, this.options.defaultSandbox);
+    const approval = await this.ensureSandboxApproval(sandbox, cwd, prompt);
+    let sessionPlan = codingSessionPlan(args, context, cwd, this.sessions);
+    if (sessionPlan.continueSession && !sessionPlan.providerSessionId) {
+      const chatId = await this.createCursorChatId();
+      if (chatId) {
+        sessionPlan = {
+          ...sessionPlan,
+          providerSessionId: chatId,
+          resumed: false
+        };
+      }
+    }
+    const taskId = `cursor_${randomUUID()}`;
+    const model = optionalString(args, "model") ?? this.options.defaultModel;
+    const cliArgs = this.cursorArgs(prompt, cwd, sandbox, model, sessionPlan);
+    const child = this.spawnCursorProcess(cliArgs, cwd);
+
+    const task: StoredCodingTask = {
+      task_id: taskId,
+      request_id: context.requestId,
+      provider: "cursor",
+      status: "running",
+      cwd,
+      sandbox,
+      model,
+      permission_mode: this.permissionModeFromSandbox(sandbox),
+      approval_required: approval.required,
+      approved: approval.approved,
+      approval_reason: approval.reason,
+      output: "",
+      agent_output: "",
+      stdout: "",
+      stderr: "",
+      final_message: null,
+      exit_code: null,
+      started_at: new Date().toISOString(),
+      finished_at: null,
+      events_count: 0,
+      last_event_type: null,
+      lease_id: context.leaseId,
+      agent_id: context.agentId,
+      local_task_id: context.taskId,
+      event_run_id: context.eventRunId,
+      session_key: sessionPlan.key,
+      continue_session: sessionPlan.continueSession,
+      resumed_session: sessionPlan.resumed,
+      provider_session_id: sessionPlan.providerSessionId,
+      cursor_chat_id: sessionPlan.providerSessionId,
+      process: child,
+      events: [],
+      nextEventIndex: 0,
+      stdoutBuffer: "",
+      leaseHeartbeatTimer: null
+    };
+
+    this.tasks.set(taskId, task);
+    if (task.provider_session_id) {
+      rememberCodingSession(this.sessions, task, task.provider_session_id);
+    }
+    this.startLeaseHeartbeat(task);
+    this.appendProcessEvent(task, "process.started", {
+      command: this.command,
+      args: cliArgs,
+      cwd,
+      sandbox
+    });
+
+    child.stdout.on("data", (chunk: Buffer) => {
+      this.handleStdoutChunk(task, chunk.toString("utf8"));
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      const text = chunk.toString("utf8");
+      task.stderr = appendBounded(task.stderr, text, this.maxOutputBytes);
+      task.output = appendBounded(task.output, text, this.maxOutputBytes);
+      this.appendTextEvent(task, "stderr", "stderr.chunk", text);
+      this.markBlockedFromText(task, text);
+    });
+    child.on("error", (error) => {
+      task.status = "failed";
+      task.stderr = appendBounded(task.stderr, `${error.message}\n`, this.maxOutputBytes);
+      task.output = appendBounded(task.output, `${error.message}\n`, this.maxOutputBytes);
+      task.finished_at = new Date().toISOString();
+      task.process = null;
+      this.appendProcessEvent(task, "process.error", { message: error.message });
+      this.notifyTerminal(task);
+    });
+    child.on("close", (code) => {
+      this.flushStdoutBuffer(task);
+      task.exit_code = code;
+      if (task.status !== "cancelled") {
+        task.status = this.statusFromExit(task, code);
+      }
+      task.finished_at = new Date().toISOString();
+      task.process = null;
+      this.appendProcessEvent(task, "process.closed", {
+        exit_code: code,
+        status: task.status
+      });
+      this.notifyTerminal(task);
+    });
+
+    child.stdin.end();
+    return this.publicTask(task);
+  }
+
+  async getStatus(taskId: string): Promise<JsonObject> {
+    return this.publicTask(this.requireTask(taskId));
+  }
+
+  async getOutput(taskId: string, args: JsonObject = {}): Promise<JsonObject> {
+    const task = this.requireTask(taskId);
+    const options = outputOptions(args);
+    const result = codingTaskOutputResult(task, options);
+    if (options.includeEvents) {
+      result.events = this.selectEvents(task, options.sinceEventIndex, options.maxEvents) as unknown as JsonValue;
+    }
+    return result;
+  }
+
+  async cancel(taskId: string): Promise<JsonObject> {
+    const task = this.requireTask(taskId);
+    if (task.process && task.status === "running") {
+      task.status = "cancelled";
+      task.finished_at = new Date().toISOString();
+      task.process.kill("SIGTERM");
+      this.appendProcessEvent(task, "process.cancelled", { reason: "cancelled by tool call" });
+      this.notifyTerminal(task);
+    }
+
+    return this.publicTask(task);
+  }
+
+  private cursorArgs(
+    prompt: string,
+    cwd: string,
+    sandbox: CodexSandbox,
+    model: string | undefined,
+    sessionPlan: CodingSessionPlan
+  ): string[] {
+    const cliArgs = ["-p", "--output-format", "stream-json", "--stream-partial-output", "--trust", "--workspace", cwd];
+    if (sessionPlan.providerSessionId) {
+      cliArgs.push("--resume", sessionPlan.providerSessionId);
+    }
+    if (model) {
+      cliArgs.push("--model", model);
+    }
+    if (sandbox === "read-only") {
+      cliArgs.push("--mode", "ask", "--sandbox", "enabled");
+    } else {
+      cliArgs.push("--force", "--sandbox", sandbox === "danger-full-access" ? "disabled" : "enabled");
+    }
+    cliArgs.push(prompt);
+    return cliArgs;
+  }
+
+  private spawnCursorProcess(cliArgs: string[], cwd: string): ChildProcessWithoutNullStreams {
+    return spawn(this.command, cliArgs, {
+      cwd,
+      stdio: "pipe",
+      env: {
+        ...process.env,
+        CI: process.env.CI ?? "1",
+        TERM: process.env.TERM ?? "dumb",
+        NO_COLOR: process.env.NO_COLOR ?? "1"
+      }
+    });
+  }
+
+  private async createCursorChatId(): Promise<string | undefined> {
+    return new Promise((resolve) => {
+      const child = spawn(this.command, ["create-chat"], {
+        stdio: "pipe",
+        env: {
+          ...process.env,
+          CI: process.env.CI ?? "1",
+          TERM: process.env.TERM ?? "dumb",
+          NO_COLOR: process.env.NO_COLOR ?? "1"
+        }
+      });
+      let output = "";
+      const finish = () => {
+        resolve(cursorChatIdFromText(output));
+      };
+      child.stdout.on("data", (chunk: Buffer) => {
+        output += chunk.toString("utf8");
+      });
+      child.stderr.on("data", (chunk: Buffer) => {
+        output += chunk.toString("utf8");
+      });
+      child.on("error", () => resolve(undefined));
+      child.on("close", finish);
+    });
+  }
+
+  private permissionModeFromSandbox(sandbox: CodexSandbox): string {
+    if (sandbox === "read-only") {
+      return "ask";
+    }
+    if (sandbox === "danger-full-access") {
+      return "force:sandbox-disabled";
+    }
+    return "force:sandbox-enabled";
+  }
+
+  private async ensureSandboxApproval(sandbox: CodexSandbox, cwd: string, prompt: string): Promise<ApprovalMetadata> {
+    if (sandbox === "read-only") {
+      return { required: false, approved: null, reason: "No approval required for Cursor ask mode" };
+    }
+
+    if (sandbox === "workspace-write" && this.options.allowWorkspaceWrite === false) {
+      throw new ToolExecutionError("approval_denied", "Cursor workspace-write mode is disabled in local settings.", {
+        sandbox,
+        cwd
+      });
+    }
+    if (sandbox === "workspace-write" && this.options.allowWorkspaceWrite === true) {
+      return {
+        required: true,
+        approved: true,
+        reason: "Approved by local workspace-write setting"
+      };
+    }
+
+    if (sandbox === "danger-full-access" && this.options.allowDangerFullAccess !== true) {
+      throw new ToolExecutionError("approval_denied", "Cursor danger-full-access mode is disabled in local settings.", {
+        sandbox,
+        cwd
+      });
+    }
+    if (sandbox === "danger-full-access" && this.options.allowDangerFullAccess === true) {
+      return {
+        required: true,
+        approved: true,
+        reason: "Approved by local full-access setting"
+      };
+    }
+
+    if (!this.options.approvalProvider) {
+      throw new ToolExecutionError(
+        "approval_denied",
+        `Approval is required to run Cursor with ${sandbox} sandbox, but no approval provider is configured.`,
+        { sandbox, cwd }
+      );
+    }
+
+    const decision = await this.options.approvalProvider.requestApproval({
+      tool: "coding_agent.start_task",
+      summary: `Run Cursor with ${sandbox} sandbox in ${cwd}`,
+      metadata: {
+        cwd,
+        sandbox,
+        prompt_preview: prompt.slice(0, 500)
+      }
+    });
+
+    if (!decision.approved) {
+      throw new ToolExecutionError(
+        "approval_denied",
+        `Approval denied for Cursor ${sandbox} task: ${decision.reason ?? "No reason provided"}`,
+        { sandbox, cwd, reason: decision.reason ?? null }
+      );
+    }
+
+    return { required: true, approved: true, reason: decision.reason };
+  }
+
+  private handleStdoutChunk(task: StoredCodingTask, text: string): void {
+    task.stdout = appendBounded(task.stdout, text, this.maxOutputBytes);
+    task.stdoutBuffer += text;
+
+    const lines = task.stdoutBuffer.split(/\r?\n/);
+    task.stdoutBuffer = lines.pop() ?? "";
+    for (const line of lines) {
+      this.handleStdoutLine(task, line);
+    }
+  }
+
+  private flushStdoutBuffer(task: StoredCodingTask): void {
+    if (!task.stdoutBuffer) {
+      return;
+    }
+    this.handleStdoutLine(task, task.stdoutBuffer);
+    task.stdoutBuffer = "";
+  }
+
+  private handleStdoutLine(task: StoredCodingTask, line: string): void {
+    if (line.trim().length === 0) {
+      return;
+    }
+
+    const event = parseJsonObject(line);
+    if (!event) {
+      task.final_message = line;
+      task.output = appendBounded(task.output, `${line}\n`, this.maxOutputBytes);
+      appendAgentOutput(task, line, this.maxOutputBytes);
+      this.appendTextEvent(task, "stdout", "stdout.line", line);
+      this.markBlockedFromText(task, line);
+      return;
+    }
+
+    this.handleCursorEvent(task, event);
+  }
+
+  private handleCursorEvent(task: StoredCodingTask, event: JsonObject): void {
+    const type = stringValue(event.type) ?? "cursor.event";
+    this.appendEvent(task, {
+      at: new Date().toISOString(),
+      source: "cursor",
+      type,
+      data: event
+    });
+
+    const text = cursorTextFromEvent(event);
+    if (text) {
+      task.final_message = text;
+      task.output = appendBounded(task.output, `${text}\n`, this.maxOutputBytes);
+      appendAgentOutput(task, text, this.maxOutputBytes);
+      this.markBlockedFromText(task, text);
+    }
+
+    const chatId = cursorChatIdFromEvent(event);
+    if (chatId) {
+      task.cursor_chat_id = chatId;
+      task.provider_session_id = chatId;
+      rememberCodingSession(this.sessions, task, chatId);
+    }
+
+    const blockedReason = blockedReasonFromEvent(event);
+    if (blockedReason) {
+      this.markTaskBlocked(task, blockedReason);
+    }
+  }
+
+  private statusFromExit(task: StoredCodingTask, code: number | null): CodingTaskStatus {
+    if (task.blocked_reason || looksApprovalOrSandboxBlocked(task.output) || looksApprovalOrSandboxBlocked(task.stderr)) {
+      task.blocked_reason ??= "Cursor task stopped because approval, sandbox, or permission policy blocked progress.";
+      return "blocked";
+    }
+
+    if (code === 0) {
+      return "completed";
+    }
+
+    return "failed";
+  }
+
+  private markBlockedFromText(task: StoredCodingTask, text: string): void {
+    const blockedReason = blockedReasonFromText(text);
+    if (blockedReason) {
+      this.markTaskBlocked(task, blockedReason);
+    }
+  }
+
+  private markTaskBlocked(task: StoredCodingTask, reason: string): void {
+    task.blocked_reason ??= reason;
+    if (!task.output.includes(reason)) {
+      task.output = appendBounded(task.output, `${reason}\n`, this.maxOutputBytes);
+    }
+    if (!task.agent_output.includes(reason)) {
+      appendAgentOutput(task, reason, this.maxOutputBytes);
+    }
+    if (task.status !== "running") {
+      return;
+    }
+
+    task.status = "blocked";
+    task.finished_at = new Date().toISOString();
+    this.appendProcessEvent(task, "process.blocked", { reason: task.blocked_reason });
+    task.process?.kill("SIGTERM");
+    this.notifyTerminal(task);
+  }
+
+  private appendProcessEvent(task: StoredCodingTask, type: string, data: JsonObject): void {
+    this.appendEvent(task, {
+      at: new Date().toISOString(),
+      source: "process",
+      type,
+      data
+    });
+  }
+
+  private appendTextEvent(task: StoredCodingTask, source: "stdout" | "stderr", type: string, text: string): void {
+    this.appendEvent(task, {
+      at: new Date().toISOString(),
+      source,
+      type,
+      text
+    });
+  }
+
+  private appendEvent(task: StoredCodingTask, event: Omit<CodingTaskEvent, "index">): void {
+    const indexedEvent = {
+      ...event,
+      index: task.nextEventIndex++
+    };
+    task.events.push(indexedEvent);
+    task.events_count = task.nextEventIndex;
+    task.last_event_type = indexedEvent.type;
+    this.options.onTaskEvent?.(task, indexedEvent);
+
+    while (task.events.length > this.maxEvents) {
+      task.events.shift();
+    }
+  }
+
+  private selectEvents(task: StoredCodingTask, sinceEventIndex?: number, maxEvents?: number): CodingTaskEvent[] {
+    const selected =
+      sinceEventIndex === undefined ? task.events : task.events.filter((event) => event.index >= sinceEventIndex);
+    const limit = maxEvents === undefined ? selected.length : Math.max(0, Math.floor(maxEvents));
+    return selected.slice(0, limit);
+  }
+
+  private requireTask(taskId: string): StoredCodingTask {
+    const task = this.tasks.get(taskId);
+    if (!task) {
+      throw new Error(`Unknown coding task: ${taskId}`);
+    }
+
+    return task;
+  }
+
+  private publicTask(task: CodingTask): JsonObject {
+    return publicTask(task);
+  }
+
+  private notifyTerminal(task: StoredCodingTask): void {
+    if (task.terminalCallbackCalled) {
+      return;
+    }
+
+    task.terminalCallbackCalled = true;
+    this.stopLeaseHeartbeat(task);
+    this.options.onTaskTerminal?.(task);
+  }
+
+  private startLeaseHeartbeat(task: StoredCodingTask): void {
+    if (!task.lease_id || !this.options.onTaskHeartbeat) {
+      return;
+    }
+
+    task.leaseHeartbeatTimer = setInterval(() => {
+      this.options.onTaskHeartbeat?.(task);
+    }, 30_000);
+    task.leaseHeartbeatTimer.unref?.();
+  }
+
+  private stopLeaseHeartbeat(task: StoredCodingTask): void {
+    if (!task.leaseHeartbeatTimer) {
+      return;
+    }
+
+    clearInterval(task.leaseHeartbeatTimer);
+    task.leaseHeartbeatTimer = null;
+  }
+}
+
 export class ClaudeCodeAdapter implements CodingAgentAdapter {
   private readonly command: string;
   private readonly tasks = new Map<string, StoredCodingTask>();
@@ -1683,6 +2175,9 @@ function publicTask(task: CodingTask): JsonObject {
   if (task.antigravity_conversation_id) {
     result.antigravity_conversation_id = task.antigravity_conversation_id;
   }
+  if (task.cursor_chat_id) {
+    result.cursor_chat_id = task.cursor_chat_id;
+  }
   if (task.lease_id) {
     result.lease_id = task.lease_id;
   }
@@ -1785,6 +2280,38 @@ async function ensureExistingDirectory(directory: string): Promise<void> {
 
 function structuredTextFromEvent(event: JsonObject): string | undefined {
   return claudeTextFromEvent(event);
+}
+
+function cursorTextFromEvent(event: JsonObject): string | undefined {
+  if (event.type === "tool_call") {
+    return undefined;
+  }
+  return claudeTextFromEvent(event);
+}
+
+function cursorChatIdFromEvent(event: JsonObject): string | undefined {
+  return (
+    stringValue(event.chat_id) ??
+    stringValue(event.chatId) ??
+    stringValue(event.session_id) ??
+    stringValue(event.sessionId) ??
+    stringValue(event.thread_id) ??
+    stringValue(event.threadId) ??
+    stringValue(event.conversation_id) ??
+    stringValue(event.conversationId)
+  );
+}
+
+function cursorChatIdFromText(text: string): string | undefined {
+  const json = parseJsonObject(text.trim());
+  if (json) {
+    return cursorChatIdFromEvent(json) ?? stringValue(json.id);
+  }
+
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => /^[A-Za-z0-9_-]{8,}$/.test(line));
 }
 
 function claudeTextFromEvent(event: JsonObject): string | undefined {

@@ -8,7 +8,7 @@ import { StaticApprovalProvider } from "@clero-local-agent/approvals";
 import { ToolExecutionError } from "@clero-local-agent/mcp-runtime";
 import type { JsonObject, JsonValue } from "@clero-local-agent/protocol";
 import { WorkspacePolicy } from "@clero-local-agent/workspace";
-import { AntigravityCliAdapter, ClaudeCodeAdapter, CodexCliAdapter, type CodingAgentAdapter } from "../src/index.ts";
+import { AntigravityCliAdapter, ClaudeCodeAdapter, CodexCliAdapter, CursorCliAdapter, type CodingAgentAdapter } from "../src/index.ts";
 
 test("runs codex exec as an async JSONL task", async (t) => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "clero-codex-test-"));
@@ -449,6 +449,83 @@ test("runs antigravity cli as an async text task", async (t) => {
   assert.deepEqual(args, ["--sandbox"]);
 });
 
+test("runs cursor agent as an async stream-json task", async (t) => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "clero-cursor-test-"));
+  t.after(() => rm(workspace, { recursive: true, force: true }));
+  const resolvedWorkspace = await realpath(workspace);
+  const fakeCursor = await createFakeCursor(workspace, 0);
+  const adapter = new CursorCliAdapter({
+    workspacePolicy: new WorkspacePolicy({ allowedDirectories: [workspace] }),
+    approvalProvider: new StaticApprovalProvider(false, "not approved"),
+    command: fakeCursor,
+    defaultModel: "cursor-model",
+    allowWorkspaceWrite: true
+  });
+
+  const start = await adapter.startTask(
+    { prompt: "inspect repo", cwd: workspace, sandbox: "workspace-write" },
+    { requestId: "req_1", leaseId: "lease_1", agentId: "agent_1", taskId: "task_1" }
+  );
+
+  assert.equal(start.provider, "cursor");
+  assert.equal(start.sandbox, "workspace-write");
+  assert.equal(start.model, "cursor-model");
+  assert.equal(start.approved, true);
+
+  const status = await waitForTerminalStatus(adapter, stringField(start, "task_id"));
+  assert.equal(status.status, "completed");
+  assert.equal(status.final_message, "done: inspect repo");
+  assert.equal(status.cursor_chat_id, "cursor_chat_fake");
+
+  const debugOutput = await adapter.getOutput(stringField(start, "task_id"), { include_events: true, include_raw: true });
+  assert.match(stringField(debugOutput, "output"), /done: inspect repo/);
+  const events = eventArray(debugOutput.events);
+  const processStarted = events.find((event) => event.type === "process.started");
+  assert.ok(processStarted);
+  const processData = objectField(processStarted, "data");
+  const args = stringArrayField(processData, "args");
+  assert.deepEqual(args.slice(0, 7), [
+    "-p",
+    "--output-format",
+    "stream-json",
+    "--stream-partial-output",
+    "--trust",
+    "--workspace",
+    resolvedWorkspace
+  ]);
+  assert.deepEqual(args.slice(7, 13), ["--model", "cursor-model", "--force", "--sandbox", "enabled", "inspect repo"]);
+});
+
+test("creates a cursor chat before first continued session", async (t) => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "clero-cursor-test-"));
+  t.after(() => rm(workspace, { recursive: true, force: true }));
+  const fakeCursor = await createFakeCursor(workspace, 0);
+  const adapter = new CursorCliAdapter({
+    workspacePolicy: new WorkspacePolicy({ allowedDirectories: [workspace] }),
+    command: fakeCursor
+  });
+
+  const start = await adapter.startTask(
+    { prompt: "first turn", cwd: workspace, continue_session: true, session_key: "agent_1:repo" },
+    { requestId: "req_1", leaseId: "lease_1", agentId: "agent_1", taskId: "task_1" }
+  );
+
+  assert.equal(start.continue_session, true);
+  assert.equal(start.resumed_session, false);
+  assert.equal(start.provider_session_id, "cursor_chat_created");
+
+  const status = await waitForTerminalStatus(adapter, stringField(start, "task_id"));
+  assert.equal(status.status, "completed");
+  const output = await adapter.getOutput(stringField(start, "task_id"), { include_events: true });
+  const events = eventArray(output.events);
+  const processStarted = events.find((event) => event.type === "process.started");
+  assert.ok(processStarted);
+  const processData = objectField(processStarted, "data");
+  const args = stringArrayField(processData, "args");
+  assert.equal(args.includes("--resume"), true);
+  assert.equal(args[args.indexOf("--resume") + 1], "cursor_chat_created");
+});
+
 async function createFakeCodex(workspace: string, exitCode: number, errorMessage?: string): Promise<string> {
   const fakeCodex = path.join(workspace, `fake-codex-${exitCode}.js`);
   await writeFile(
@@ -543,6 +620,29 @@ process.stdin.on("end", () => {
   );
   await chmod(fakeAntigravity, 0o755);
   return fakeAntigravity;
+}
+
+async function createFakeCursor(workspace: string, exitCode: number): Promise<string> {
+  const fakeCursor = path.join(workspace, `fake-cursor-${exitCode}.js`);
+  await writeFile(
+    fakeCursor,
+    `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "create-chat") {
+  console.log("cursor_chat_created");
+  process.exit(0);
+}
+const prompt = args[args.length - 1] || "";
+const resumeIndex = args.indexOf("--resume");
+const chatId = resumeIndex >= 0 ? args[resumeIndex + 1] : "cursor_chat_fake";
+console.log(JSON.stringify({ type: "system", subtype: "init", chat_id: chatId, model: "fake" }));
+console.log(JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "done: " + prompt.trim() }] } }));
+console.log(JSON.stringify({ type: "result", result: "done: " + prompt.trim(), chat_id: chatId }));
+process.exit(${exitCode});
+`
+  );
+  await chmod(fakeCursor, 0o755);
+  return fakeCursor;
 }
 
 async function createFakeClaude(workspace: string, exitCode: number): Promise<string> {

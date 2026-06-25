@@ -175,7 +175,7 @@ export class ToolRegistry {
 }
 
 function workspaceKeyForToolCall(tool: ToolName, args: JsonObject): string | undefined {
-  if (tool !== "coding_agent.start_task" && tool !== "git.commit" && tool !== "git.push") {
+  if (tool !== "coding_agent.start_task" && tool !== "git.commit" && tool !== "git.push" && tool !== "shell.run") {
     return undefined;
   }
 

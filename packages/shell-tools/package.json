@@ -1,5 +1,5 @@
 {
-  "name": "@clero-local-agent/daemon",
+  "name": "@clero-local-agent/shell-tools",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -8,12 +8,8 @@
   },
   "dependencies": {
     "@clero-local-agent/approvals": "workspace:*",
-    "@clero-local-agent/browser": "workspace:*",
-    "@clero-local-agent/coding-agents": "workspace:*",
-    "@clero-local-agent/git-tools": "workspace:*",
     "@clero-local-agent/mcp-runtime": "workspace:*",
     "@clero-local-agent/protocol": "workspace:*",
-    "@clero-local-agent/shell-tools": "workspace:*",
     "@clero-local-agent/workspace": "workspace:*"
   }
 }

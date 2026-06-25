@@ -47,6 +47,7 @@ test("filters advertised capabilities from runtime config", () => {
   const config = defaultRuntimeConfig();
   config.capabilities!.browser!.enabled = false;
   config.capabilities!.browser_debug!.enabled = false;
+  config.capabilities!.shell!.enabled = false;
   config.capabilities!.codex!.enabled = false;
   config.capabilities!.git!.write_enabled = false;
 
@@ -54,6 +55,7 @@ test("filters advertised capabilities from runtime config", () => {
 
   assert.equal(names.some((name) => name.startsWith("browser.")), false);
   assert.equal(names.some((name) => name.startsWith("browser_debug.")), false);
+  assert.equal(names.some((name) => name.startsWith("shell.")), false);
   assert.equal(names.some((name) => name.startsWith("coding_agent.")), false);
   assert.equal(names.includes("git.status"), true);
   assert.equal(names.includes("git.commit"), false);
@@ -105,6 +107,8 @@ test("maps runtime config to daemon capability options", () => {
     model: "",
     reasoningEffort: undefined,
     antigravityCommand: "",
+    cursorCommand: "",
+    cursorModel: "",
     claudeCommand: "",
     claudeModel: "",
     claudeReasoningEffort: undefined,
@@ -112,6 +116,15 @@ test("maps runtime config to daemon capability options", () => {
     defaultSandbox: "workspace-write",
     allowWorkspaceWrite: true,
     allowDangerFullAccess: false
+  });
+  assert.deepEqual(capabilityOptionsFromConfig(config).shell, {
+    enabled: false,
+    defaultAccess: "read-only",
+    allowWorkspaceWrite: false,
+    allowDangerFullAccess: false,
+    defaultTimeoutMs: 30000,
+    defaultMaxOutputBytes: 200000,
+    shell: undefined
   });
   assert.deepEqual(capabilityOptionsFromConfig(config).browserDebug, {
     enabled: false,
@@ -126,6 +139,28 @@ test("enables managed browser session persistence by default", () => {
 
   assert.equal(config.capabilities?.browser?.remember_session, true);
   assert.match(config.capabilities?.browser?.browser_profile_dir ?? "", /\.clero-local-agent/);
+});
+
+test("advertises shell capability only when enabled", () => {
+  const config = defaultRuntimeConfig();
+
+  assert.equal(capabilitiesFromConfig(config).some((capability) => capability.name === "shell.run"), false);
+
+  config.capabilities!.shell!.enabled = true;
+
+  const shell = capabilitiesFromConfig(config).find((capability) => capability.name === "shell.run");
+
+  assert.ok(shell);
+  assert.deepEqual(shell.groups, ["shell"]);
+  assert.equal(capabilityOptionsFromConfig(config).shell?.enabled, true);
+});
+
+test("shell workspace-write access enables local shell write permission", () => {
+  const config = defaultRuntimeConfig();
+  config.capabilities!.shell!.default_access = "workspace-write";
+  config.capabilities!.shell!.allow_workspace_write = false;
+
+  assert.equal(capabilityOptionsFromConfig(config).shell?.allowWorkspaceWrite, true);
 });
 
 test("workspace-write default sandbox enables Codex write permission", () => {
@@ -152,6 +187,15 @@ test("maps custom Claude model selection to daemon options", () => {
   config.capabilities!.codex!.claude_model_custom = "claude-sonnet-4-5";
 
   assert.equal(capabilityOptionsFromConfig(config).codex?.claudeModel, "claude-sonnet-4-5");
+});
+
+test("maps custom Cursor model selection to daemon options", () => {
+  const config = defaultRuntimeConfig();
+  config.capabilities!.codex!.provider = "cursor";
+  config.capabilities!.codex!.cursor_model = "custom";
+  config.capabilities!.codex!.cursor_model_custom = "gpt-5-cursor";
+
+  assert.equal(capabilityOptionsFromConfig(config).codex?.cursorModel, "gpt-5-cursor");
 });
 
 test("empty allowed directories keep the default projects root", () => {

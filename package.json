@@ -27,7 +27,8 @@
     "smoke:coding:codex": "node --experimental-strip-types scripts/smoke-coding-agents.ts --provider codex",
     "smoke:coding:claude": "node --experimental-strip-types scripts/smoke-coding-agents.ts --provider claude-code",
     "smoke:coding:antigravity": "node --experimental-strip-types scripts/smoke-coding-agents.ts --provider antigravity",
-    "test": "node --experimental-strip-types --test packages/browser/test/mcp-chrome-adapter.test.ts packages/coding-agents/test/codex-cli-adapter.test.ts packages/daemon/test/lease-manager.test.ts packages/daemon/test/local-task-completion.test.ts packages/daemon/test/pairing-client.test.ts packages/daemon/test/runtime-config.test.ts packages/daemon/test/websocket-client.test.ts packages/mcp-runtime/test/tool-registry.test.ts packages/workspace/test/workspace-tools.test.ts",
+    "smoke:coding:cursor": "node --experimental-strip-types scripts/smoke-coding-agents.ts --provider cursor",
+    "test": "node --experimental-strip-types --test packages/browser/test/mcp-chrome-adapter.test.ts packages/coding-agents/test/codex-cli-adapter.test.ts packages/daemon/test/lease-manager.test.ts packages/daemon/test/local-task-completion.test.ts packages/daemon/test/pairing-client.test.ts packages/daemon/test/runtime-config.test.ts packages/daemon/test/websocket-client.test.ts packages/mcp-runtime/test/tool-registry.test.ts packages/shell-tools/test/shell-tools.test.ts packages/workspace/test/workspace-tools.test.ts",
     "typecheck": "tsc -p tsconfig.typecheck.json --pretty false"
   },
   "devDependencies": {

@@ -330,7 +330,7 @@ function leaseScopeForTool(tool: string, workspaceKey?: string): LeaseScope {
   if (tool.includes(".browser") || tool.startsWith("browser.")) {
     return BROWSER_SCOPE;
   }
-  if (tool.includes(".codex") || tool.startsWith("coding_agent.") || tool.startsWith("git.")) {
+  if (tool.includes(".codex") || tool.startsWith("coding_agent.") || tool.startsWith("git.") || tool.startsWith("shell.")) {
     return workspaceScope(workspaceKey);
   }
   return GLOBAL_SCOPE;

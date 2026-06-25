@@ -18,6 +18,7 @@ import {
   AntigravityCliAdapter,
   ClaudeCodeAdapter,
   CodexCliAdapter,
+  CursorCliAdapter,
   CodingAgentTools,
   type ClaudeCodePermissionMode,
   type ClaudeCodeReasoningEffort,
@@ -29,6 +30,7 @@ import {
   type CodingTaskEvent
 } from "@clero-local-agent/coding-agents";
 import { GitTools } from "@clero-local-agent/git-tools";
+import { ShellTools, type ShellAccess } from "@clero-local-agent/shell-tools";
 import { ToolRegistry, toolCallArguments, toolCallRunContext } from "@clero-local-agent/mcp-runtime";
 import {
   errorControlResult,
@@ -87,6 +89,15 @@ export type LocalRuntimeCapabilityOptions = {
   workspace?: {
     enabled?: boolean;
   };
+  shell?: {
+    enabled?: boolean;
+    defaultAccess?: ShellAccess;
+    allowWorkspaceWrite?: boolean;
+    allowDangerFullAccess?: boolean;
+    defaultTimeoutMs?: number;
+    defaultMaxOutputBytes?: number;
+    shell?: string;
+  };
   codex?: {
     enabled?: boolean;
     provider?: CodingAgentProvider;
@@ -94,6 +105,8 @@ export type LocalRuntimeCapabilityOptions = {
     model?: string;
     reasoningEffort?: CodexReasoningEffort;
     antigravityCommand?: string;
+    cursorCommand?: string;
+    cursorModel?: string;
     claudeCommand?: string;
     claudeModel?: string;
     claudeReasoningEffort?: ClaudeCodeReasoningEffort;
@@ -729,6 +742,16 @@ export class LocalRuntimeDaemon {
     this.browserAdapter = browserAdapter;
     const browserTools = new BrowserTools(browserAdapter);
     const workspaceTools = new WorkspaceTools(workspacePolicy);
+    const shellTools = new ShellTools({
+      workspacePolicy,
+      approvalProvider,
+      defaultAccess: this.options.capabilities?.shell?.defaultAccess,
+      allowWorkspaceWrite: this.options.capabilities?.shell?.allowWorkspaceWrite,
+      allowDangerFullAccess: this.options.capabilities?.shell?.allowDangerFullAccess,
+      defaultTimeoutMs: this.options.capabilities?.shell?.defaultTimeoutMs,
+      defaultMaxOutputBytes: this.options.capabilities?.shell?.defaultMaxOutputBytes,
+      shell: this.options.capabilities?.shell?.shell
+    });
     const codingAgentTools = new CodingAgentTools(this.createCodingAgentAdapter(workspacePolicy, approvalProvider));
     const gitTools = new GitTools({ workspacePolicy, approvalProvider });
     const browserDebugConfig = this.options.capabilities?.browserDebug;
@@ -751,6 +774,11 @@ export class LocalRuntimeDaemon {
     }
     if (this.options.capabilities?.workspace?.enabled !== false) {
       for (const definition of workspaceTools.definitions()) {
+        this.registry.register(definition);
+      }
+    }
+    if (this.options.capabilities?.shell?.enabled === true) {
+      for (const definition of shellTools.definitions()) {
         this.registry.register(definition);
       }
     }
@@ -841,6 +869,19 @@ export class LocalRuntimeDaemon {
         workspacePolicy,
         approvalProvider,
         command: codingConfig.antigravityCommand || process.env.CLERO_LOCAL_AGENT_ANTIGRAVITY_BIN,
+        defaultSandbox: codingConfig.defaultSandbox,
+        allowWorkspaceWrite: codingConfig.allowWorkspaceWrite,
+        allowDangerFullAccess: codingConfig.allowDangerFullAccess,
+        ...callbacks
+      });
+    }
+
+    if (codingConfig?.provider === "cursor") {
+      return new CursorCliAdapter({
+        workspacePolicy,
+        approvalProvider,
+        command: codingConfig.cursorCommand || process.env.CLERO_LOCAL_AGENT_CURSOR_BIN,
+        defaultModel: codingConfig.cursorModel,
         defaultSandbox: codingConfig.defaultSandbox,
         allowWorkspaceWrite: codingConfig.allowWorkspaceWrite,
         allowDangerFullAccess: codingConfig.allowDangerFullAccess,

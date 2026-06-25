@@ -22,12 +22,13 @@ import {
 } from "@clero-local-agent/daemon";
 import type { ClaudeCodePermissionMode, CodingAgentProvider, CodexSandbox } from "@clero-local-agent/coding-agents";
 import type { BrowserViewport } from "@clero-local-agent/browser";
+import type { ShellAccess } from "@clero-local-agent/shell-tools";
 import type { SyncedAgent } from "@clero-local-agent/protocol";
 
 const DEVICE_TOKEN_ACCOUNT = "device_token";
 const DEFAULT_CONNECTOR_BASE_URL = "https://media.clero.so/local-agent/latest";
 const DEFAULT_HEADLESS_BROWSER_VIEWPORT: BrowserViewport = { width: 1440, height: 900 };
-const CONNECTOR_VERSION = "0.1.38";
+const CONNECTOR_VERSION = "0.1.39";
 
 type CliValue = string | string[] | boolean;
 type CliArgs = Record<string, CliValue>;
@@ -103,7 +104,7 @@ function printHelp(): void {
   console.log(`clero-connector
 
 Usage:
-  clero-connector setup --code <connection-code> [--backend-url https://clero.so] [--allowed-dir <path>] [--coding-provider codex|claude-code|antigravity]
+  clero-connector setup --code <connection-code> [--backend-url https://clero.so] [--allowed-dir <path>] [--coding-provider codex|claude-code|antigravity|cursor]
   clero-connector daemon [--config <path>]
   clero-connector pair --code <connection-code> [--backend-url <url>] [--save]
   clero-connector capabilities [--config <path>]
@@ -114,7 +115,8 @@ Usage:
   clero-connector workspaces list|add|remove [--path <path>] [--config <path>]
   clero-connector browser status|enable|disable [--browser-channel chromium|chrome|chrome-beta|msedge] [--browser-width 1440 --browser-height 900]
   clero-connector browser-debug status|enable|disable [--browser-debug-command npx] [--browser-debug-arg <arg>] [--browser-debug-url http://127.0.0.1:9222]
-  clero-connector coding status|enable|disable [--provider codex|claude-code|antigravity] [--sandbox read-only|workspace-write|danger-full-access]
+  clero-connector shell status|enable|disable [--shell-access read-only|workspace-write|danger-full-access] [--shell-timeout-ms 30000]
+  clero-connector coding status|enable|disable [--provider codex|claude-code|antigravity|cursor] [--sandbox read-only|workspace-write|danger-full-access]
 
 Compatibility:
   clero-local-agent is still supported as an alias for clero-connector.
@@ -160,6 +162,11 @@ async function main(): Promise<void> {
 
   if (command === "browser-debug") {
     await handleBrowserDebugCommand(subcommand, args, configPath, runtimeConfig);
+    return;
+  }
+
+  if (command === "shell") {
+    await handleShellCommand(subcommand, args, configPath, runtimeConfig);
     return;
   }
 
@@ -442,6 +449,39 @@ async function handleCodingCommand(
   console.log(JSON.stringify({ config_path: configPath, coding: runtimeConfig.capabilities.codex }, null, 2));
 }
 
+async function handleShellCommand(
+  subcommand: string | undefined,
+  args: CliArgs,
+  configPath: string,
+  runtimeConfig: LocalRuntimeConfig
+): Promise<void> {
+  const shell = runtimeConfig.capabilities?.shell ?? {};
+
+  if (subcommand === "status" || subcommand === undefined) {
+    console.log(JSON.stringify(shell, null, 2));
+    return;
+  }
+
+  runtimeConfig.capabilities ??= {};
+  runtimeConfig.capabilities.shell ??= {};
+
+  if (subcommand === "disable") {
+    runtimeConfig.capabilities.shell.enabled = false;
+    await saveRuntimeConfig(configPath, runtimeConfig);
+    console.log(JSON.stringify({ config_path: configPath, shell: runtimeConfig.capabilities.shell }, null, 2));
+    return;
+  }
+
+  if (subcommand !== "enable") {
+    throw new Error("shell supports: status, enable, disable");
+  }
+
+  runtimeConfig.capabilities.shell.enabled = true;
+  applyShellFlags(runtimeConfig, args);
+  await saveRuntimeConfig(configPath, runtimeConfig);
+  console.log(JSON.stringify({ config_path: configPath, shell: runtimeConfig.capabilities.shell }, null, 2));
+}
+
 async function handleAgentsCommand(
   subcommand: string | undefined,
   args: CliArgs,
@@ -602,6 +642,7 @@ function applyCommonConfigFlags(config: LocalRuntimeConfig, args: CliArgs): Loca
 
   applyBrowserFlags(next, args);
   applyBrowserDebugFlags(next, args);
+  applyShellFlags(next, args);
   applyCodingFlags(
     next,
     args,
@@ -680,6 +721,54 @@ function applyBrowserDebugFlags(config: LocalRuntimeConfig, args: CliArgs): void
   }
 }
 
+function applyShellFlags(config: LocalRuntimeConfig, args: CliArgs): void {
+  config.capabilities ??= {};
+  config.capabilities.shell ??= {};
+  const shell = config.capabilities.shell;
+
+  if (getBoolean(args, "enable-shell") || getString(args, "shell-access") || getString(args, "access")) {
+    shell.enabled = true;
+  }
+  if (getBoolean(args, "disable-shell")) {
+    shell.enabled = false;
+  }
+  const access = getString(args, "shell-access") ?? getString(args, "access");
+  if (access) {
+    shell.default_access = shellAccessArg(access);
+    if (shell.default_access === "workspace-write") {
+      shell.allow_workspace_write = true;
+    }
+    if (shell.default_access === "danger-full-access") {
+      shell.allow_workspace_write = true;
+      shell.allow_danger_full_access = true;
+    }
+  }
+  if (getBoolean(args, "allow-shell-workspace-write")) {
+    shell.allow_workspace_write = true;
+  }
+  if (getBoolean(args, "deny-shell-workspace-write")) {
+    shell.allow_workspace_write = false;
+  }
+  if (getBoolean(args, "allow-shell-danger-full-access")) {
+    shell.allow_danger_full_access = true;
+  }
+  if (getBoolean(args, "deny-shell-danger-full-access")) {
+    shell.allow_danger_full_access = false;
+  }
+  const timeout = getString(args, "shell-timeout-ms");
+  if (timeout) {
+    shell.timeout_ms = positiveIntegerArg(timeout, "--shell-timeout-ms", 1_000, 120_000);
+  }
+  const maxOutputBytes = getString(args, "shell-max-output-bytes");
+  if (maxOutputBytes) {
+    shell.max_output_bytes = positiveIntegerArg(maxOutputBytes, "--shell-max-output-bytes", 4_096, 1_000_000);
+  }
+  const shellCommand = getString(args, "shell-command");
+  if (shellCommand) {
+    shell.shell = shellCommand;
+  }
+}
+
 function applyCodingFlags(config: LocalRuntimeConfig, args: CliArgs, enableIfConfigured: boolean): void {
   config.capabilities ??= {};
   config.capabilities.codex ??= {};
@@ -705,6 +794,8 @@ function applyCodingFlags(config: LocalRuntimeConfig, args: CliArgs, enableIfCon
       coding.claude_command = command;
     } else if (coding.provider === "antigravity") {
       coding.antigravity_command = command;
+    } else if (coding.provider === "cursor") {
+      coding.cursor_command = command;
     } else {
       coding.command = command;
     }
@@ -713,6 +804,8 @@ function applyCodingFlags(config: LocalRuntimeConfig, args: CliArgs, enableIfCon
   if (model) {
     if (coding.provider === "claude-code") {
       coding.claude_model = model;
+    } else if (coding.provider === "cursor") {
+      coding.cursor_model = model;
     } else {
       coding.model = model;
     }
@@ -764,6 +857,8 @@ function localStatus(configPath: string, runtimeConfig: LocalRuntimeConfig): Rec
       browser: runtimeConfig.capabilities?.browser?.enabled !== false,
       browser_debug: runtimeConfig.capabilities?.browser_debug?.enabled === true,
       workspace: runtimeConfig.capabilities?.workspace?.enabled !== false,
+      shell: runtimeConfig.capabilities?.shell?.enabled === true,
+      shell_access: runtimeConfig.capabilities?.shell?.default_access,
       coding: runtimeConfig.capabilities?.codex?.enabled !== false,
       coding_provider: runtimeConfig.capabilities?.codex?.provider,
       git_read: runtimeConfig.capabilities?.git?.read_enabled !== false,
@@ -951,11 +1046,11 @@ function browserChannelArg(value: string | undefined): "chromium" | "chrome" | "
 }
 
 function codingProviderArg(value: string): CodingAgentProvider {
-  if (value === "codex" || value === "claude-code" || value === "antigravity") {
+  if (value === "codex" || value === "claude-code" || value === "antigravity" || value === "cursor") {
     return value;
   }
 
-  throw new Error("--coding-provider must be codex, claude-code, or antigravity");
+  throw new Error("--coding-provider must be codex, claude-code, antigravity, or cursor");
 }
 
 function sandboxArg(value: string): CodexSandbox {
@@ -964,6 +1059,22 @@ function sandboxArg(value: string): CodexSandbox {
   }
 
   throw new Error("--sandbox must be read-only, workspace-write, or danger-full-access");
+}
+
+function shellAccessArg(value: string): ShellAccess {
+  if (value === "read-only" || value === "workspace-write" || value === "danger-full-access") {
+    return value;
+  }
+
+  throw new Error("--shell-access must be read-only, workspace-write, or danger-full-access");
+}
+
+function positiveIntegerArg(value: string, label: string, min: number, max: number): number {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
+    throw new Error(`${label} must be an integer from ${min} to ${max}`);
+  }
+  return parsed;
 }
 
 function claudePermissionModeArg(value: string): ClaudeCodePermissionMode {

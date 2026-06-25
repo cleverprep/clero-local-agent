@@ -40,6 +40,8 @@ struct CapabilityConfig {
     #[serde(default)]
     workspace: WorkspaceConfig,
     #[serde(default)]
+    shell: ShellConfig,
+    #[serde(default)]
     codex: CodexConfig,
     #[serde(default)]
     git: GitConfig,
@@ -90,6 +92,24 @@ struct WorkspaceConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+struct ShellConfig {
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default = "default_shell_access")]
+    default_access: String,
+    #[serde(default)]
+    allow_workspace_write: bool,
+    #[serde(default)]
+    allow_danger_full_access: bool,
+    #[serde(default = "default_shell_timeout_ms")]
+    timeout_ms: u32,
+    #[serde(default = "default_shell_max_output_bytes")]
+    max_output_bytes: u32,
+    #[serde(default)]
+    shell: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct CodexConfig {
     #[serde(default)]
     enabled: bool,
@@ -103,6 +123,12 @@ struct CodexConfig {
     reasoning_effort: String,
     #[serde(default)]
     antigravity_command: String,
+    #[serde(default)]
+    cursor_command: String,
+    #[serde(default)]
+    cursor_model: String,
+    #[serde(default)]
+    cursor_model_custom: String,
     #[serde(default)]
     claude_command: String,
     #[serde(default)]
@@ -153,6 +179,7 @@ struct DependencyStatus {
     codex: DependencyCheck,
     claude: DependencyCheck,
     antigravity: DependencyCheck,
+    cursor: DependencyCheck,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -162,6 +189,12 @@ struct DependencyCheck {
     path: Option<String>,
     version: Option<String>,
     message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CodingModelOption {
+    id: String,
+    label: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -212,6 +245,7 @@ impl Default for CapabilityConfig {
             browser: BrowserConfig::default(),
             browser_debug: BrowserDebugConfig::default(),
             workspace: WorkspaceConfig::default(),
+            shell: ShellConfig::default(),
             codex: CodexConfig::default(),
             git: GitConfig::default(),
         }
@@ -250,6 +284,20 @@ impl Default for WorkspaceConfig {
     }
 }
 
+impl Default for ShellConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            default_access: default_shell_access(),
+            allow_workspace_write: false,
+            allow_danger_full_access: false,
+            timeout_ms: default_shell_timeout_ms(),
+            max_output_bytes: default_shell_max_output_bytes(),
+            shell: String::new(),
+        }
+    }
+}
+
 impl Default for CodexConfig {
     fn default() -> Self {
         Self {
@@ -259,6 +307,9 @@ impl Default for CodexConfig {
             model: String::new(),
             reasoning_effort: String::new(),
             antigravity_command: String::new(),
+            cursor_command: String::new(),
+            cursor_model: String::new(),
+            cursor_model_custom: String::new(),
             claude_command: String::new(),
             claude_model: String::new(),
             claude_model_custom: String::new(),
@@ -319,6 +370,29 @@ fn save_config(app: AppHandle, mut config: RuntimeConfig) -> Result<RuntimeConfi
 #[tauri::command]
 fn check_dependencies(config: RuntimeConfig) -> DependencyStatus {
     dependency_status(&config)
+}
+
+#[tauri::command]
+fn list_cursor_models(config: RuntimeConfig) -> Result<Vec<CodingModelOption>, String> {
+    let dependency = check_cursor_dependency(&config.capabilities.codex.cursor_command);
+    let command = dependency
+        .path
+        .as_deref()
+        .ok_or_else(|| dependency.message.clone())?;
+    let output = Command::new(command)
+        .arg("models")
+        .output()
+        .map_err(|error| format!("Could not list Cursor models: {error}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            "Cursor model listing failed.".to_string()
+        } else {
+            stderr
+        });
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(parse_cursor_models(&stdout))
 }
 
 fn write_config(app: &AppHandle, config: &RuntimeConfig) -> Result<(), String> {
@@ -549,6 +623,7 @@ pub fn run() {
             load_config,
             save_config,
             check_dependencies,
+            list_cursor_models,
             pair_runtime,
             start_daemon,
             stop_daemon,
@@ -1065,8 +1140,15 @@ fn validate_enabled_dependencies(config: &RuntimeConfig) -> Result<(), String> {
         return Err(status.antigravity.message);
     }
     if config.capabilities.codex.enabled
+        && config.capabilities.codex.provider == "cursor"
+        && !status.cursor.available
+    {
+        return Err(status.cursor.message);
+    }
+    if config.capabilities.codex.enabled
         && config.capabilities.codex.provider != "claude-code"
         && config.capabilities.codex.provider != "antigravity"
+        && config.capabilities.codex.provider != "cursor"
         && !status.codex.available
     {
         return Err(status.codex.message);
@@ -1080,6 +1162,7 @@ fn dependency_status(config: &RuntimeConfig) -> DependencyStatus {
         codex: check_codex_dependency(&config.capabilities.codex.command),
         claude: check_claude_dependency(&config.capabilities.codex.claude_command),
         antigravity: check_antigravity_dependency(&config.capabilities.codex.antigravity_command),
+        cursor: check_cursor_dependency(&config.capabilities.codex.cursor_command),
     }
 }
 
@@ -1224,6 +1307,86 @@ fn check_antigravity_dependency(configured_command: &str) -> DependencyCheck {
         version: None,
         message: "Install Antigravity CLI before enabling Antigravity.".to_string(),
     }
+}
+
+fn check_cursor_dependency(configured_command: &str) -> DependencyCheck {
+    let mut candidates = Vec::new();
+    push_command_candidate(&mut candidates, configured_command);
+    push_command_candidate(
+        &mut candidates,
+        &env::var("CLERO_LOCAL_AGENT_CURSOR_BIN").unwrap_or_default(),
+    );
+    push_command_candidate(&mut candidates, "agent");
+    push_command_candidate(&mut candidates, "cursor-agent");
+
+    if let Some(home) = dirs::home_dir() {
+        push_path_candidate(&mut candidates, home.join(".cursor/bin/agent"));
+        push_path_candidate(&mut candidates, home.join(".local/bin/agent"));
+        push_path_candidate(&mut candidates, home.join(".npm-global/bin/agent"));
+    }
+    push_path_candidate(&mut candidates, PathBuf::from("/opt/homebrew/bin/agent"));
+    push_path_candidate(&mut candidates, PathBuf::from("/usr/local/bin/agent"));
+
+    for candidate in candidates {
+        if let Some((path, version)) = command_version(&candidate, "--version") {
+            return DependencyCheck {
+                available: true,
+                label: "Cursor Agent".to_string(),
+                path: Some(path),
+                version,
+                message: "Cursor Agent CLI is installed.".to_string(),
+            };
+        }
+    }
+
+    DependencyCheck {
+        available: false,
+        label: "Cursor Agent".to_string(),
+        path: None,
+        version: None,
+        message: "Install Cursor Agent CLI before enabling Cursor.".to_string(),
+    }
+}
+
+fn parse_cursor_models(output: &str) -> Vec<CodingModelOption> {
+    let mut models: Vec<CodingModelOption> = Vec::new();
+    for raw_line in output.lines() {
+        let line = raw_line
+            .trim()
+            .trim_start_matches(|character: char| {
+                matches!(character, '-' | '*' | '•' | '✓' | '✔' | '>')
+                    || character.is_whitespace()
+            })
+            .trim();
+        if line.is_empty()
+            || line.eq_ignore_ascii_case("models")
+            || line.to_ascii_lowercase().starts_with("available ")
+        {
+            continue;
+        }
+        let mut parts = line.split_whitespace();
+        let Some(first) = parts.next() else {
+            continue;
+        };
+        let id = first.trim_matches(|character: char| character == ',' || character == ':' || character == '|');
+        if id.is_empty() || id.eq_ignore_ascii_case("model") || id.eq_ignore_ascii_case("id") {
+            continue;
+        }
+        if !id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.' | '/' | '[' | ']'))
+        {
+            continue;
+        }
+        if models.iter().any(|model| model.id == id) {
+            continue;
+        }
+        models.push(CodingModelOption {
+            id: id.to_string(),
+            label: line.to_string(),
+        });
+    }
+    models
 }
 
 fn browser_candidates(channel: &str) -> Vec<PathBuf> {
@@ -1487,7 +1650,67 @@ fn normalize_runtime_config(config: &mut RuntimeConfig) -> bool {
         }
     }
 
-    if config.capabilities.codex.provider == "codex" || config.capabilities.codex.provider == "antigravity" {
+    let shell_command = config.capabilities.shell.shell.trim().to_string();
+    if shell_command != config.capabilities.shell.shell {
+        config.capabilities.shell.shell = shell_command;
+        changed = true;
+    }
+    if !matches!(
+        config.capabilities.shell.default_access.as_str(),
+        "read-only" | "workspace-write" | "danger-full-access"
+    ) {
+        config.capabilities.shell.default_access = default_shell_access();
+        changed = true;
+    }
+    if config.capabilities.shell.default_access == "workspace-write" {
+        if !config.capabilities.shell.allow_workspace_write {
+            config.capabilities.shell.allow_workspace_write = true;
+            changed = true;
+        }
+        if config.capabilities.shell.allow_danger_full_access {
+            config.capabilities.shell.allow_danger_full_access = false;
+            changed = true;
+        }
+    }
+    if config.capabilities.shell.default_access == "danger-full-access" {
+        if !config.capabilities.shell.allow_workspace_write {
+            config.capabilities.shell.allow_workspace_write = true;
+            changed = true;
+        }
+        if !config.capabilities.shell.allow_danger_full_access {
+            config.capabilities.shell.allow_danger_full_access = true;
+            changed = true;
+        }
+    }
+    if config.capabilities.shell.default_access == "read-only" {
+        if config.capabilities.shell.allow_workspace_write {
+            config.capabilities.shell.allow_workspace_write = false;
+            changed = true;
+        }
+        if config.capabilities.shell.allow_danger_full_access {
+            config.capabilities.shell.allow_danger_full_access = false;
+            changed = true;
+        }
+    }
+    let shell_timeout = config.capabilities.shell.timeout_ms.clamp(1_000, 120_000);
+    if shell_timeout != config.capabilities.shell.timeout_ms {
+        config.capabilities.shell.timeout_ms = shell_timeout;
+        changed = true;
+    }
+    let shell_max_output = config
+        .capabilities
+        .shell
+        .max_output_bytes
+        .clamp(4_096, 1_000_000);
+    if shell_max_output != config.capabilities.shell.max_output_bytes {
+        config.capabilities.shell.max_output_bytes = shell_max_output;
+        changed = true;
+    }
+
+    if config.capabilities.codex.provider == "codex"
+        || config.capabilities.codex.provider == "antigravity"
+        || config.capabilities.codex.provider == "cursor"
+    {
         if config.capabilities.codex.allow_workspace_write
             && config.capabilities.codex.default_sandbox == "read-only"
         {
@@ -1587,4 +1810,16 @@ fn default_codex_sandbox() -> String {
 
 fn default_claude_permission_mode() -> String {
     "default".to_string()
+}
+
+fn default_shell_access() -> String {
+    "read-only".to_string()
+}
+
+fn default_shell_timeout_ms() -> u32 {
+    30_000
+}
+
+fn default_shell_max_output_bytes() -> u32 {
+    200_000
 }

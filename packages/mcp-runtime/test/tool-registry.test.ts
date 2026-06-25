@@ -45,9 +45,14 @@ test("derives advertised capabilities from registered tool definitions", () => {
     description: "projects",
     handler: () => ({ ok: true })
   });
+  registry.register({
+    name: "shell.run",
+    description: "shell",
+    handler: () => ({ ok: true })
+  });
 
   const capabilities = registry.capabilities();
-  assert.equal(capabilities.length, 3);
+  assert.equal(capabilities.length, 4);
 
   const browser = capabilities.find((capability) => capability.name === "browser.open_url");
   assert.equal(browser?.access, "passive");
@@ -61,7 +66,12 @@ test("derives advertised capabilities from registered tool definitions", () => {
 
   const workspace = capabilities.find((capability) => capability.name === "workspace.list_projects");
   assert.equal(workspace?.access, "passive");
-  assert.deepEqual(workspace?.groups, ["codex", "git_read", "git_write"]);
+  assert.deepEqual(workspace?.groups, ["codex", "git_read", "git_write", "shell"]);
+
+  const shell = capabilities.find((capability) => capability.name === "shell.run");
+  assert.equal(shell?.access, "lease_required");
+  assert.deepEqual(shell?.inputSchema?.required, ["command"]);
+  assert.deepEqual(shell?.groups, ["shell"]);
 });
 
 test("rejects missing required arguments before tool execution", async () => {

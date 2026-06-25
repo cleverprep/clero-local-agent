@@ -10,6 +10,7 @@ import type {
   CodexReasoningEffort,
   CodexSandbox
 } from "@clero-local-agent/coding-agents";
+import type { ShellAccess } from "@clero-local-agent/shell-tools";
 import { defaultCapabilities, type AgentsSyncMessage, type BrokerId, type Capability, type SyncedAgent } from "@clero-local-agent/protocol";
 import type { LocalRuntimeCapabilityOptions } from "./daemon.ts";
 import { createTokenStore, type TokenStore } from "./token-store.ts";
@@ -42,6 +43,15 @@ export type LocalRuntimeConfig = {
     workspace?: {
       enabled?: boolean;
     };
+    shell?: {
+      enabled?: boolean;
+      default_access?: ShellAccess;
+      allow_workspace_write?: boolean;
+      allow_danger_full_access?: boolean;
+      timeout_ms?: number;
+      max_output_bytes?: number;
+      shell?: string;
+    };
     codex?: {
       enabled?: boolean;
       provider?: CodingAgentProvider;
@@ -49,6 +59,9 @@ export type LocalRuntimeConfig = {
       model?: string;
       reasoning_effort?: CodexReasoningEffort;
       antigravity_command?: string;
+      cursor_command?: string;
+      cursor_model?: string;
+      cursor_model_custom?: string;
       claude_command?: string;
       claude_model?: string;
       claude_model_custom?: string;
@@ -95,6 +108,15 @@ export function defaultRuntimeConfig(): LocalRuntimeConfig {
       workspace: {
         enabled: true
       },
+      shell: {
+        enabled: false,
+        default_access: "read-only",
+        allow_workspace_write: false,
+        allow_danger_full_access: false,
+        timeout_ms: 30_000,
+        max_output_bytes: 200_000,
+        shell: ""
+      },
       codex: {
         enabled: false,
         provider: "codex",
@@ -102,6 +124,9 @@ export function defaultRuntimeConfig(): LocalRuntimeConfig {
         model: "",
         reasoning_effort: undefined,
         antigravity_command: "",
+        cursor_command: "",
+        cursor_model: "",
+        cursor_model_custom: "",
         claude_command: "",
         claude_model: "",
         claude_model_custom: "",
@@ -203,6 +228,20 @@ export function capabilityOptionsFromConfig(config: LocalRuntimeConfig): LocalRu
     workspace: {
       enabled: config.capabilities?.workspace?.enabled
     },
+    shell: {
+      enabled: config.capabilities?.shell?.enabled,
+      defaultAccess: config.capabilities?.shell?.default_access,
+      allowWorkspaceWrite:
+        config.capabilities?.shell?.allow_workspace_write === true ||
+        config.capabilities?.shell?.default_access === "workspace-write" ||
+        config.capabilities?.shell?.default_access === "danger-full-access",
+      allowDangerFullAccess:
+        config.capabilities?.shell?.allow_danger_full_access === true ||
+        config.capabilities?.shell?.default_access === "danger-full-access",
+      defaultTimeoutMs: config.capabilities?.shell?.timeout_ms,
+      defaultMaxOutputBytes: config.capabilities?.shell?.max_output_bytes,
+      shell: nonEmptyString(config.capabilities?.shell?.shell)
+    },
     codex: {
       enabled: config.capabilities?.codex?.enabled,
       provider: config.capabilities?.codex?.provider,
@@ -210,6 +249,8 @@ export function capabilityOptionsFromConfig(config: LocalRuntimeConfig): LocalRu
       model: config.capabilities?.codex?.model,
       reasoningEffort: config.capabilities?.codex?.reasoning_effort,
       antigravityCommand: config.capabilities?.codex?.antigravity_command,
+      cursorCommand: config.capabilities?.codex?.cursor_command,
+      cursorModel: cursorModelFromConfig(config),
       claudeCommand: config.capabilities?.codex?.claude_command,
       claudeModel: claudeModelFromConfig(config),
       claudeReasoningEffort: config.capabilities?.codex?.claude_reasoning_effort,
@@ -233,6 +274,14 @@ function claudeModelFromConfig(config: LocalRuntimeConfig): string | undefined {
   return selected;
 }
 
+function cursorModelFromConfig(config: LocalRuntimeConfig): string | undefined {
+  const selected = config.capabilities?.codex?.cursor_model;
+  if (selected === "custom") {
+    return config.capabilities?.codex?.cursor_model_custom;
+  }
+  return selected;
+}
+
 function nonEmptyString(value: string | null | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
@@ -249,6 +298,9 @@ export function capabilitiesFromConfig(config: LocalRuntimeConfig): Capability[]
     }
     if (capability.name.startsWith("workspace.")) {
       return options.workspace?.enabled !== false;
+    }
+    if (capability.name.startsWith("shell.")) {
+      return options.shell?.enabled === true;
     }
     if (capability.name.startsWith("coding_agent.")) {
       return options.codex?.enabled !== false;
@@ -283,6 +335,10 @@ export function mergeRuntimeConfig(base: LocalRuntimeConfig, override: LocalRunt
       workspace: {
         ...base.capabilities?.workspace,
         ...override.capabilities?.workspace
+      },
+      shell: {
+        ...base.capabilities?.shell,
+        ...override.capabilities?.shell
       },
       codex: {
         ...base.capabilities?.codex,

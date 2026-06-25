@@ -26,6 +26,9 @@ importers:
       '@clero-local-agent/daemon':
         specifier: workspace:*
         version: link:../../packages/daemon
+      '@clero-local-agent/shell-tools':
+        specifier: workspace:*
+        version: link:../../packages/shell-tools
 
   apps/desktop:
     dependencies:
@@ -104,6 +107,9 @@ importers:
       '@clero-local-agent/protocol':
         specifier: workspace:*
         version: link:../protocol
+      '@clero-local-agent/shell-tools':
+        specifier: workspace:*
+        version: link:../shell-tools
       '@clero-local-agent/workspace':
         specifier: workspace:*
         version: link:../workspace
@@ -130,6 +136,21 @@ importers:
         version: link:../protocol
 
   packages/protocol: {}
+
+  packages/shell-tools:
+    dependencies:
+      '@clero-local-agent/approvals':
+        specifier: workspace:*
+        version: link:../approvals
+      '@clero-local-agent/mcp-runtime':
+        specifier: workspace:*
+        version: link:../mcp-runtime
+      '@clero-local-agent/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+      '@clero-local-agent/workspace':
+        specifier: workspace:*
+        version: link:../workspace
 
   packages/workspace:
     dependencies:

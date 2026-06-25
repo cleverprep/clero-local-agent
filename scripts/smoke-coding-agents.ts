@@ -7,6 +7,7 @@ import {
   AntigravityCliAdapter,
   ClaudeCodeAdapter,
   CodexCliAdapter,
+  CursorCliAdapter,
   type ClaudeCodePermissionMode,
   type ClaudeCodeReasoningEffort,
   type CodexReasoningEffort,
@@ -16,7 +17,7 @@ import {
 import type { JsonObject, JsonValue } from "../packages/protocol/src/index.ts";
 import { WorkspacePolicy } from "../packages/workspace/src/index.ts";
 
-const providers: CodingAgentProvider[] = ["codex", "claude-code", "antigravity"];
+const providers: CodingAgentProvider[] = ["codex", "claude-code", "antigravity", "cursor"];
 
 async function main(): Promise<void> {
   const options = parseOptions();
@@ -145,6 +146,14 @@ function adapterForProvider(provider: CodingAgentProvider, workspace: string): C
     });
   }
 
+  if (provider === "cursor") {
+    return new CursorCliAdapter({
+      workspacePolicy,
+      command: optionalEnv("CLERO_CURSOR_BIN"),
+      defaultModel: optionalEnv("CLERO_CURSOR_MODEL")
+    });
+  }
+
   return new AntigravityCliAdapter({
     workspacePolicy,
     command: optionalEnv("CLERO_ANTIGRAVITY_BIN")
@@ -207,6 +216,9 @@ function providerSessionIdFromTask(provider: CodingAgentProvider, task: JsonObje
   if (provider === "claude-code") {
     return optionalStringField(task, "claude_session_id");
   }
+  if (provider === "cursor") {
+    return optionalStringField(task, "cursor_chat_id");
+  }
   return optionalStringField(task, "antigravity_conversation_id");
 }
 
@@ -229,6 +241,10 @@ function assertResumeCommand(
     return;
   }
   if (provider === "claude-code") {
+    assertArgsContainSequence(provider, args, ["--resume", providerSessionId]);
+    return;
+  }
+  if (provider === "cursor") {
     assertArgsContainSequence(provider, args, ["--resume", providerSessionId]);
     return;
   }
@@ -268,11 +284,11 @@ function parseOptions(): {
 }
 
 function providerArg(value: string): CodingAgentProvider | "all" {
-  if (value === "all" || value === "codex" || value === "claude-code" || value === "antigravity") {
+  if (value === "all" || value === "codex" || value === "claude-code" || value === "antigravity" || value === "cursor") {
     return value;
   }
 
-  throw new Error("--provider must be codex, claude-code, antigravity, or all");
+  throw new Error("--provider must be codex, claude-code, antigravity, cursor, or all");
 }
 
 function getArg(name: string): string | undefined {

@@ -63,6 +63,7 @@ Risky actions require local approval. For MVP this includes:
 
 - `git.commit`
 - `git.push`
+- `shell.run` when requesting `workspace-write` or `danger-full-access`
 - coding-agent modes that can modify files or run with elevated sandbox permissions
 
 Read-only operations such as `git.status`, `git.diff`, browser snapshots, and status checks should avoid unnecessary prompts.
@@ -77,7 +78,7 @@ The optional `browser_debug` capability bridges to Chrome DevTools MCP. It can e
 
 ## Coding Agents
 
-Codex, Claude Code, and Antigravity adapters execute local CLI processes. Sandbox and approval settings must be visible to the user before enabling the capability.
+Codex, Claude Code, Antigravity, and Cursor adapters execute local CLI processes. Sandbox and approval settings must be visible to the user before enabling the capability.
 
 Default posture:
 
@@ -85,6 +86,19 @@ Default posture:
 - explicit allowed project folders
 - no danger-full-access by default
 - local approval for higher-risk modes
+
+## Shell
+
+The `shell.run` capability is disabled by default. When enabled, commands must start inside an allowed project folder and output must be bounded by timeout and byte limits.
+
+Default posture:
+
+- inspection-only access
+- no output redirection or common destructive commands in inspection mode
+- no workspace-write or danger-full-access unless explicitly enabled locally
+- lease scoped to the target workspace to avoid overlapping shell/coding/git mutations
+
+Shell is a trusted local command runner, not an operating-system sandbox. The app must describe this clearly wherever users enable the feature.
 
 ## Audit Metadata
 

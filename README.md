@@ -28,7 +28,7 @@ Because Clero Local Agent can control local browser, coding, workspace, and git 
   - automatic lease expiry when heartbeats stop.
 - MCP-style tool registry with lease enforcement for shared local tools.
 - Managed browser adapter that launches agent-scoped browser profiles without a Chrome extension.
-- Codex, Claude Code, and Antigravity CLI process adapters.
+- Codex, Claude Code, Antigravity, and Cursor Agent CLI process adapters.
 - Git status/diff/commit/push tools.
 - Approval provider abstraction, with terminal approval for risky git writes.
 - Focused tests for lease behavior and tool lease enforcement.
@@ -44,7 +44,7 @@ packages/
   protocol/            # shared message schemas/types
   mcp-runtime/         # tool registry and JSON tool execution
   browser/             # managed Playwright browser plus optional MCP provider adapters
-  coding-agents/       # Codex, Claude Code, and Antigravity process adapters
+  coding-agents/       # Codex, Claude Code, Antigravity, and Cursor process adapters
   git-tools/           # git status/diff/commit/push wrappers
   workspace/           # allowed directories and file policies
   approvals/           # approval prompts and policies
@@ -348,11 +348,20 @@ clero-connector browser-debug enable --browser-debug-url http://127.0.0.1:9222
 clero-connector browser-debug enable --browser-debug-command npx --browser-debug-arg -y --browser-debug-arg chrome-devtools-mcp@latest
 clero-connector browser-debug disable
 
+# Shell capability
+clero-connector shell status
+clero-connector shell enable --shell-access read-only
+clero-connector shell enable --shell-access workspace-write
+clero-connector shell enable --shell-access danger-full-access
+clero-connector shell enable --shell-timeout-ms 30000 --shell-max-output-bytes 200000
+clero-connector shell disable
+
 # Coding-agent capability
 clero-connector coding status
 clero-connector coding enable --provider codex --sandbox read-only
 clero-connector coding enable --provider claude-code --sandbox workspace-write --claude-permission-mode acceptEdits
 clero-connector coding enable --provider antigravity --sandbox read-only
+clero-connector coding enable --provider cursor --sandbox read-only
 clero-connector coding enable --model <model-name>
 clero-connector coding enable --command <path-or-command>
 clero-connector coding enable --allow-workspace-write
@@ -376,11 +385,25 @@ clero-connector setup \
   --sandbox read-only
 ```
 
-Browser channels are `chromium`, `chrome`, `chrome-beta`, and `msedge`. Headless browser sessions default to a `1440x900` viewport unless `--browser-width` and `--browser-height` are configured. Coding providers are `codex`, `claude-code`, and `antigravity`. Sandboxes are `read-only`, `workspace-write`, and `danger-full-access`. If the local connector is configured with `--sandbox danger-full-access`, that explicit local setting wins over a remote task request that asks for `read-only` or `workspace-write`.
+Browser channels are `chromium`, `chrome`, `chrome-beta`, and `msedge`. Headless browser sessions default to a `1440x900` viewport unless `--browser-width` and `--browser-height` are configured. Coding providers are `codex`, `claude-code`, `antigravity`, and `cursor`. Sandboxes are `read-only`, `workspace-write`, and `danger-full-access`. If the local connector is configured with `--sandbox danger-full-access`, that explicit local setting wins over a remote task request that asks for `read-only` or `workspace-write`.
+
+Cursor Agent uses Cursor's local `agent` CLI. Install and authenticate it before enabling Cursor:
+
+```bash
+curl https://cursor.com/install -fsS | bash
+agent login
+agent models
+```
+
+The desktop app loads Cursor model choices from `agent models` for the signed-in account. In the CLI, pass a model with:
+
+```bash
+clero-connector coding enable --provider cursor --model <model-id>
+```
 
 `browser-debug` is disabled by default. When enabled, the daemon advertises a separate `browser_debug` capability with `browser_debug.list_tools` and `browser_debug.call_tool`. The bridge starts Chrome DevTools MCP with `npx -y chrome-devtools-mcp@latest --no-usage-statistics --no-performance-crux` and sets `CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS=1`. If `--browser-debug-url` is configured, it is passed through as `--browser-url=<url>` so DevTools MCP can attach to an existing Chrome remote-debugging endpoint. This capability can expose page content, console output, network details, and DevTools state to agents, so enable it only for agents that should debug local browser sessions.
 
-The coding-agent connection is local: Clero calls `coding_agent.start_task`, the daemon validates the requested `cwd` against configured workspaces, then starts the configured provider (`codex`, `claude-code`, or `antigravity`) as a child process in that workspace. The daemon returns a `task_id` immediately and Clero polls `coding_agent.get_status` / `coding_agent.get_output` for long-running results.
+The coding-agent connection is local: Clero calls `coding_agent.start_task`, the daemon validates the requested `cwd` against configured workspaces, then starts the configured provider (`codex`, `claude-code`, `antigravity`, or `cursor`) as a child process in that workspace. The daemon returns a `task_id` immediately and Clero polls `coding_agent.get_status` / `coding_agent.get_output` for long-running results.
 
 `clero-connector agents list` shows the latest agents Clero synced to this local runtime. `agents browser` filters to agents with browser access, and `agents coding` filters to agents with coding-agent access. The daemon writes this cache when it receives backend `agents_sync`, so start `clero-connector daemon` at least once after pairing before using the command.
 
@@ -572,6 +595,21 @@ Workspace tools, passive:
 
 These let Clero discover which local projects the daemon is allowed to expose. `workspace.list_roots` returns the directories configured with `--allow-dir`. `workspace.list_projects` scans those roots for common project markers like `.git`, `package.json`, `pyproject.toml`, `manage.py`, `Cargo.toml`, and `go.mod`. `workspace.describe_project` returns stack hints, package metadata, and git status for an allowed project path. Coding-agent tasks should use one of these returned paths as `coding_agent.start_task.cwd`.
 
+Shell tool:
+
+- `shell.run` lease required per `cwd`
+
+Shell is disabled by default. When enabled, `shell.run` starts in an allowed workspace and returns bounded `stdout`, `stderr`, `exit_code`, timeout metadata, and truncation flags. The default access is `read-only`, which is an inspection guard: it blocks output redirection and common destructive/write commands such as `rm`, `mv`, `touch`, `chmod`, package installs, git writes, and network transfer commands. Shell is a trusted local command runner, not a kernel-level sandbox. `workspace-write` and `danger-full-access` must be explicitly enabled in local settings before Clero can request them.
+
+Supported `shell.run` arguments:
+
+- `command` required.
+- `project` preferred project key/name from `workspace.list_projects`.
+- `cwd` optional allowed working directory.
+- `access` one of `read-only`, `workspace-write`, or `danger-full-access`.
+- `timeout_ms` optional, capped by local settings.
+- `max_output_bytes` optional, capped by local settings.
+
 Coding-agent tools:
 
 - `coding_agent.start_task` lease required per `cwd`
@@ -579,14 +617,14 @@ Coding-agent tools:
 - `coding_agent.get_output` passive
 - `coding_agent.cancel` passive
 
-`coding_agent.start_task` runs Codex, Claude Code, or Antigravity as a background job and returns a local `task_id` immediately. By default it uses the `read-only` sandbox setting. If `sandbox` is `workspace-write` or `danger-full-access`, local approval is required before the coding process starts. When the connector's local default sandbox is `danger-full-access`, that local user setting is authoritative and is not downgraded by a remote task argument. Runtime approval prompts from the coding CLI are not used in this mode; if sandbox or permission policy blocks progress, the task is marked `blocked` and the details are returned through `coding_agent.get_status` / `coding_agent.get_output`. While the child coding process is running, the daemon keeps that workspace lease alive.
+`coding_agent.start_task` runs Codex, Claude Code, Antigravity, or Cursor as a background job and returns a local `task_id` immediately. By default it uses the `read-only` sandbox setting. If `sandbox` is `workspace-write` or `danger-full-access`, local approval is required before the coding process starts. When the connector's local default sandbox is `danger-full-access`, that local user setting is authoritative and is not downgraded by a remote task argument. Runtime approval prompts from the coding CLI are not used in this mode; if sandbox or permission policy blocks progress, the task is marked `blocked` and the details are returned through `coding_agent.get_status` / `coding_agent.get_output`. While the child coding process is running, the daemon keeps that workspace lease alive.
 
 Supported `coding_agent.start_task` arguments:
 
 - `prompt` required.
 - `cwd` allowed workspace directory.
 - `sandbox` one of `read-only`, `workspace-write`, or `danger-full-access`.
-- `model` optional Codex or Claude Code model override.
+- `model` optional Codex, Claude Code, or Cursor model override.
 - `ephemeral` to avoid persisting Codex session rollout files.
 - `skip_git_repo_check` to allow one-off non-git directories.
 
@@ -612,6 +650,7 @@ The backend should add a `LOCAL_RUNTIME` provider with:
 - Dynamic tool-access groups:
   - `local_runtime_<id>.browser`
   - `local_runtime_<id>.codex`
+  - `local_runtime_<id>.shell`
   - `local_runtime_<id>.git_read`
   - `local_runtime_<id>.git_write`
 - Tool-call proxy that routes through the active daemon session.

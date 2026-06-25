@@ -372,6 +372,7 @@
                 <option value="codex">Codex</option>
                 <option value="claude-code">Claude Code</option>
                 <option value="antigravity">Antigravity</option>
+                <option value="cursor">Cursor</option>
               </select>
             </label>
 
@@ -463,6 +464,43 @@
               </label>
             </template>
 
+            <template v-else-if="config.capabilities.codex.provider === 'cursor'">
+              <label class="wide">
+                Cursor command
+                <input v-model="config.capabilities.codex.cursor_command" spellcheck="false" placeholder="Auto-detected" />
+              </label>
+              <label>
+                Model
+                <select v-model="cursorModelSelect">
+                  <option value="">Auto</option>
+                  <option v-for="model in cursorModelOptions" :key="model.id" :value="model.id">
+                    {{ model.label }}
+                  </option>
+                  <option value="custom">Custom</option>
+                </select>
+              </label>
+              <label v-if="config.capabilities.codex.cursor_model === 'custom'" class="wide">
+                Custom model
+                <input
+                  v-model="config.capabilities.codex.cursor_model_custom"
+                  spellcheck="false"
+                  placeholder="model id from agent models"
+                />
+              </label>
+              <button class="secondary compact wide" type="button" :disabled="cursorModelsLoading" @click.stop="refreshCursorModels(false)">
+                {{ cursorModelsLoading ? "Loading models" : "Refresh Cursor models" }}
+              </button>
+              <p v-if="cursorModelsMessage" class="settings-tip wide">{{ cursorModelsMessage }}</p>
+              <label>
+                Sandbox
+                <select v-model="codexSandbox">
+                  <option value="read-only">Read only</option>
+                  <option value="workspace-write">Workspace write</option>
+                  <option value="danger-full-access">Danger full access</option>
+                </select>
+              </label>
+            </template>
+
             <template v-else>
               <label class="wide">
                 Antigravity command
@@ -516,6 +554,67 @@
                 <button type="button" @click.stop="addManualFolder">Add</button>
               </div>
             </div>
+            </div>
+          </Transition>
+        </article>
+
+        <article
+          class="capability-card"
+          :data-open="isCapabilityOpen('shell')"
+          :data-enabled="config.capabilities.shell.enabled"
+        >
+          <div class="capability-header">
+            <button
+              class="capability-toggle"
+              type="button"
+              :aria-expanded="isCapabilityOpen('shell')"
+              aria-controls="shell-settings"
+              @click="toggleCapability('shell')"
+            >
+              <span class="capability-copy">
+                <span class="capability-name">Shell</span>
+                <span class="capability-status">{{ shellStatusText }}</span>
+              </span>
+              <span class="capability-chevron" aria-hidden="true"></span>
+            </button>
+            <label class="switch" @click.stop>
+              <input v-model="config.capabilities.shell.enabled" type="checkbox" />
+              <span></span>
+            </label>
+          </div>
+
+          <Transition name="capability-expand">
+            <div v-if="isCapabilityOpen('shell')" id="shell-settings" class="capability-settings">
+              <label class="wide">
+                Access
+                <select v-model="shellAccess">
+                  <option value="read-only">Inspection only</option>
+                  <option value="workspace-write">Workspace write</option>
+                  <option value="danger-full-access">Full local access</option>
+                </select>
+              </label>
+              <label>
+                Timeout
+                <input v-model.number="config.capabilities.shell.timeout_ms" type="number" min="1000" max="120000" step="1000" />
+              </label>
+              <label>
+                Max output
+                <input
+                  v-model.number="config.capabilities.shell.max_output_bytes"
+                  type="number"
+                  min="4096"
+                  max="1000000"
+                  step="4096"
+                />
+              </label>
+              <label class="wide">
+                Shell command
+                <input v-model="config.capabilities.shell.shell" spellcheck="false" placeholder="Auto-detected" />
+              </label>
+              <div class="settings-tip wide">
+                <strong>Inspection only blocks common write commands.</strong>
+                <span>Shell is a trusted local command runner, not a system sandbox. It starts inside allowed project folders, and write or full access must be explicitly enabled here.</span>
+              </div>
             </div>
           </Transition>
         </article>
@@ -580,7 +679,7 @@
 
 <script setup lang="ts">
 type ConnectionState = "offline" | "connected" | "pairing";
-type CapabilityPanel = "browser" | "coding" | "git";
+type CapabilityPanel = "browser" | "coding" | "shell" | "git";
 type UpdateState = "idle" | "checking" | "available" | "current" | "installing" | "restarting" | "error";
 type CodingTaskActivityStatus = "requested" | "running" | "completed" | "failed" | "blocked" | "cancelled" | "error";
 
@@ -615,13 +714,25 @@ type RuntimeConfig = {
     workspace: {
       enabled: boolean;
     };
+    shell: {
+      enabled: boolean;
+      default_access: "read-only" | "workspace-write" | "danger-full-access";
+      allow_workspace_write: boolean;
+      allow_danger_full_access: boolean;
+      timeout_ms: number;
+      max_output_bytes: number;
+      shell: string;
+    };
     codex: {
       enabled: boolean;
-      provider: "codex" | "claude-code" | "antigravity";
+      provider: "codex" | "claude-code" | "antigravity" | "cursor";
       command: string;
       model: string;
       reasoning_effort: "" | "low" | "medium" | "high" | "xhigh";
       antigravity_command: string;
+      cursor_command: string;
+      cursor_model: string;
+      cursor_model_custom: string;
       claude_command: string;
       claude_model: string;
       claude_model_custom: string;
@@ -662,6 +773,12 @@ type DependencyStatus = {
   codex: DependencyCheck;
   claude: DependencyCheck;
   antigravity: DependencyCheck;
+  cursor: DependencyCheck;
+};
+
+type CodingModelOption = {
+  id: string;
+  label: string;
 };
 
 type CodingTaskActivity = {
@@ -722,6 +839,9 @@ const config = reactive<RuntimeConfig>(defaultConfig());
 const daemonStatus = reactive<DaemonStatus>(defaultDaemonStatus());
 const dependencyStatus = reactive<DependencyStatus>(defaultDependencyStatus());
 const dependenciesChecked = ref(false);
+const cursorModels = ref<CodingModelOption[]>([]);
+const cursorModelsLoading = ref(false);
+const cursorModelsMessage = ref("");
 const advancedConnectionOpen = ref(false);
 const developerMode = ref(false);
 const taskActivityMode = ref(false);
@@ -776,6 +896,7 @@ const browserUnavailable = computed(() => dependenciesChecked.value && !dependen
 const selectedCodingDependency = computed(() => {
   if (config.capabilities.codex.provider === "claude-code") return dependencyStatus.claude;
   if (config.capabilities.codex.provider === "antigravity") return dependencyStatus.antigravity;
+  if (config.capabilities.codex.provider === "cursor") return dependencyStatus.cursor;
   return dependencyStatus.codex;
 });
 
@@ -872,6 +993,27 @@ const fullLocalAccessEnabled = computed({
   }
 });
 
+const shellAccess = computed({
+  get: () => config.capabilities.shell.default_access,
+  set: (access: RuntimeConfig["capabilities"]["shell"]["default_access"]) => {
+    config.capabilities.shell.default_access = access;
+    if (access === "workspace-write") {
+      config.capabilities.shell.enabled = true;
+      config.capabilities.shell.allow_workspace_write = true;
+      config.capabilities.shell.allow_danger_full_access = false;
+    }
+    if (access === "danger-full-access") {
+      config.capabilities.shell.enabled = true;
+      config.capabilities.shell.allow_workspace_write = true;
+      config.capabilities.shell.allow_danger_full_access = true;
+    }
+    if (access === "read-only") {
+      config.capabilities.shell.allow_workspace_write = false;
+      config.capabilities.shell.allow_danger_full_access = false;
+    }
+  }
+});
+
 const isCapabilityOpen = (panel: CapabilityPanel) => activeCapability.value === panel;
 
 const toggleCapability = (panel: CapabilityPanel) => {
@@ -889,13 +1031,41 @@ const codexStatusText = computed(() => {
   if (selectedCodingDependency.value.version) return selectedCodingDependency.value.version;
   if (config.capabilities.codex.provider === "claude-code") return "Claude Code tasks in allowed folders";
   if (config.capabilities.codex.provider === "antigravity") return "Antigravity tasks in allowed folders";
+  if (config.capabilities.codex.provider === "cursor") return "Cursor tasks in allowed folders";
   return "Codex tasks in allowed folders";
 });
 
 const codingProviderLabel = computed(() => {
   if (config.capabilities.codex.provider === "claude-code") return "Claude Code";
   if (config.capabilities.codex.provider === "antigravity") return "Antigravity";
+  if (config.capabilities.codex.provider === "cursor") return "Cursor";
   return "Codex";
+});
+
+const shellStatusText = computed(() => {
+  if (!config.capabilities.shell.enabled) return "Disabled";
+  if (config.capabilities.shell.default_access === "danger-full-access") return "Full local access";
+  if (config.capabilities.shell.default_access === "workspace-write") return "Workspace write";
+  return "Inspection only";
+});
+
+const cursorModelSelect = computed({
+  get: () => config.capabilities.codex.cursor_model || "",
+  set: (value: string) => {
+    config.capabilities.codex.cursor_model = value;
+    if (value !== "custom") {
+      config.capabilities.codex.cursor_model_custom = "";
+    }
+  }
+});
+
+const cursorModelOptions = computed(() => {
+  const options = [...cursorModels.value];
+  const selected = config.capabilities.codex.cursor_model;
+  if (selected && selected !== "custom" && !options.some((option) => option.id === selected)) {
+    options.unshift({ id: selected, label: selected });
+  }
+  return options;
 });
 
 const enabledToolGroups = computed(() => {
@@ -903,6 +1073,7 @@ const enabledToolGroups = computed(() => {
   if (browserEnabled.value) groups.push("Browser");
   if (config.capabilities.browser_debug.enabled) groups.push("Debug");
   if (codexEnabled.value) groups.push(codingProviderLabel.value);
+  if (config.capabilities.shell.enabled) groups.push("Shell");
   if (writeAccessEnabled.value) groups.push("Write");
   return groups;
 });
@@ -1052,6 +1223,15 @@ watch(notice, (message) => {
     noticeTimer = undefined;
   }, 3200);
 });
+
+watch(
+  () => config.capabilities.codex.provider,
+  (provider) => {
+    if (provider === "cursor") {
+      void refreshCursorModels(true);
+    }
+  }
+);
 
 onBeforeUnmount(() => {
   if (daemonStatusTimer) {
@@ -1346,6 +1526,7 @@ async function refreshDependencyStatus(): Promise<void> {
     Object.assign(dependencyStatus.codex, status.codex);
     Object.assign(dependencyStatus.claude, status.claude);
     Object.assign(dependencyStatus.antigravity, status.antigravity);
+    Object.assign(dependencyStatus.cursor, status.cursor);
     dependenciesChecked.value = true;
     if (status.codex.available && status.codex.path && !config.capabilities.codex.command) {
       config.capabilities.codex.command = status.codex.path;
@@ -1356,8 +1537,44 @@ async function refreshDependencyStatus(): Promise<void> {
     if (status.antigravity.available && status.antigravity.path && !config.capabilities.codex.antigravity_command) {
       config.capabilities.codex.antigravity_command = status.antigravity.path;
     }
+    if (status.cursor.available && status.cursor.path && !config.capabilities.codex.cursor_command) {
+      config.capabilities.codex.cursor_command = status.cursor.path;
+    }
+    if (config.capabilities.codex.provider === "cursor" && status.cursor.available) {
+      void refreshCursorModels(true);
+    }
   } catch {
     dependenciesChecked.value = false;
+  }
+}
+
+async function refreshCursorModels(silent = false): Promise<void> {
+  if (cursorModelsLoading.value) {
+    return;
+  }
+  if (dependenciesChecked.value && !dependencyStatus.cursor.available) {
+    cursorModelsMessage.value = dependencyStatus.cursor.message;
+    if (!silent) {
+      notice.value = dependencyStatus.cursor.message;
+    }
+    return;
+  }
+
+  cursorModelsLoading.value = true;
+  cursorModelsMessage.value = "";
+  try {
+    const models = await invokeTauri<CodingModelOption[]>("list_cursor_models", { config: toRaw(config) });
+    cursorModels.value = models;
+    cursorModelsMessage.value =
+      models.length > 0 ? `${models.length} Cursor models loaded.` : "No models returned by Cursor CLI.";
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    cursorModelsMessage.value = message || "Could not load Cursor models.";
+    if (!silent) {
+      notice.value = cursorModelsMessage.value;
+    }
+  } finally {
+    cursorModelsLoading.value = false;
   }
 }
 
@@ -1446,6 +1663,10 @@ function normalizeLoadedConfig(nextConfig: RuntimeConfig): RuntimeConfig {
     ...defaultConfig().capabilities.browser_debug,
     ...normalized.capabilities.browser_debug
   };
+  normalized.capabilities.shell = {
+    ...defaultConfig().capabilities.shell,
+    ...normalized.capabilities.shell
+  };
   normalized.capabilities.codex = {
     ...defaultConfig().capabilities.codex,
     ...normalized.capabilities.codex
@@ -1478,6 +1699,21 @@ function forceProductionConnectionConfig(): void {
 }
 
 function reconcileCodingPermissionSettings(): void {
+  if (config.capabilities.shell.default_access === "workspace-write") {
+    config.capabilities.shell.allow_workspace_write = true;
+    config.capabilities.shell.allow_danger_full_access = false;
+  }
+  if (config.capabilities.shell.default_access === "danger-full-access") {
+    config.capabilities.shell.allow_workspace_write = true;
+    config.capabilities.shell.allow_danger_full_access = true;
+  }
+  if (config.capabilities.shell.default_access === "read-only") {
+    config.capabilities.shell.allow_workspace_write = false;
+    config.capabilities.shell.allow_danger_full_access = false;
+  }
+  config.capabilities.shell.timeout_ms = clampNumber(config.capabilities.shell.timeout_ms, 1000, 120000, 30000);
+  config.capabilities.shell.max_output_bytes = clampNumber(config.capabilities.shell.max_output_bytes, 4096, 1000000, 200000);
+
   if (config.capabilities.codex.provider === "claude-code") {
     if (config.capabilities.codex.allow_workspace_write && config.capabilities.codex.claude_permission_mode === "default") {
       config.capabilities.codex.claude_permission_mode = "acceptEdits";
@@ -1508,6 +1744,13 @@ function isLocalEndpoint(value: string | undefined): boolean {
     normalized.includes("0.0.0.0") ||
     normalized.includes("[::1]")
   );
+}
+
+function clampNumber(value: number, min: number, max: number, fallback: number): number {
+  if (!Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, Math.floor(value)));
 }
 
 async function invokeTauri<T>(command: string, args?: Record<string, unknown>): Promise<T> {
@@ -1549,6 +1792,15 @@ function defaultConfig(): RuntimeConfig {
       workspace: {
         enabled: true
       },
+      shell: {
+        enabled: false,
+        default_access: "read-only",
+        allow_workspace_write: false,
+        allow_danger_full_access: false,
+        timeout_ms: 30000,
+        max_output_bytes: 200000,
+        shell: ""
+      },
       codex: {
         enabled: false,
         provider: "codex",
@@ -1556,6 +1808,9 @@ function defaultConfig(): RuntimeConfig {
         model: "",
         reasoning_effort: "",
         antigravity_command: "",
+        cursor_command: "",
+        cursor_model: "",
+        cursor_model_custom: "",
         claude_command: "",
         claude_model: "",
         claude_model_custom: "",
@@ -1615,6 +1870,13 @@ function defaultDependencyStatus(): DependencyStatus {
       path: null,
       version: null,
       message: "Antigravity availability has not been checked."
+    },
+    cursor: {
+      available: true,
+      label: "Cursor Agent",
+      path: null,
+      version: null,
+      message: "Cursor availability has not been checked."
     }
   };
 }
