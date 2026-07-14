@@ -740,7 +740,10 @@ export class LocalRuntimeDaemon {
             viewport: this.options.browserViewport
           });
     this.browserAdapter = browserAdapter;
-    const browserTools = new BrowserTools(browserAdapter);
+    const browserTools = new BrowserTools(browserAdapter, {
+      approvalProvider,
+      resolveFilePath: (filePath) => workspacePolicy.resolveAllowedFile(filePath)
+    });
     const workspaceTools = new WorkspaceTools(workspacePolicy);
     const shellTools = new ShellTools({
       workspacePolicy,

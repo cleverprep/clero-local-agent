@@ -4,6 +4,7 @@ import { rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+import type { ApprovalProvider } from "@clero-local-agent/approvals";
 import { ToolExecutionError, type ToolDefinition, type ToolExecutionContext } from "@clero-local-agent/mcp-runtime";
 import { isJsonObject, type JsonObject, type JsonValue } from "@clero-local-agent/protocol";
 
@@ -33,6 +34,7 @@ export interface BrowserAdapter {
   drag(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject>;
   type(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject>;
   fill(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject>;
+  uploadFile?(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject>;
   pressKey(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject>;
   screenshot(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject>;
   getConsoleLogs(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject>;
@@ -53,15 +55,24 @@ export interface BrowserDebugAdapter {
   callTool(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject>;
 }
 
+export type BrowserToolsOptions = {
+  approvalProvider?: ApprovalProvider;
+  resolveFilePath?: (filePath: string) => string;
+};
+
 export class BrowserTools {
   private readonly adapter: BrowserAdapter;
+  private readonly approvalProvider?: ApprovalProvider;
+  private readonly resolveFilePath?: (filePath: string) => string;
 
-  constructor(adapter: BrowserAdapter) {
+  constructor(adapter: BrowserAdapter, options: BrowserToolsOptions = {}) {
     this.adapter = adapter;
+    this.approvalProvider = options.approvalProvider;
+    this.resolveFilePath = options.resolveFilePath;
   }
 
   definitions(): ToolDefinition[] {
-    return [
+    const definitions: ToolDefinition[] = [
       {
         name: "browser.list_tabs",
         description: "List pages in the local managed browser session.",
@@ -168,6 +179,50 @@ export class BrowserTools {
         handler: (args, context) => this.adapter.closeTab(args, context)
       }
     ];
+    if (typeof this.adapter.uploadFile === "function" && this.approvalProvider && this.resolveFilePath) {
+      const fillIndex = definitions.findIndex((definition) => definition.name === "browser.fill");
+      definitions.splice(fillIndex + 1, 0, {
+        name: "browser.upload_file",
+        description:
+          "Set one or more approved local files on a browser file input by ref or selector. Files must be inside allowed local directories.",
+        handler: (args, context) => this.uploadFile(args, context)
+      });
+    }
+    return definitions;
+  }
+
+  private async uploadFile(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject> {
+    const uploadFile = this.adapter.uploadFile;
+    const approvalProvider = this.approvalProvider;
+    const resolveFilePath = this.resolveFilePath;
+    if (!uploadFile || !approvalProvider || !resolveFilePath) {
+      throw new ToolExecutionError("tool_failed", "Browser file uploads are unavailable for this browser provider.");
+    }
+
+    const filePaths = browserUploadFilePaths(args).map((filePath) => resolveFilePath(filePath));
+    const resolvedArgs: JsonObject = {
+      ...args,
+      file_paths: filePaths
+    };
+    delete resolvedArgs.file_path;
+
+    const expectedUrl = nonEmptyString(optionalString(args, "expected_url"));
+    const target = nonEmptyString(optionalString(args, "ref")) ?? nonEmptyString(optionalString(args, "selector"));
+    const approval = await approvalProvider.requestApproval({
+      tool: "browser.upload_file",
+      summary: `Upload ${filePaths.length} local file${filePaths.length === 1 ? "" : "s"} to ${expectedUrl ?? "the active browser page"}`,
+      metadata: compactJsonObject({
+        file_paths: filePaths,
+        file_count: filePaths.length,
+        expected_url: expectedUrl,
+        target
+      })
+    });
+    if (!approval.approved) {
+      throw new ToolExecutionError("approval_denied", `Approval denied: ${approval.reason ?? "No reason provided"}`);
+    }
+
+    return uploadFile.call(this.adapter, resolvedArgs, context);
   }
 }
 
@@ -492,6 +547,86 @@ export class ManagedBrowserAdapter implements BrowserAdapter {
     });
   }
 
+  async uploadFile(args: JsonObject): Promise<JsonObject> {
+    const page = await this.ensurePage(pageIdArg(args));
+    const actualUrl = page.url();
+    const expectedUrl = nonEmptyString(optionalString(args, "expected_url"));
+    if (expectedUrl && actualUrl !== expectedUrl) {
+      throw new ToolExecutionError(
+        "invalid_arguments",
+        "The active browser page changed after the upload was prepared.",
+        { expected_url: expectedUrl, actual_url: actualUrl }
+      );
+    }
+
+    const target = this.resolveTarget(args, page);
+    if (!target.selector) {
+      throw new ToolExecutionError("invalid_arguments", "ref or selector is required");
+    }
+    const frameOrPage = target.frame ?? page;
+    const locator = frameOrPage.locator(target.selector);
+    const matchCount = await locator.count();
+    if (matchCount !== 1) {
+      throw new ToolExecutionError(
+        "invalid_arguments",
+        matchCount === 0
+          ? "The browser file input was not found."
+          : "The browser file selector matched more than one element.",
+        { selector: target.selector, match_count: matchCount }
+      );
+    }
+
+    const input = await locator.evaluate((element: Element) => ({
+      tag: element.tagName.toLowerCase(),
+      type: (element.getAttribute("type") ?? "").toLowerCase(),
+      multiple: element.hasAttribute("multiple")
+    }));
+    if (input.tag !== "input" || input.type !== "file") {
+      throw new ToolExecutionError(
+        "invalid_arguments",
+        "The target must be an input element with type=file.",
+        { selector: target.selector, tag: input.tag, type: input.type }
+      );
+    }
+
+    const filePaths = browserUploadFilePaths(args);
+    if (filePaths.length > 1 && !input.multiple) {
+      throw new ToolExecutionError(
+        "invalid_arguments",
+        "The selected browser file input accepts only one file.",
+        { selector: target.selector, file_count: filePaths.length }
+      );
+    }
+
+    const timeoutMs = boundedOptionalNumber(args, "timeout_ms", 1_000, 120_000) ?? 30_000;
+    await locator.setInputFiles(filePaths, { timeout: timeoutMs });
+    const files = await locator.evaluate((element: HTMLInputElement) =>
+      Array.from(element.files ?? []).map((file) => ({
+        name: file.name,
+        size: file.size,
+        type: file.type
+      }))
+    );
+    if (files.length !== filePaths.length) {
+      throw new ToolExecutionError(
+        "tool_failed",
+        "The browser did not retain every selected upload file.",
+        { expected_file_count: filePaths.length, actual_file_count: files.length }
+      );
+    }
+
+    return compactJsonObject({
+      uploaded: true,
+      page_id: this.pageId(page),
+      url: actualUrl,
+      selector: target.selector,
+      frame_url: target.frameUrl,
+      frame_name: target.frameName,
+      file_count: files.length,
+      files
+    });
+  }
+
   async pressKey(args: JsonObject): Promise<JsonObject> {
     const page = await this.ensurePage(pageIdArg(args));
     const key = requiredString(args, "key");
@@ -690,11 +825,22 @@ export class ManagedBrowserAdapter implements BrowserAdapter {
           const elements = candidates
             .filter((element) => {
               const rect = element.getBoundingClientRect();
-              return rect.width > 0 && rect.height > 0;
+              const isFileInput =
+                element.tagName.toLowerCase() === "input" &&
+                (element.getAttribute("type") ?? "").toLowerCase() === "file";
+              return isFileInput || (rect.width > 0 && rect.height > 0);
             })
             .slice(0, 250)
             .map((element, index) => {
               const rect = element.getBoundingClientRect();
+              const geometry = rect.width > 0 && rect.height > 0
+                ? {
+                    x: Math.round(rect.x + offsetX),
+                    y: Math.round(rect.y + offsetY),
+                    width: Math.round(rect.width),
+                    height: Math.round(rect.height)
+                  }
+                : {};
               return {
                 index,
                 selector: cssPath(element),
@@ -704,10 +850,7 @@ export class ManagedBrowserAdapter implements BrowserAdapter {
                 href: element.getAttribute("href") || "",
                 name: element.getAttribute("name") || "",
                 type: element.getAttribute("type") || "",
-                x: Math.round(rect.x + offsetX),
-                y: Math.round(rect.y + offsetY),
-                width: Math.round(rect.width),
-                height: Math.round(rect.height)
+                ...geometry
               };
             });
 
@@ -1141,6 +1284,15 @@ export class AgentScopedManagedBrowserAdapter implements BrowserAdapter {
 
   async fill(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject> {
     return this.withSession(context, (adapter) => adapter.fill(args));
+  }
+
+  async uploadFile(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject> {
+    return this.withSession(context, (adapter) => {
+      if (!adapter.uploadFile) {
+        throw new ToolExecutionError("tool_failed", "Browser file uploads are unavailable for this browser provider.");
+      }
+      return adapter.uploadFile(args);
+    });
   }
 
   async pressKey(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject> {
@@ -2044,6 +2196,32 @@ function requiredText(args: JsonObject): string {
   }
 
   return text;
+}
+
+function browserUploadFilePaths(args: JsonObject): string[] {
+  const values: string[] = [];
+  const filePath = nonEmptyString(optionalString(args, "file_path"));
+  if (filePath) {
+    values.push(filePath);
+  }
+  const filePaths = args.file_paths;
+  if (Array.isArray(filePaths)) {
+    for (const value of filePaths) {
+      if (typeof value !== "string" || !value.trim()) {
+        throw new ToolExecutionError("invalid_arguments", "file_paths must contain only non-empty strings");
+      }
+      values.push(value.trim());
+    }
+  }
+
+  const uniquePaths = [...new Set(values)];
+  if (uniquePaths.length === 0) {
+    throw new ToolExecutionError("invalid_arguments", "file_path or file_paths is required");
+  }
+  if (uniquePaths.length > 20) {
+    throw new ToolExecutionError("invalid_arguments", "A maximum of 20 files can be uploaded at once");
+  }
+  return uniquePaths;
 }
 
 function coordinatesArg(args: JsonObject): JsonObject | undefined {

@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { readdir, readFile } from "node:fs/promises";
@@ -49,6 +49,59 @@ export class WorkspacePolicy {
     }
 
     return resolved;
+  }
+
+  resolveAllowedFile(candidate: string): string {
+    const trimmed = String(candidate ?? "").trim();
+    if (!trimmed) {
+      throw new ToolExecutionError("invalid_arguments", "file path is required");
+    }
+    if (this.allowedDirectories.length === 0) {
+      throw this.noAllowedDirectoriesError();
+    }
+
+    const candidates = path.isAbsolute(trimmed)
+      ? [trimmed]
+      : this.allowedDirectories.map((root) => path.join(root, trimmed));
+    const matches: string[] = [];
+    for (const filePath of uniqueStrings(candidates)) {
+      const resolved = tryRealpath(filePath);
+      if (!resolved) {
+        continue;
+      }
+      if (!this.isResolvedPathAllowed(resolved)) {
+        throw new ToolExecutionError(
+          "invalid_arguments",
+          "File is outside allowed workspaces: " + candidate,
+          { allowed_roots: this.listAllowedDirectories() }
+        );
+      }
+      if (!statSync(resolved).isFile()) {
+        throw new ToolExecutionError(
+          "invalid_arguments",
+          "Upload path is not a regular file: " + candidate
+        );
+      }
+      matches.push(resolved);
+    }
+
+    const uniqueMatches = uniqueStrings(matches);
+    if (uniqueMatches.length > 1) {
+      throw new ToolExecutionError(
+        "invalid_arguments",
+        "Upload file path is ambiguous: " + candidate,
+        { matches: uniqueMatches, allowed_roots: this.listAllowedDirectories() }
+      );
+    }
+    if (uniqueMatches.length === 1) {
+      return uniqueMatches[0]!;
+    }
+
+    throw new ToolExecutionError(
+      "invalid_arguments",
+      "Upload file does not exist: " + candidate,
+      { allowed_roots: this.listAllowedDirectories() }
+    );
   }
 
   isAllowed(candidate: string): boolean {

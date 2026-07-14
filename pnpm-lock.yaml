@@ -62,6 +62,9 @@ importers:
 
   packages/browser:
     dependencies:
+      '@clero-local-agent/approvals':
+        specifier: workspace:*
+        version: link:../approvals
       '@clero-local-agent/mcp-runtime':
         specifier: workspace:*
         version: link:../mcp-runtime

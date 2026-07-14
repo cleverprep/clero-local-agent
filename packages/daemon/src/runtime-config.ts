@@ -291,6 +291,12 @@ export function capabilitiesFromConfig(config: LocalRuntimeConfig): Capability[]
   const options = capabilityOptionsFromConfig(config);
   return defaultCapabilities().filter((capability) => {
     if (capability.name.startsWith("browser.")) {
+      if (
+        capability.name === "browser.upload_file" &&
+        config.capabilities?.browser?.provider === "mcp-chrome"
+      ) {
+        return false;
+      }
       return options.browser?.enabled !== false;
     }
     if (capability.name.startsWith("browser_debug.")) {

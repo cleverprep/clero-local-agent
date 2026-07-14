@@ -42,6 +42,40 @@ test("rejects a missing cwd with an invalid arguments error", async (t) => {
   assert.throws(() => policy.isAllowed(missing), isMissingCwdError);
 });
 
+test("resolves a unique relative upload file across allowed roots", async (t) => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "clero-upload-file-test-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const firstRoot = path.join(parent, "first");
+  const secondRoot = path.join(parent, "second");
+  await mkdir(firstRoot);
+  await mkdir(secondRoot);
+  const filePath = path.join(secondRoot, "report.txt");
+  await writeFile(filePath, "report");
+  const policy = new WorkspacePolicy({ allowedDirectories: [firstRoot, secondRoot] });
+
+  assert.equal(policy.resolveAllowedFile("report.txt"), realpathSync(filePath));
+});
+
+test("rejects ambiguous relative upload files across allowed roots", async (t) => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "clero-upload-file-test-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const firstRoot = path.join(parent, "first");
+  const secondRoot = path.join(parent, "second");
+  await mkdir(firstRoot);
+  await mkdir(secondRoot);
+  await writeFile(path.join(firstRoot, "report.txt"), "first report");
+  await writeFile(path.join(secondRoot, "report.txt"), "second report");
+  const policy = new WorkspacePolicy({ allowedDirectories: [firstRoot, secondRoot] });
+
+  assert.throws(
+    () => policy.resolveAllowedFile("report.txt"),
+    (error: unknown) =>
+      error instanceof ToolExecutionError &&
+      error.errorCode === "invalid_arguments" &&
+      error.message.includes("ambiguous")
+  );
+});
+
 test("ignores missing configured roots and reports them as unavailable", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "clero-workspace-test-"));
   const missing = path.join(root, "Projects");

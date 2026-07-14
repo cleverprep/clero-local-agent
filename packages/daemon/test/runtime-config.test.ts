@@ -62,6 +62,22 @@ test("filters advertised capabilities from runtime config", () => {
   assert.equal(names.includes("workspace.list_projects"), true);
 });
 
+test("advertises browser upload only for the managed browser provider", () => {
+  const config = defaultRuntimeConfig();
+
+  assert.equal(
+    capabilitiesFromConfig(config).some((capability) => capability.name === "browser.upload_file"),
+    true
+  );
+
+  config.capabilities!.browser!.provider = "mcp-chrome";
+
+  assert.equal(
+    capabilitiesFromConfig(config).some((capability) => capability.name === "browser.upload_file"),
+    false
+  );
+});
+
 test("advertises browser debug capabilities only when enabled", () => {
   const config = defaultRuntimeConfig();
 
