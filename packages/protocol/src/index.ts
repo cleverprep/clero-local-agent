@@ -601,7 +601,7 @@ export function defaultCapabilities(): Capability[] {
     capability("browser.drag", "Drag from one page coordinate to another."),
     capability("browser.type", "Type text using keyboard input. With a target field, click first and append without clearing existing text."),
     capability("browser.fill", "Replace the value of a targeted input field by ref or selector."),
-    capability("browser.upload_file", "Set allowed workspace or temporary files on a browser file input."),
+    capability("browser.upload_file", "Select allowed workspace or temporary files on a browser file input and dispatch its input/change events. Inspect the page afterward for application-level acceptance."),
     capability("browser.press_key", "Press a keyboard key or shortcut in the browser."),
     capability("browser.screenshot", "Capture a screenshot from the active tab."),
     capability("browser.get_console_logs", "Return captured console output."),

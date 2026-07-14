@@ -559,7 +559,7 @@ The daemon accepts tool input from `arguments`. It also tolerates broker aliases
 
 ## MVP Tool Set
 
-Browser tools, agent-scoped (`browser.upload_file` approval-required; all others passive):
+Browser tools, agent-scoped and passive:
 
 - `browser.list_tabs`
 - `browser.open_url`
@@ -574,7 +574,7 @@ Browser tools, agent-scoped (`browser.upload_file` approval-required; all others
 - `browser.drag`
 - `browser.type`
 - `browser.fill`
-- `browser.upload_file` (managed browser only; explicit local approval required)
+- `browser.upload_file` (managed browser only)
 - `browser.press_key`
 - `browser.screenshot`
 - `browser.get_console_logs`
@@ -584,9 +584,9 @@ Browser tools, agent-scoped (`browser.upload_file` approval-required; all others
 - `browser.close_tab`
 - `browser.close_page`
 
-`browser.type` sends keyboard input and does not clear existing text. Use `browser.fill` when an agent should replace a targeted field value. `browser.upload_file` accepts one `file_path` or up to 20 `file_paths`, resolves them inside configured workspace roots or system temporary directories, rejects ambiguous relative paths, and requires local approval before selecting them on a file input. Temporary directories are upload-only and are not exposed to workspace, shell, git, or coding-agent tools. Hidden file inputs remain available by ref in browser snapshots. `browser.close_page` is a compatibility alias for `browser.close_tab`.
+`browser.type` sends keyboard input and does not clear existing text. Use `browser.fill` when an agent should replace a targeted field value. `browser.upload_file` accepts one `file_path` or up to 20 `file_paths`, resolves them inside configured workspace roots or system temporary directories, rejects ambiguous relative paths, and selects them directly on a file input. Temporary directories are upload-only and are not exposed to workspace, shell, git, or coding-agent tools. Hidden file inputs remain available by ref in browser snapshots. A successful tool result confirms that the browser dispatched the file-input events; the agent must inspect the page afterward for application-level validation or upload status. `browser.close_page` is a compatibility alias for `browser.close_tab`.
 
-Browser tools are lease-free. File upload still requires an explicit local approval for the resolved file paths and destination before selection. The managed browser adapter keeps agent sessions separated by `agent_id`, so one agent browsing does not block another agent from using browser or coding-agent tools.
+Browser tools are lease-free. The managed browser adapter keeps agent sessions separated by `agent_id`, so one agent browsing does not block another agent from using browser or coding-agent tools.
 
 Workspace tools, passive:
 

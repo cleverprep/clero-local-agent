@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { rm } from "node:fs/promises";
+import { rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -578,30 +578,36 @@ export class ManagedBrowserAdapter implements BrowserAdapter {
     }
 
     const timeoutMs = boundedOptionalNumber(args, "timeout_ms", 1_000, 120_000) ?? 30_000;
+    const selectedFiles = await Promise.all(filePaths.map(async (filePath) => ({
+      name: path.basename(filePath),
+      size: (await stat(filePath)).size
+    })));
     await locator.setInputFiles(filePaths, { timeout: timeoutMs });
-    const files = await locator.evaluate((element: HTMLInputElement) =>
+    const retainedFiles: Array<{ name: string; size: number; type: string }> = await locator.evaluate((element: HTMLInputElement) =>
       Array.from(element.files ?? []).map((file) => ({
         name: file.name,
         size: file.size,
         type: file.type
       }))
     );
-    if (files.length !== filePaths.length) {
-      throw new ToolExecutionError(
-        "tool_failed",
-        "The browser did not retain every selected upload file.",
-        { expected_file_count: filePaths.length, actual_file_count: files.length }
-      );
-    }
+    const retainedByName = new Map(retainedFiles.map((file) => [file.name, file]));
+    const files = selectedFiles.map((file) => ({
+      ...file,
+      type: retainedByName.get(file.name)?.type ?? ""
+    }));
 
     return compactJsonObject({
       uploaded: true,
+      selection_dispatched: true,
+      application_acceptance: "unverified",
+      input_retained: retainedFiles.length === filePaths.length,
+      input_file_count: retainedFiles.length,
       page_id: this.pageId(page),
       url: actualUrl,
       selector: target.selector,
       frame_url: target.frameUrl,
       frame_name: target.frameName,
-      file_count: files.length,
+      file_count: selectedFiles.length,
       files
     });
   }

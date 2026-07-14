@@ -27,7 +27,7 @@ const fixtureHtml = `
   <!doctype html>
   <title>Clero Managed Browser Smoke</title>
   <input id="q" aria-label="Query" />
-  <input id="attachment" type="file" hidden accept="video/*" onchange="document.querySelector('#upload').textContent = this.files[0]?.name || ''" />
+  <input id="attachment" type="file" hidden accept="video/*" onchange="document.querySelector('#upload').textContent = this.files[0]?.name || ''; this.value = ''" />
   <button id="go" onclick="document.body.dataset.clicked = 'yes'; document.querySelector('#result').textContent = document.querySelector('#q').value">Go</button>
   <div id="result"></div>
   <div id="upload"></div>
@@ -73,7 +73,7 @@ async function main(): Promise<void> {
     }
     await adapter.type({ selector: "#q", text: "hello from clero" });
     await adapter.click({ selector: "#go" });
-    await uploadTool.handler(
+    const uploadResult = await uploadTool.handler(
       {
         ref: uploadRef,
         file_path: uploadFixturePath,
@@ -81,6 +81,14 @@ async function main(): Promise<void> {
       },
       { requestId: "managed_browser_smoke_upload" }
     );
+    if (
+      !isRecord(uploadResult) ||
+      uploadResult.input_retained !== false ||
+      uploadResult.selection_dispatched !== true ||
+      uploadResult.application_acceptance !== "unverified"
+    ) {
+      throw new Error("Managed browser did not tolerate an Uppy-style cleared file input");
+    }
     const content = await adapter.getPageContent({});
     const tabs = await adapter.listTabs({});
     const contentHasUpload = typeof content.content === "string" && content.content.includes("founder-video.mp4");
@@ -94,6 +102,7 @@ async function main(): Promise<void> {
       interactive_elements: Array.isArray(snapshot.elements) ? snapshot.elements.length : 0,
       hidden_file_input_discoverable: true,
       uploaded_file_from_system_temp: true,
+      uppy_style_input_clear_supported: true,
       content_has_typed_text: typeof content.content === "string" && content.content.includes("hello from clero"),
       content_has_upload: contentHasUpload
     }, null, 2));
