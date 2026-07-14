@@ -3,7 +3,6 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import process from "node:process";
 import path from "node:path";
-import { StaticApprovalProvider } from "../packages/approvals/src/index.ts";
 import { BrowserTools, ManagedBrowserAdapter } from "../packages/browser/src/index.ts";
 import { WorkspacePolicy } from "../packages/workspace/src/index.ts";
 
@@ -19,7 +18,6 @@ const workspacePolicy = new WorkspacePolicy({
   allowedFileDirectories: [os.tmpdir(), "/tmp"]
 });
 const browserTools = new BrowserTools(adapter, {
-  approvalProvider: new StaticApprovalProvider(true, "Approved managed-browser smoke upload"),
   resolveFilePath: (filePath) => workspacePolicy.resolveAllowedFile(filePath)
 });
 const uploadTool = browserTools

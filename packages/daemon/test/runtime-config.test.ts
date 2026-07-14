@@ -69,6 +69,10 @@ test("advertises browser upload only for the managed browser provider", () => {
     capabilitiesFromConfig(config).some((capability) => capability.name === "browser.upload_file"),
     true
   );
+  assert.equal(
+    capabilitiesFromConfig(config).find((capability) => capability.name === "browser.upload_file")?.access,
+    "passive"
+  );
 
   config.capabilities!.browser!.provider = "mcp-chrome";
 

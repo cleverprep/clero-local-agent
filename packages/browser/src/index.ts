@@ -4,7 +4,6 @@ import { rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
-import type { ApprovalProvider } from "@clero-local-agent/approvals";
 import { ToolExecutionError, type ToolDefinition, type ToolExecutionContext } from "@clero-local-agent/mcp-runtime";
 import { isJsonObject, type JsonObject, type JsonValue } from "@clero-local-agent/protocol";
 
@@ -56,18 +55,15 @@ export interface BrowserDebugAdapter {
 }
 
 export type BrowserToolsOptions = {
-  approvalProvider?: ApprovalProvider;
   resolveFilePath?: (filePath: string) => string;
 };
 
 export class BrowserTools {
   private readonly adapter: BrowserAdapter;
-  private readonly approvalProvider?: ApprovalProvider;
   private readonly resolveFilePath?: (filePath: string) => string;
 
   constructor(adapter: BrowserAdapter, options: BrowserToolsOptions = {}) {
     this.adapter = adapter;
-    this.approvalProvider = options.approvalProvider;
     this.resolveFilePath = options.resolveFilePath;
   }
 
@@ -179,12 +175,12 @@ export class BrowserTools {
         handler: (args, context) => this.adapter.closeTab(args, context)
       }
     ];
-    if (typeof this.adapter.uploadFile === "function" && this.approvalProvider && this.resolveFilePath) {
+    if (typeof this.adapter.uploadFile === "function" && this.resolveFilePath) {
       const fillIndex = definitions.findIndex((definition) => definition.name === "browser.fill");
       definitions.splice(fillIndex + 1, 0, {
         name: "browser.upload_file",
         description:
-          "Set one or more approved local files on a browser file input by ref or selector. Files must be inside an allowed workspace or temporary upload directory.",
+          "Set one or more allowed local files on a browser file input by ref or selector. Files must be inside an allowed workspace or temporary upload directory.",
         handler: (args, context) => this.uploadFile(args, context)
       });
     }
@@ -193,9 +189,8 @@ export class BrowserTools {
 
   private async uploadFile(args: JsonObject, context?: ToolExecutionContext): Promise<JsonObject> {
     const uploadFile = this.adapter.uploadFile;
-    const approvalProvider = this.approvalProvider;
     const resolveFilePath = this.resolveFilePath;
-    if (!uploadFile || !approvalProvider || !resolveFilePath) {
+    if (!uploadFile || !resolveFilePath) {
       throw new ToolExecutionError("tool_failed", "Browser file uploads are unavailable for this browser provider.");
     }
 
@@ -205,22 +200,6 @@ export class BrowserTools {
       file_paths: filePaths
     };
     delete resolvedArgs.file_path;
-
-    const expectedUrl = nonEmptyString(optionalString(args, "expected_url"));
-    const target = nonEmptyString(optionalString(args, "ref")) ?? nonEmptyString(optionalString(args, "selector"));
-    const approval = await approvalProvider.requestApproval({
-      tool: "browser.upload_file",
-      summary: `Upload ${filePaths.length} local file${filePaths.length === 1 ? "" : "s"} to ${expectedUrl ?? "the active browser page"}`,
-      metadata: compactJsonObject({
-        file_paths: filePaths,
-        file_count: filePaths.length,
-        expected_url: expectedUrl,
-        target
-      })
-    });
-    if (!approval.approved) {
-      throw new ToolExecutionError("approval_denied", `Approval denied: ${approval.reason ?? "No reason provided"}`);
-    }
 
     return uploadFile.call(this.adapter, resolvedArgs, context);
   }

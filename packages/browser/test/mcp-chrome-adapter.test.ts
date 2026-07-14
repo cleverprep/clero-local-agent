@@ -3,7 +3,6 @@ import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import type { ApprovalRequest } from "@clero-local-agent/approvals";
 import { ToolExecutionError } from "@clero-local-agent/mcp-runtime";
 import {
   AgentScopedManagedBrowserAdapter,
@@ -161,14 +160,7 @@ test("browser upload resolves allowed files before forwarding to the managed ada
     }
   };
   const workspacePolicy = new WorkspacePolicy({ allowedDirectories: [root] });
-  const approvalRequests: ApprovalRequest[] = [];
   const browserTools = new BrowserTools(adapter, {
-    approvalProvider: {
-      async requestApproval(request) {
-        approvalRequests.push(request);
-        return { approved: true, reason: "Approved in test" };
-      }
-    },
     resolveFilePath: (candidate) => workspacePolicy.resolveAllowedFile(candidate)
   });
   const upload = browserTools
@@ -192,61 +184,12 @@ test("browser upload resolves allowed files before forwarding to the managed ada
       file_paths: [await realpath(filePath)],
       expected_url: "https://example.com/upload"
     });
-    assert.deepEqual(approvalRequests, [
-      {
-        tool: "browser.upload_file",
-        summary: "Upload 1 local file to https://example.com/upload",
-        metadata: {
-          file_paths: [await realpath(filePath)],
-          file_count: 1,
-          expected_url: "https://example.com/upload",
-          target: "#attachment"
-        }
-      }
-    ]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("browser upload does not forward files when local approval is denied", async (t) => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "clero-browser-upload-denied-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const filePath = path.join(root, "private.txt");
-  await writeFile(filePath, "do not upload");
-  let forwarded = false;
-  const adapter: BrowserAdapter = {
-    ...fakeBrowserAdapter({}),
-    async uploadFile() {
-      forwarded = true;
-      return { uploaded: true };
-    }
-  };
-  const workspacePolicy = new WorkspacePolicy({ allowedDirectories: [root] });
-  const browserTools = new BrowserTools(adapter, {
-    approvalProvider: {
-      async requestApproval() {
-        return { approved: false, reason: "Denied in test" };
-      }
-    },
-    resolveFilePath: (candidate) => workspacePolicy.resolveAllowedFile(candidate)
-  });
-  const upload = browserTools
-    .definitions()
-    .find((definition) => definition.name === "browser.upload_file");
-
-  assert.ok(upload);
-  await assert.rejects(
-    async () => upload.handler({ selector: "#attachment", file_path: filePath }, { requestId: "req_denied" }),
-    (error: unknown) =>
-      error instanceof ToolExecutionError &&
-      error.errorCode === "approval_denied" &&
-      error.message.includes("Denied in test")
-  );
-  assert.equal(forwarded, false);
-});
-
-test("managed browser does not advertise upload without a local approval provider", () => {
+test("managed browser advertises upload without a local approval provider", () => {
   const adapter: BrowserAdapter = {
     ...fakeBrowserAdapter({}),
     async uploadFile() {
@@ -259,18 +202,13 @@ test("managed browser does not advertise upload without a local approval provide
 
   assert.equal(
     browserTools.definitions().some((definition) => definition.name === "browser.upload_file"),
-    false
+    true
   );
 });
 
 test("mcp-chrome does not advertise local file upload support", () => {
   const adapter = new McpChromeBrowserAdapter({ client: new FakeMcpClient() });
   const browserTools = new BrowserTools(adapter, {
-    approvalProvider: {
-      async requestApproval() {
-        return { approved: true };
-      }
-    },
     resolveFilePath: (filePath) => filePath
   });
 

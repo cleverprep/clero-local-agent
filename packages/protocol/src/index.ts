@@ -330,7 +330,7 @@ export function toolRequiresLease(tool: string): boolean {
 }
 
 export function toolCapabilityAccess(tool: string): CapabilityAccess {
-  if (tool === "browser.upload_file" || tool === "git.commit" || tool === "git.push") {
+  if (tool === "git.commit" || tool === "git.push") {
     return "approval_required";
   }
 
@@ -601,7 +601,7 @@ export function defaultCapabilities(): Capability[] {
     capability("browser.drag", "Drag from one page coordinate to another."),
     capability("browser.type", "Type text using keyboard input. With a target field, click first and append without clearing existing text."),
     capability("browser.fill", "Replace the value of a targeted input field by ref or selector."),
-    capability("browser.upload_file", "Set approved workspace or temporary files on a browser file input. Requires explicit approval before execution."),
+    capability("browser.upload_file", "Set allowed workspace or temporary files on a browser file input."),
     capability("browser.press_key", "Press a keyboard key or shortcut in the browser."),
     capability("browser.screenshot", "Capture a screenshot from the active tab."),
     capability("browser.get_console_logs", "Return captured console output."),

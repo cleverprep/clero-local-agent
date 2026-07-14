@@ -745,7 +745,6 @@ export class LocalRuntimeDaemon {
           });
     this.browserAdapter = browserAdapter;
     const browserTools = new BrowserTools(browserAdapter, {
-      approvalProvider,
       resolveFilePath: (filePath) => workspacePolicy.resolveAllowedFile(filePath)
     });
     const workspaceTools = new WorkspaceTools(workspacePolicy);
