@@ -76,6 +76,43 @@ test("rejects ambiguous relative upload files across allowed roots", async (t) =
   );
 });
 
+test("allows absolute files from upload-only roots without granting workspace access", async (t) => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "clero-upload-only-root-test-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const workspaceRoot = path.join(parent, "workspace");
+  const uploadRoot = path.join(parent, "uploads");
+  const outsideRoot = path.join(parent, "outside");
+  await mkdir(workspaceRoot);
+  await mkdir(uploadRoot);
+  await mkdir(outsideRoot);
+  const uploadFile = path.join(uploadRoot, "founder-video.mp4");
+  const outsideFile = path.join(outsideRoot, "private.txt");
+  await writeFile(uploadFile, "video fixture");
+  await writeFile(outsideFile, "outside fixture");
+  const policy = new WorkspacePolicy({
+    allowedDirectories: [workspaceRoot],
+    allowedFileDirectories: [uploadRoot]
+  });
+
+  assert.equal(policy.resolveAllowedFile(uploadFile), realpathSync(uploadFile));
+  assert.deepEqual(policy.listAllowedDirectories(), [realpathSync(workspaceRoot)]);
+  assert.deepEqual(
+    policy.listAllowedFileDirectories().sort(),
+    [realpathSync(workspaceRoot), realpathSync(uploadRoot)].sort()
+  );
+  assert.throws(
+    () => policy.resolveAllowedDirectory(uploadRoot),
+    (error: unknown) => error instanceof ToolExecutionError && error.errorCode === "invalid_arguments"
+  );
+  assert.throws(
+    () => policy.resolveAllowedFile(outsideFile),
+    (error: unknown) =>
+      error instanceof ToolExecutionError &&
+      error.errorCode === "invalid_arguments" &&
+      error.message.includes("outside allowed upload directories")
+  );
+});
+
 test("ignores missing configured roots and reports them as unavailable", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "clero-workspace-test-"));
   const missing = path.join(root, "Projects");

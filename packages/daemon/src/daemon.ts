@@ -1,3 +1,4 @@
+import os from "node:os";
 import {
   createDefaultApprovalProvider,
   DEFAULT_APPROVAL_TIMEOUT_MS,
@@ -725,7 +726,10 @@ export class LocalRuntimeDaemon {
   }
 
   private registerTools(): void {
-    const workspacePolicy = new WorkspacePolicy({ allowedDirectories: this.options.allowedDirectories });
+    const workspacePolicy = new WorkspacePolicy({
+      allowedDirectories: this.options.allowedDirectories,
+      allowedFileDirectories: [os.tmpdir(), "/tmp"]
+    });
     const approvalProvider = this.createApprovalProvider();
     const browserAdapter =
       this.options.browserProvider === "mcp-chrome"

@@ -184,7 +184,7 @@ export class BrowserTools {
       definitions.splice(fillIndex + 1, 0, {
         name: "browser.upload_file",
         description:
-          "Set one or more approved local files on a browser file input by ref or selector. Files must be inside allowed local directories.",
+          "Set one or more approved local files on a browser file input by ref or selector. Files must be inside an allowed workspace or temporary upload directory.",
         handler: (args, context) => this.uploadFile(args, context)
       });
     }

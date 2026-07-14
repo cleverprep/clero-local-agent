@@ -8,10 +8,12 @@ import type { JsonObject } from "@clero-local-agent/protocol";
 
 export type WorkspacePolicyOptions = {
   allowedDirectories: string[];
+  allowedFileDirectories?: string[];
 };
 
 export class WorkspacePolicy {
   private readonly allowedDirectories: string[];
+  private readonly allowedFileDirectories: string[];
   private readonly unavailableDirectories: string[];
 
   constructor(options: WorkspacePolicyOptions) {
@@ -31,6 +33,19 @@ export class WorkspacePolicy {
     }
 
     this.allowedDirectories = uniqueStrings(allowedDirectories);
+    const allowedFileDirectories = [...this.allowedDirectories];
+    const configuredFileDirectories = uniqueStrings(
+      (options.allowedFileDirectories ?? [])
+        .filter((directory) => directory.trim().length > 0)
+        .map((directory) => path.resolve(directory))
+    );
+    for (const directory of configuredFileDirectories) {
+      const resolved = tryRealpath(directory);
+      if (resolved) {
+        allowedFileDirectories.push(resolved);
+      }
+    }
+    this.allowedFileDirectories = uniqueStrings(allowedFileDirectories);
     this.unavailableDirectories = uniqueStrings(unavailableDirectories);
   }
 
@@ -56,8 +71,12 @@ export class WorkspacePolicy {
     if (!trimmed) {
       throw new ToolExecutionError("invalid_arguments", "file path is required");
     }
-    if (this.allowedDirectories.length === 0) {
-      throw this.noAllowedDirectoriesError();
+    if (this.allowedFileDirectories.length === 0) {
+      throw new ToolExecutionError(
+        "invalid_arguments",
+        "No allowed upload directories are available.",
+        { allowed_file_roots: [] }
+      );
     }
 
     const candidates = path.isAbsolute(trimmed)
@@ -69,11 +88,11 @@ export class WorkspacePolicy {
       if (!resolved) {
         continue;
       }
-      if (!this.isResolvedPathAllowed(resolved)) {
+      if (!this.isResolvedFilePathAllowed(resolved)) {
         throw new ToolExecutionError(
           "invalid_arguments",
-          "File is outside allowed workspaces: " + candidate,
-          { allowed_roots: this.listAllowedDirectories() }
+          "File is outside allowed upload directories: " + candidate,
+          { allowed_file_roots: this.listAllowedFileDirectories() }
         );
       }
       if (!statSync(resolved).isFile()) {
@@ -90,7 +109,7 @@ export class WorkspacePolicy {
       throw new ToolExecutionError(
         "invalid_arguments",
         "Upload file path is ambiguous: " + candidate,
-        { matches: uniqueMatches, allowed_roots: this.listAllowedDirectories() }
+        { matches: uniqueMatches, allowed_file_roots: this.listAllowedFileDirectories() }
       );
     }
     if (uniqueMatches.length === 1) {
@@ -100,7 +119,7 @@ export class WorkspacePolicy {
     throw new ToolExecutionError(
       "invalid_arguments",
       "Upload file does not exist: " + candidate,
-      { allowed_roots: this.listAllowedDirectories() }
+      { allowed_file_roots: this.listAllowedFileDirectories() }
     );
   }
 
@@ -111,6 +130,10 @@ export class WorkspacePolicy {
 
   private isResolvedPathAllowed(resolved: string): boolean {
     return this.allowedDirectories.some((allowed) => resolved === allowed || resolved.startsWith(`${allowed}${path.sep}`));
+  }
+
+  private isResolvedFilePathAllowed(resolved: string): boolean {
+    return this.allowedFileDirectories.some((allowed) => resolved === allowed || resolved.startsWith(`${allowed}${path.sep}`));
   }
 
   private resolveCandidateDirectory(candidate: string): string {
@@ -225,6 +248,10 @@ export class WorkspacePolicy {
 
   listAllowedDirectories(): string[] {
     return [...this.allowedDirectories];
+  }
+
+  listAllowedFileDirectories(): string[] {
+    return [...this.allowedFileDirectories];
   }
 
   listUnavailableDirectories(): string[] {

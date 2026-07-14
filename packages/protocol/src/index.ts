@@ -441,8 +441,8 @@ export function inputSchemaForTool(tool: string): JsonSchema {
         page_id: stringSchema("Optional page id. Defaults to the active page."),
         ref: stringSchema("File-input ref from browser.get_snapshot or browser.get_interactive_elements."),
         selector: stringSchema("CSS selector for an input element with type=file."),
-        file_path: stringSchema("One local file to upload. The file must be inside an allowed local directory."),
-        file_paths: stringArraySchema("One or more local files to upload. Every file must be inside an allowed local directory."),
+        file_path: stringSchema("One local file to upload. The file must be inside an allowed workspace or temporary upload directory."),
+        file_paths: stringArraySchema("One or more local files to upload. Every file must be inside an allowed workspace or temporary upload directory."),
         expected_url: stringSchema("Optional exact page URL from the latest snapshot. The upload is rejected if the active page has changed."),
         timeout_ms: numberSchema("Maximum upload-field wait in milliseconds. Defaults to 30000.")
       });
@@ -601,7 +601,7 @@ export function defaultCapabilities(): Capability[] {
     capability("browser.drag", "Drag from one page coordinate to another."),
     capability("browser.type", "Type text using keyboard input. With a target field, click first and append without clearing existing text."),
     capability("browser.fill", "Replace the value of a targeted input field by ref or selector."),
-    capability("browser.upload_file", "Set one or more approved local files on a browser file input. Requires explicit approval before execution."),
+    capability("browser.upload_file", "Set approved workspace or temporary files on a browser file input. Requires explicit approval before execution."),
     capability("browser.press_key", "Press a keyboard key or shortcut in the browser."),
     capability("browser.screenshot", "Capture a screenshot from the active tab."),
     capability("browser.get_console_logs", "Return captured console output."),
