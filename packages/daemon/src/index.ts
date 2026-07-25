@@ -4,6 +4,7 @@ export { createPairingClient, PairingClient } from "./pairing-client.ts";
 export {
   capabilityOptionsFromConfig,
   capabilitiesFromConfig,
+  codingAgentConfigFromRuntimeConfig,
   defaultAgentsSyncPath,
   defaultRuntimeConfig,
   defaultRuntimeConfigPath,
@@ -12,6 +13,7 @@ export {
   resolveDeviceToken,
   saveAgentsSyncSnapshot,
   saveRuntimeConfig,
+  updateCodingAgentRuntimeConfig,
   type AgentsSyncSnapshot,
   type LocalRuntimeConfig
 } from "./runtime-config.ts";

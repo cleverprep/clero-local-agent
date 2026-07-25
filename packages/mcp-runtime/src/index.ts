@@ -66,6 +66,7 @@ export type EnsureLeaseForToolCallResult =
 export interface LeaseGuard {
   hasActiveLease(leaseId: string): boolean;
   ensureLeaseForToolCall?(input: EnsureLeaseForToolCallInput): EnsureLeaseForToolCallResult;
+  releaseLease?(leaseId: string): unknown;
 }
 
 export class ToolRegistry {
@@ -81,6 +82,14 @@ export class ToolRegistry {
       inputSchema: definition.inputSchema ?? inputSchemaForTool(definition.name),
       requiresLease: definition.requiresLease ?? toolRequiresLease(definition.name)
     });
+  }
+
+  has(name: ToolName): boolean {
+    return this.tools.has(name);
+  }
+
+  unregister(name: ToolName): boolean {
+    return this.tools.delete(name);
   }
 
   list(): ToolDefinition[] {
@@ -115,6 +124,7 @@ export class ToolRegistry {
       return errorToolResult(message.request_id, leaseResult.errorCode, leaseResult.message, leaseResult.details);
     }
 
+    const implicitLeaseId = message.lease_id ? undefined : leaseResult.leaseId;
     try {
       const result = await definition.handler(args, {
         requestId: message.request_id,
@@ -132,6 +142,10 @@ export class ToolRegistry {
 
       const detail = error instanceof Error ? error.message : String(error);
       return errorToolResult(message.request_id, "tool_failed", detail);
+    } finally {
+      if (implicitLeaseId) {
+        leaseGuard.releaseLease?.(implicitLeaseId);
+      }
     }
   }
 
@@ -175,7 +189,14 @@ export class ToolRegistry {
 }
 
 function workspaceKeyForToolCall(tool: ToolName, args: JsonObject): string | undefined {
-  if (tool !== "coding_agent.start_task" && tool !== "git.commit" && tool !== "git.push" && tool !== "shell.run") {
+  if (
+    tool !== "coding_agent.start_task" &&
+    tool !== "git.checkout" &&
+    tool !== "git.commit" &&
+    tool !== "git.push" &&
+    tool !== "shell.run" &&
+    !tool.startsWith("filesystem.")
+  ) {
     return undefined;
   }
 

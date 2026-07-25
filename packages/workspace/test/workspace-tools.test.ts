@@ -124,6 +124,7 @@ test("ignores missing configured roots and reports them as unavailable", async (
   assert.deepEqual(policy.listUnavailableDirectories(), [missing]);
   assert.deepEqual(tools.listRoots(), {
     roots: [],
+    default_directory: null,
     unavailable_roots: [missing]
   });
   assert.deepEqual(await tools.listProjects(), {
@@ -137,7 +138,7 @@ test("ignores missing configured roots and reports them as unavailable", async (
     (error: unknown) =>
       error instanceof ToolExecutionError &&
       error.errorCode === "invalid_arguments" &&
-      error.message.includes("No allowed workspace directories are available") &&
+      error.message.includes("No local filesystem roots are available") &&
       error.message.includes(missing)
   );
 });

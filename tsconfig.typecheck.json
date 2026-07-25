@@ -11,6 +11,7 @@
       "@clero-local-agent/browser": ["packages/browser/src/index.ts"],
       "@clero-local-agent/coding-agents": ["packages/coding-agents/src/index.ts"],
       "@clero-local-agent/daemon": ["packages/daemon/src/index.ts"],
+      "@clero-local-agent/filesystem": ["packages/filesystem/src/index.ts"],
       "@clero-local-agent/git-tools": ["packages/git-tools/src/index.ts"],
       "@clero-local-agent/mcp-runtime": ["packages/mcp-runtime/src/index.ts"],
       "@clero-local-agent/protocol": ["packages/protocol/src/index.ts"],

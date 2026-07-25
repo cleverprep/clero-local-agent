@@ -7,6 +7,7 @@ import process from "node:process";
 import {
   capabilitiesFromConfig,
   capabilityOptionsFromConfig,
+  codingAgentConfigFromRuntimeConfig,
   createDaemon,
   createPairingClient,
   createTokenStore,
@@ -17,6 +18,7 @@ import {
   loadRuntimeConfig,
   resolveDeviceToken,
   saveRuntimeConfig,
+  updateCodingAgentRuntimeConfig,
   type AgentsSyncSnapshot,
   type LocalRuntimeConfig
 } from "@clero-local-agent/daemon";
@@ -28,7 +30,7 @@ import type { SyncedAgent } from "@clero-local-agent/protocol";
 const DEVICE_TOKEN_ACCOUNT = "device_token";
 const DEFAULT_CONNECTOR_BASE_URL = "https://media.clero.so/local-agent/latest";
 const DEFAULT_HEADLESS_BROWSER_VIEWPORT: BrowserViewport = { width: 1440, height: 900 };
-const CONNECTOR_VERSION = "0.1.43";
+const CONNECTOR_VERSION = "0.1.44";
 
 type CliValue = string | string[] | boolean;
 type CliArgs = Record<string, CliValue>;
@@ -586,6 +588,17 @@ async function runDaemon(args: CliArgs, runtimeConfig: LocalRuntimeConfig, confi
     browserViewport: browserViewportFromInputs(args, runtimeConfig, Boolean(browserHeadless)),
     agentsSyncPath: defaultAgentsSyncPath(configPath),
     daemonVersion: CONNECTOR_VERSION,
+    codingAgentConfiguration: {
+      get: () => codingAgentConfigFromRuntimeConfig(runtimeConfig),
+      set: async (config) => {
+        const saved = updateCodingAgentRuntimeConfig(runtimeConfig, {
+          ...codingAgentConfigFromRuntimeConfig(runtimeConfig),
+          ...config
+        });
+        await saveRuntimeConfig(configPath, runtimeConfig);
+        return saved;
+      }
+    },
     capabilities: capabilityOptionsFromConfig(runtimeConfig)
   });
 

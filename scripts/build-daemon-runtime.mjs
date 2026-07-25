@@ -8,9 +8,11 @@ import * as esbuild from "esbuild";
 
 const root = dirname(fileURLToPath(import.meta.url)).replace(/\/scripts$/, "");
 const browserRequire = createRequire(join(root, "packages/browser/package.json"));
+const rootRequire = createRequire(join(root, "package.json"));
 const tauriDir = join(root, "apps/desktop/src-tauri");
 const runtimeDir = join(tauriDir, "resources/clero-local-agent-runtime");
 const daemonDir = join(runtimeDir, "daemon");
+const filesystemServerDir = join(runtimeDir, "filesystem-server");
 const binariesDir = join(tauriDir, "binaries");
 const targetTriple = process.env.CLERO_LOCAL_AGENT_TARGET_TRIPLE ?? rustHostTriple();
 const sidecarPath = join(binariesDir, `clero-local-agent-daemon-${targetTriple}`);
@@ -21,6 +23,7 @@ if (!targetTriple.includes("apple-darwin")) {
 
 await rm(runtimeDir, { recursive: true, force: true });
 await mkdir(join(daemonDir, "node_modules"), { recursive: true });
+await mkdir(filesystemServerDir, { recursive: true });
 await mkdir(join(runtimeDir, "node/bin"), { recursive: true });
 await mkdir(binariesDir, { recursive: true });
 
@@ -32,6 +35,19 @@ await esbuild.build({
   format: "esm",
   target: "node22",
   external: ["playwright"]
+});
+
+const filesystemServerPackageDir = resolvePackageDir(
+  "@modelcontextprotocol/server-filesystem",
+  rootRequire
+);
+await esbuild.build({
+  entryPoints: [join(filesystemServerPackageDir, "dist/index.js")],
+  outfile: join(filesystemServerDir, "index.mjs"),
+  bundle: true,
+  platform: "node",
+  format: "esm",
+  target: "node22"
 });
 
 const playwrightDir = await copyPackage("playwright");

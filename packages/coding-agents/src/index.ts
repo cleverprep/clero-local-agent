@@ -30,6 +30,7 @@ export type CodingTask = {
   provider: CodingAgentProvider;
   status: CodingTaskStatus;
   cwd: string;
+  git_branch?: string;
   sandbox: CodexSandbox;
   model?: string;
   reasoning_effort?: string;
@@ -39,6 +40,7 @@ export type CodingTask = {
   approval_reason?: string;
   output: string;
   agent_output: string;
+  progress_update?: string;
   stdout: string;
   stderr: string;
   final_message: string | null;
@@ -233,11 +235,18 @@ export class CodexCliAdapter implements CodingAgentAdapter {
     const prompt = requiredString(args, "prompt");
     const cwd = this.options.workspacePolicy.resolveProjectDirectory(optionalString(args, "project") ?? optionalString(args, "cwd"));
     await ensureExistingDirectory(cwd);
+    const gitBranch = await gitBranchFromDirectory(cwd);
     const sandbox = effectiveSandbox(args, this.options.defaultSandbox);
     const approval = await this.ensureSandboxApproval(sandbox, cwd, prompt);
     const sessionPlan = codingSessionPlan(args, context, cwd, this.sessions);
     const taskId = `codex_${randomUUID()}`;
-    const cliArgs = this.codexExecArgs(args, cwd, sandbox, sessionPlan);
+    const cliArgs = this.codexExecArgs(
+      args,
+      cwd,
+      sandbox,
+      sessionPlan,
+      gitBranch === undefined
+    );
     const child = spawn(this.command, cliArgs, {
       cwd,
       stdio: "pipe"
@@ -249,6 +258,7 @@ export class CodexCliAdapter implements CodingAgentAdapter {
       provider: "codex",
       status: "running",
       cwd,
+      git_branch: gitBranch,
       sandbox,
       model: optionalString(args, "model") ?? this.options.defaultModel,
       reasoning_effort: reasoningEffortArg(args, "reasoning_effort") ?? this.options.defaultReasoningEffort,
@@ -359,7 +369,8 @@ export class CodexCliAdapter implements CodingAgentAdapter {
     args: JsonObject,
     cwd: string,
     sandbox: CodexSandbox,
-    sessionPlan: CodingSessionPlan
+    sessionPlan: CodingSessionPlan,
+    workspaceNeedsGitCheckBypass: boolean
   ): string[] {
     if (sessionPlan.resumed && sessionPlan.providerSessionId) {
       const cliArgs = ["--ask-for-approval", "never", "--sandbox", sandbox, "--cd", cwd, "exec", "resume", "--json"];
@@ -374,7 +385,7 @@ export class CodexCliAdapter implements CodingAgentAdapter {
       if (booleanArg(args, "ephemeral")) {
         cliArgs.push("--ephemeral");
       }
-      if (booleanArg(args, "skip_git_repo_check")) {
+      if (workspaceNeedsGitCheckBypass || booleanArg(args, "skip_git_repo_check")) {
         cliArgs.push("--skip-git-repo-check");
       }
       cliArgs.push(sessionPlan.providerSessionId, "-");
@@ -393,7 +404,7 @@ export class CodexCliAdapter implements CodingAgentAdapter {
     if (booleanArg(args, "ephemeral")) {
       cliArgs.push("--ephemeral");
     }
-    if (booleanArg(args, "skip_git_repo_check")) {
+    if (workspaceNeedsGitCheckBypass || booleanArg(args, "skip_git_repo_check")) {
       cliArgs.push("--skip-git-repo-check");
     }
     cliArgs.push("-");
@@ -2145,6 +2156,9 @@ function publicTask(task: CodingTask): JsonObject {
     continue_session: task.continue_session ?? false,
     resumed_session: task.resumed_session ?? false
   };
+  if (task.git_branch) {
+    result.git_branch = task.git_branch;
+  }
   if (task.session_key) {
     result.session_key = task.session_key;
   }
@@ -2214,6 +2228,7 @@ function appendAgentOutput(task: StoredCodingTask, text: string, maxBytes: numbe
   }
 
   task.agent_output = appendBounded(task.agent_output, `${trimmed}\n`, maxBytes);
+  task.progress_update = appendBounded("", trimmed, Math.min(maxBytes, 4_000));
 }
 
 function stringValue(value: JsonValue | undefined): string | undefined {
@@ -2276,6 +2291,39 @@ async function ensureExistingDirectory(directory: string): Promise<void> {
     }
     throw new ToolExecutionError("invalid_arguments", `cwd does not exist: ${directory}`);
   }
+}
+
+async function gitBranchFromDirectory(directory: string): Promise<string | undefined> {
+  const gitEntry = path.join(directory, ".git");
+
+  try {
+    const gitEntryStat = await stat(gitEntry);
+    let gitDirectory = gitEntry;
+
+    if (gitEntryStat.isFile()) {
+      const pointer = await readFile(gitEntry, "utf8");
+      const match = /^gitdir:\s*(.+)$/m.exec(pointer);
+      if (!match?.[1]) {
+        return undefined;
+      }
+      gitDirectory = path.resolve(directory, match[1].trim());
+    } else if (!gitEntryStat.isDirectory()) {
+      return undefined;
+    }
+
+    const head = (await readFile(path.join(gitDirectory, "HEAD"), "utf8")).trim();
+    const branch = /^ref:\s+refs\/heads\/(.+)$/.exec(head)?.[1];
+    if (branch) {
+      return branch;
+    }
+    if (/^[0-9a-f]{7,64}$/i.test(head)) {
+      return `detached@${head.slice(0, 7)}`;
+    }
+  } catch {
+    return undefined;
+  }
+
+  return undefined;
 }
 
 function structuredTextFromEvent(event: JsonObject): string | undefined {

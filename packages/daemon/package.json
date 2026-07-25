@@ -10,6 +10,7 @@
     "@clero-local-agent/approvals": "workspace:*",
     "@clero-local-agent/browser": "workspace:*",
     "@clero-local-agent/coding-agents": "workspace:*",
+    "@clero-local-agent/filesystem": "workspace:*",
     "@clero-local-agent/git-tools": "workspace:*",
     "@clero-local-agent/mcp-runtime": "workspace:*",
     "@clero-local-agent/protocol": "workspace:*",

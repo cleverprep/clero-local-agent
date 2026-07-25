@@ -92,3 +92,74 @@ test("retries local coding task completion when backend has not recorded the tas
 
   daemonInternals.clearPendingLocalTaskCompletions();
 });
+
+test("applies remote coding-agent configuration and republishes capabilities", async () => {
+  const sentMessages: RuntimeMessage[] = [];
+  let savedConfig = {
+    enabled: false,
+    provider: "codex",
+    default_sandbox: "read-only",
+    allow_workspace_write: false,
+    allow_danger_full_access: false
+  };
+  const daemon = new LocalRuntimeDaemon({
+    wsUrl: "ws://localhost/ws/local-runtime/",
+    token: "token",
+    allowedDirectories: [process.cwd()],
+    capabilities: {
+      browser: { enabled: false },
+      workspace: { enabled: false },
+      codex: { enabled: false },
+      git: { readEnabled: false, writeEnabled: false }
+    },
+    codingAgentConfiguration: {
+      get: () => savedConfig,
+      set: (config) => {
+        savedConfig = {
+          ...savedConfig,
+          ...config,
+          enabled: config.enabled !== false,
+          provider: config.provider === "cursor" ? "cursor" : "codex",
+          default_sandbox: config.default_sandbox === "workspace-write" ? "workspace-write" : "read-only",
+          allow_workspace_write: config.allow_workspace_write === true,
+          allow_danger_full_access: config.allow_danger_full_access === true
+        };
+        return Promise.resolve(savedConfig);
+      }
+    },
+    logger,
+    auditLogger
+  });
+  const daemonInternals = daemon as unknown as {
+    websocket: { send(message: RuntimeMessage): void };
+    handleMessage(message: unknown): Promise<void>;
+  };
+  daemonInternals.websocket.send = (message: RuntimeMessage) => {
+    sentMessages.push(message);
+  };
+
+  await daemonInternals.handleMessage({
+    type: "control_request",
+    request_id: "control_1",
+    action: "set_coding_agent_config",
+    arguments: {
+      enabled: true,
+      provider: "cursor",
+      default_sandbox: "workspace-write",
+      allow_workspace_write: true
+    }
+  });
+
+  const heartbeat = sentMessages.find((message) => message.type === "heartbeat");
+  const result = sentMessages.find((message) => (
+    message.type === "control_result" && message.request_id === "control_1"
+  ));
+  assert.ok(heartbeat && heartbeat.type === "heartbeat");
+  assert.ok(result && result.type === "control_result");
+  assert.equal(result.status, "ok");
+  assert.equal(
+    heartbeat.capabilities?.tools.some((capability) => capability.name === "coding_agent.start_task"),
+    true
+  );
+  assert.equal(heartbeat.capabilities?.settings?.coding_agent?.provider, "cursor");
+});

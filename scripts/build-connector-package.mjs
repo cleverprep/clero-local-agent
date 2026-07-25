@@ -7,12 +7,14 @@ import * as esbuild from "esbuild";
 
 const repoRoot = resolve(import.meta.dirname, "..");
 const browserRequire = createRequire(join(repoRoot, "packages/browser/package.json"));
+const rootRequire = createRequire(join(repoRoot, "package.json"));
 const outputDir = resolve(process.env.CLERO_CONNECTOR_OUTPUT_DIR ?? join(repoRoot, "dist/connector-release"));
 const stagingRoot = join(repoRoot, "dist/connector-package");
 const packageRoot = join(stagingRoot, "clero-connector");
 const binDir = join(packageRoot, "bin");
 const runtimeDir = join(packageRoot, "runtime");
 const daemonDir = join(runtimeDir, "daemon");
+const filesystemServerDir = join(runtimeDir, "filesystem-server");
 const platform = normalizedPlatform();
 const arch = normalizedArch();
 const archiveName = `clero-connector-${platform}-${arch}${platform === "win" ? ".zip" : ".tar.gz"}`;
@@ -20,6 +22,7 @@ const archivePath = join(outputDir, archiveName);
 
 await rm(stagingRoot, { recursive: true, force: true });
 await mkdir(join(daemonDir, "node_modules"), { recursive: true });
+await mkdir(filesystemServerDir, { recursive: true });
 await mkdir(binDir, { recursive: true });
 await mkdir(outputDir, { recursive: true });
 
@@ -31,6 +34,19 @@ await esbuild.build({
   format: "esm",
   target: "node22",
   external: ["playwright"]
+});
+
+const filesystemServerPackageDir = resolvePackageDir(
+  "@modelcontextprotocol/server-filesystem",
+  rootRequire
+);
+await esbuild.build({
+  entryPoints: [join(filesystemServerPackageDir, "dist/index.js")],
+  outfile: join(filesystemServerDir, "index.mjs"),
+  bundle: true,
+  platform: "node",
+  format: "esm",
+  target: "node22"
 });
 
 const playwrightDir = await copyPackage("playwright");

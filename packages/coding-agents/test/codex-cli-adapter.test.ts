@@ -130,6 +130,7 @@ test("resumes codex exec when continue_session uses the same session key", async
     "exec",
     "resume",
     "--json",
+    "--skip-git-repo-check",
     "thread_fake",
     "-"
   ]);

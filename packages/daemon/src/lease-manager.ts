@@ -153,7 +153,7 @@ export class LeaseManager {
       }
     }
 
-    const scope = leaseScopeForTools([input.requestedActionKey ?? input.toolName], input.workspaceKey);
+    const scope = leaseScopeForTools([input.toolName], input.workspaceKey);
     const activeLease = this.activeLeases.get(scope);
     if (activeLease) {
       const requestedAgentId = input.agentId;
@@ -163,7 +163,7 @@ export class LeaseManager {
         const refreshed = this.acquireLease({
           agentId: input.agentId ?? activeLease.agent_id,
           taskId: input.taskId ?? activeLease.task_id,
-          requestedTools: [input.requestedActionKey ?? input.toolName],
+          requestedTools: [input.toolName],
           workspaceKey: input.workspaceKey
         });
         if (refreshed.status === "granted") {
@@ -184,7 +184,7 @@ export class LeaseManager {
     const acquired = this.acquireLease({
       agentId,
       taskId,
-      requestedTools: [input.requestedActionKey ?? input.toolName],
+      requestedTools: [input.toolName],
       workspaceKey: input.workspaceKey
     });
 
@@ -330,7 +330,13 @@ function leaseScopeForTool(tool: string, workspaceKey?: string): LeaseScope {
   if (tool.includes(".browser") || tool.startsWith("browser.")) {
     return BROWSER_SCOPE;
   }
-  if (tool.includes(".codex") || tool.startsWith("coding_agent.") || tool.startsWith("git.") || tool.startsWith("shell.")) {
+  if (
+    tool.includes(".codex") ||
+    tool.startsWith("coding_agent.") ||
+    tool.startsWith("filesystem.") ||
+    tool.startsWith("git.") ||
+    tool.startsWith("shell.")
+  ) {
     return workspaceScope(workspaceKey);
   }
   return GLOBAL_SCOPE;

@@ -3,7 +3,8 @@ import {
   createDefaultApprovalProvider,
   DEFAULT_APPROVAL_TIMEOUT_MS,
   WebSocketApprovalProvider,
-  type ApprovalProvider
+  type ApprovalProvider,
+  type ApprovalRequest
 } from "@clero-local-agent/approvals";
 import {
   AgentScopedManagedBrowserAdapter,
@@ -30,6 +31,11 @@ import {
   type CodingTask,
   type CodingTaskEvent
 } from "@clero-local-agent/coding-agents";
+import {
+  FilesystemTools,
+  OfficialFilesystemMcpClient,
+  type FilesystemMcpClient
+} from "@clero-local-agent/filesystem";
 import { GitTools } from "@clero-local-agent/git-tools";
 import { ShellTools, type ShellAccess } from "@clero-local-agent/shell-tools";
 import { ToolRegistry, toolCallArguments, toolCallRunContext } from "@clero-local-agent/mcp-runtime";
@@ -47,7 +53,9 @@ import {
   type ControlRequestMessage,
   type ControlResultMessage,
   type JsonObject,
+  type JsonValue,
   type LocalTaskCompletedMessage,
+  type RuntimeCapabilitySettings,
   type RuntimeMessage
 } from "@clero-local-agent/protocol";
 import { WorkspacePolicy, WorkspaceTools } from "@clero-local-agent/workspace";
@@ -74,6 +82,10 @@ export type LocalRuntimeDaemonOptions = {
   auditLogger?: AuditLogger;
   interactiveApprovals?: boolean;
   connectionRefreshIntervalMs?: number;
+  codingAgentConfiguration?: {
+    get: () => Promise<JsonObject> | JsonObject;
+    set: (config: JsonObject) => Promise<JsonObject>;
+  };
   capabilities?: LocalRuntimeCapabilityOptions;
 };
 
@@ -142,6 +154,41 @@ type BackendErrorMessage = {
   task_id?: string;
 };
 
+class MutableCodingAgentAdapter implements CodingAgentAdapter {
+  private current: CodingAgentAdapter;
+  private readonly tasks = new Map<string, CodingAgentAdapter>();
+
+  constructor(adapter: CodingAgentAdapter) {
+    this.current = adapter;
+  }
+
+  replace(adapter: CodingAgentAdapter): void {
+    this.current = adapter;
+  }
+
+  async startTask(args: JsonObject, context: Parameters<CodingAgentAdapter["startTask"]>[1]): Promise<JsonObject> {
+    const adapter = this.current;
+    const result = await adapter.startTask(args, context);
+    const taskId = typeof result.task_id === "string" ? result.task_id : "";
+    if (taskId) {
+      this.tasks.set(taskId, adapter);
+    }
+    return result;
+  }
+
+  getStatus(taskId: string): Promise<JsonObject> {
+    return (this.tasks.get(taskId) ?? this.current).getStatus(taskId);
+  }
+
+  getOutput(taskId: string): Promise<JsonObject> {
+    return (this.tasks.get(taskId) ?? this.current).getOutput(taskId);
+  }
+
+  cancel(taskId: string): Promise<JsonObject> {
+    return (this.tasks.get(taskId) ?? this.current).cancel(taskId);
+  }
+}
+
 const LOCAL_TASK_COMPLETION_RETRY_DELAYS_MS = [1_000, 3_000, 10_000];
 const LOCAL_TASK_COMPLETION_RETENTION_MS = 2 * 60_000;
 const DEFAULT_CONNECTION_REFRESH_INTERVAL_MS = 60 * 60 * 1_000;
@@ -163,6 +210,9 @@ export class LocalRuntimeDaemon {
   private readonly pendingApprovalRequests = new Map<string, PendingApprovalRequest>();
   private readonly pendingLocalTaskCompletions = new Map<string, PendingLocalTaskCompletion>();
   private browserDebugAdapter: BrowserDebugAdapter | null = null;
+  private filesystemMcpClient: FilesystemMcpClient | null = null;
+  private codingAgentAdapter: MutableCodingAgentAdapter | null = null;
+  private codingAgentTools: CodingAgentTools | null = null;
 
   constructor(options: LocalRuntimeDaemonOptions) {
     this.options = options;
@@ -198,7 +248,11 @@ export class LocalRuntimeDaemon {
     this.leaseManager.clearActiveLease();
     this.rejectPendingApprovalRequests("Daemon stopped before approval response");
     this.clearPendingLocalTaskCompletions();
-    await Promise.all([this.browserAdapter?.dispose?.(), this.browserDebugAdapter?.dispose?.()]);
+    await Promise.all([
+      this.browserAdapter?.dispose?.(),
+      this.browserDebugAdapter?.dispose?.(),
+      this.filesystemMcpClient?.dispose?.()
+    ]);
   }
 
   getLeaseManager(): LeaseManager {
@@ -266,7 +320,7 @@ export class LocalRuntimeDaemon {
     }
 
     if (isControlRequestMessage(message)) {
-      this.sendRuntimeMessage(this.handleControlRequest(message));
+      this.sendRuntimeMessage(await this.handleControlRequest(message));
       return;
     }
 
@@ -309,11 +363,12 @@ export class LocalRuntimeDaemon {
   }
 
   private sendHello(): void {
+    const capabilities = this.capabilityPayload();
     const message = {
       type: "hello",
       platform: process.platform,
       daemon_version: this.options.daemonVersion ?? "0.1.37",
-      capabilities: { tools: this.registry.capabilities() }
+      capabilities
     } as const;
     this.logger.info("sending local runtime capabilities hello", {
       outbound: message
@@ -419,12 +474,40 @@ export class LocalRuntimeDaemon {
     try {
       this.sendRuntimeMessage({
         type: "heartbeat",
-        capabilities: { tools: this.registry.capabilities() }
+        capabilities: this.capabilityPayload()
       }, { queueOnFailure: false });
     } catch (error: unknown) {
       const detail = error instanceof Error ? error.message : String(error);
       this.logger.warn("failed to send local runtime heartbeat", { error: detail });
     }
+  }
+
+  private capabilityPayload(): {
+    tools: ReturnType<ToolRegistry["capabilities"]>;
+    settings: RuntimeCapabilitySettings;
+  } {
+    return {
+      tools: this.registry.capabilities(),
+      settings: {
+        browser: {
+          provider: this.options.browserProvider ?? "managed",
+          channel: this.options.browserChannel ?? "chrome",
+          remember_session: this.options.browserRememberSession !== false,
+          headless: this.options.browserHeadless === true
+        },
+        coding_agent: {
+          enabled: this.options.capabilities?.codex?.enabled !== false,
+          provider: this.options.capabilities?.codex?.provider ?? "codex",
+          sandbox: this.options.capabilities?.codex?.defaultSandbox ?? "read-only"
+        },
+        shell: {
+          default_access: this.options.capabilities?.shell?.defaultAccess ?? "read-only",
+          write_enabled:
+            this.options.capabilities?.shell?.allowWorkspaceWrite === true ||
+            this.options.capabilities?.shell?.allowDangerFullAccess === true
+        }
+      }
+    };
   }
 
   private sendRuntimeMessage(
@@ -514,12 +597,16 @@ export class LocalRuntimeDaemon {
         local_task_id: task.task_id,
         provider: task.provider,
         status: task.status,
-        cwd: task.cwd
+        cwd: task.cwd,
+        git_branch: task.git_branch ?? null
       },
       result: {
         final_message: task.final_message,
         exit_code: task.exit_code,
-        output_tail: tailText(task.output)
+        git_branch: task.git_branch ?? null,
+        blocked_reason: task.blocked_reason ?? null,
+        progress_update: task.progress_update || null,
+        output_tail: tailText(task.output || task.stderr || task.stdout)
       }
     });
 
@@ -538,7 +625,10 @@ export class LocalRuntimeDaemon {
         final_message: task.final_message,
         exit_code: task.exit_code,
         cwd: task.cwd,
-        output_tail: tailText(task.output)
+        git_branch: task.git_branch ?? null,
+        blocked_reason: task.blocked_reason ?? null,
+        progress_update: task.progress_update || null,
+        output_tail: tailText(task.output || task.stderr || task.stdout)
       }
     };
     this.sendLocalTaskCompletion(message);
@@ -649,7 +739,7 @@ export class LocalRuntimeDaemon {
     }
   }
 
-  private handleControlRequest(message: ControlRequestMessage): ControlResultMessage {
+  private async handleControlRequest(message: ControlRequestMessage): Promise<ControlResultMessage> {
     const args = message.arguments ?? {};
 
     switch (message.action) {
@@ -720,6 +810,48 @@ export class LocalRuntimeDaemon {
       case "list_capabilities":
         return okControlResult(message.request_id, this.registry.capabilities() as unknown as JsonObject[]);
 
+      case "get_coding_agent_config":
+        if (!this.options.codingAgentConfiguration) {
+          return errorControlResult(
+            message.request_id,
+            "unknown_message",
+            "This connector does not support remote coding-agent configuration."
+          );
+        }
+        try {
+          return okControlResult(
+            message.request_id,
+            await this.options.codingAgentConfiguration.get()
+          );
+        } catch (error: unknown) {
+          return errorControlResult(
+            message.request_id,
+            "tool_failed",
+            error instanceof Error ? error.message : String(error)
+          );
+        }
+
+      case "set_coding_agent_config":
+        if (!this.options.codingAgentConfiguration) {
+          return errorControlResult(
+            message.request_id,
+            "unknown_message",
+            "This connector does not support remote coding-agent configuration."
+          );
+        }
+        try {
+          const saved = await this.options.codingAgentConfiguration.set(args);
+          this.applyCodingAgentConfiguration(saved);
+          this.sendHeartbeat();
+          return okControlResult(message.request_id, saved);
+        } catch (error: unknown) {
+          return errorControlResult(
+            message.request_id,
+            "invalid_arguments",
+            error instanceof Error ? error.message : String(error)
+          );
+        }
+
       default:
         return errorControlResult(message.request_id, "unknown_message", `Unknown control action: ${message.action}`);
     }
@@ -742,12 +874,20 @@ export class LocalRuntimeDaemon {
             headless: this.options.browserHeadless,
             browserChannel: this.options.browserChannel,
             viewport: this.options.browserViewport
-          });
+    });
     this.browserAdapter = browserAdapter;
     const browserTools = new BrowserTools(browserAdapter, {
       resolveFilePath: (filePath) => workspacePolicy.resolveAllowedFile(filePath)
     });
     const workspaceTools = new WorkspaceTools(workspacePolicy);
+    const filesystemMcpClient = new OfficialFilesystemMcpClient({
+      allowedDirectories: workspacePolicy.listAllowedDirectories()
+    });
+    this.filesystemMcpClient = filesystemMcpClient;
+    const filesystemTools = new FilesystemTools({
+      workspacePolicy,
+      client: filesystemMcpClient
+    });
     const shellTools = new ShellTools({
       workspacePolicy,
       approvalProvider,
@@ -758,7 +898,11 @@ export class LocalRuntimeDaemon {
       defaultMaxOutputBytes: this.options.capabilities?.shell?.defaultMaxOutputBytes,
       shell: this.options.capabilities?.shell?.shell
     });
-    const codingAgentTools = new CodingAgentTools(this.createCodingAgentAdapter(workspacePolicy, approvalProvider));
+    this.codingAgentAdapter = new MutableCodingAgentAdapter(
+      this.createCodingAgentAdapter(workspacePolicy, approvalProvider)
+    );
+    const codingAgentTools = new CodingAgentTools(this.codingAgentAdapter);
+    this.codingAgentTools = codingAgentTools;
     const gitTools = new GitTools({ workspacePolicy, approvalProvider });
     const browserDebugConfig = this.options.capabilities?.browserDebug;
 
@@ -782,6 +926,9 @@ export class LocalRuntimeDaemon {
       for (const definition of workspaceTools.definitions()) {
         this.registry.register(definition);
       }
+      for (const definition of filesystemTools.definitions()) {
+        this.registry.register(definition);
+      }
     }
     if (this.options.capabilities?.shell?.enabled === true) {
       for (const definition of shellTools.definitions()) {
@@ -801,16 +948,80 @@ export class LocalRuntimeDaemon {
     }
   }
 
+  private applyCodingAgentConfiguration(config: JsonObject): void {
+    const provider = codingAgentProviderArg(config.provider);
+    const defaultSandbox = codingAgentSandboxArg(config.default_sandbox);
+    const reasoningEffort = codexReasoningEffortArg(config.reasoning_effort);
+    const claudeReasoningEffort = claudeReasoningEffortArg(config.claude_reasoning_effort);
+    const claudePermissionMode = claudePermissionModeArg(config.claude_permission_mode);
+    const cursorModel = selectedCodingAgentModel(
+      config.cursor_model,
+      config.cursor_model_custom
+    );
+    const claudeModel = selectedCodingAgentModel(
+      config.claude_model,
+      config.claude_model_custom
+    );
+    const nextConfig: NonNullable<LocalRuntimeCapabilityOptions["codex"]> = {
+      enabled: config.enabled !== false,
+      provider,
+      command: stringValue(config.command),
+      model: stringValue(config.model),
+      reasoningEffort,
+      antigravityCommand: stringValue(config.antigravity_command),
+      cursorCommand: stringValue(config.cursor_command),
+      cursorModel,
+      claudeCommand: stringValue(config.claude_command),
+      claudeModel,
+      claudeReasoningEffort,
+      claudePermissionMode,
+      defaultSandbox,
+      allowWorkspaceWrite: config.allow_workspace_write === true,
+      allowDangerFullAccess: config.allow_danger_full_access === true
+    };
+    this.options.capabilities ??= {};
+    this.options.capabilities.codex = nextConfig;
+
+    const workspacePolicy = new WorkspacePolicy({
+      allowedDirectories: this.options.allowedDirectories,
+      allowedFileDirectories: [os.tmpdir(), "/tmp"]
+    });
+    this.codingAgentAdapter?.replace(
+      this.createCodingAgentAdapter(workspacePolicy, this.createApprovalProvider())
+    );
+
+    const definitions = this.codingAgentTools?.definitions() ?? [];
+    if (nextConfig.enabled !== false) {
+      for (const definition of definitions) {
+        if (!this.registry.has(definition.name)) {
+          this.registry.register(definition);
+        }
+      }
+      return;
+    }
+    for (const definition of definitions) {
+      this.registry.unregister(definition.name);
+    }
+  }
+
   private createApprovalProvider(): ApprovalProvider {
     if (this.options.interactiveApprovals === false) {
       return createDefaultApprovalProvider(false);
     }
 
+    const websocketProvider = new WebSocketApprovalProvider((message) => this.sendApprovalRequest(message));
     if (this.options.interactiveApprovals === true || process.stdin.isTTY === true) {
-      return createDefaultApprovalProvider(true);
+      const localProvider = createDefaultApprovalProvider(true);
+      return {
+        requestApproval: (request: ApprovalRequest) => (
+          typeof request.metadata?.approval_token === "string"
+            ? websocketProvider.requestApproval(request)
+            : localProvider.requestApproval(request)
+        )
+      };
     }
 
-    return new WebSocketApprovalProvider((message) => this.sendApprovalRequest(message));
+    return websocketProvider;
   }
 
   private createCodingAgentAdapter(workspacePolicy: WorkspacePolicy, approvalProvider: ApprovalProvider): CodingAgentAdapter {
@@ -909,11 +1120,19 @@ export class LocalRuntimeDaemon {
   }
 
   private gitToolEnabled(toolName: string): boolean {
-    if (toolName === "git.status" || toolName === "git.diff") {
+    if (
+      toolName === "git.status" ||
+      toolName === "git.diff" ||
+      toolName === "git.list_branches"
+    ) {
       return this.options.capabilities?.git?.readEnabled !== false;
     }
 
-    if (toolName === "git.commit" || toolName === "git.push") {
+    if (
+      toolName === "git.checkout" ||
+      toolName === "git.commit" ||
+      toolName === "git.push"
+    ) {
       return this.options.capabilities?.git?.writeEnabled !== false;
     }
 
@@ -924,6 +1143,55 @@ export class LocalRuntimeDaemon {
 function stringArg(args: JsonObject, key: string): string | undefined {
   const value = args[key];
   return typeof value === "string" ? value : undefined;
+}
+
+function stringValue(value: JsonValue | undefined): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function selectedCodingAgentModel(
+  selected: JsonValue | undefined,
+  custom: JsonValue | undefined
+): string | undefined {
+  return selected === "custom" ? stringValue(custom) : stringValue(selected);
+}
+
+function codingAgentProviderArg(value: JsonValue | undefined): CodingAgentProvider {
+  return value === "claude-code" || value === "antigravity" || value === "cursor"
+    ? value
+    : "codex";
+}
+
+function codingAgentSandboxArg(value: JsonValue | undefined): CodexSandbox {
+  return value === "workspace-write" || value === "danger-full-access"
+    ? value
+    : "read-only";
+}
+
+function codexReasoningEffortArg(value: JsonValue | undefined): CodexReasoningEffort | undefined {
+  return value === "low" || value === "medium" || value === "high" || value === "xhigh"
+    ? value
+    : undefined;
+}
+
+function claudeReasoningEffortArg(value: JsonValue | undefined): ClaudeCodeReasoningEffort | undefined {
+  return value === "low" ||
+    value === "medium" ||
+    value === "high" ||
+    value === "xhigh" ||
+    value === "max"
+    ? value
+    : undefined;
+}
+
+function claudePermissionModeArg(value: JsonValue | undefined): ClaudeCodePermissionMode {
+  return value === "acceptEdits" ||
+    value === "plan" ||
+    value === "auto" ||
+    value === "dontAsk" ||
+    value === "bypassPermissions"
+    ? value
+    : "default";
 }
 
 function isConnectedMessage(value: unknown): value is { type: "connected"; connection_id?: number; session_id?: string } {

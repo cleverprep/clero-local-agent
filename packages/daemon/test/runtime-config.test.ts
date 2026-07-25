@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   capabilitiesFromConfig,
   capabilityOptionsFromConfig,
+  codingAgentConfigFromRuntimeConfig,
   defaultAgentsSyncPath,
   defaultRuntimeConfig,
   loadAgentsSyncSnapshot,
@@ -13,6 +14,7 @@ import {
   resolveDeviceToken,
   saveAgentsSyncSnapshot,
   saveRuntimeConfig,
+  updateCodingAgentRuntimeConfig,
   loadRuntimeConfig
 } from "../src/runtime-config.ts";
 import type { TokenStore } from "../src/token-store.ts";
@@ -152,6 +154,26 @@ test("maps runtime config to daemon capability options", () => {
     args: undefined,
     browserUrl: undefined
   });
+});
+
+test("updates connector coding-agent configuration without replacing unrelated runtime settings", () => {
+  const config = defaultRuntimeConfig();
+  config.capabilities!.browser!.enabled = false;
+
+  const saved = updateCodingAgentRuntimeConfig(config, {
+    ...codingAgentConfigFromRuntimeConfig(config),
+    enabled: true,
+    provider: "cursor",
+    cursor_command: "/opt/cursor/agent",
+    cursor_model: "composer-1",
+    default_sandbox: "workspace-write"
+  });
+
+  assert.equal(saved.provider, "cursor");
+  assert.equal(saved.allow_workspace_write, true);
+  assert.equal(config.capabilities?.codex?.cursor_command, "/opt/cursor/agent");
+  assert.equal(config.capabilities?.codex?.cursor_model, "composer-1");
+  assert.equal(config.capabilities?.browser?.enabled, false);
 });
 
 test("enables managed browser session persistence by default", () => {

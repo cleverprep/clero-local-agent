@@ -11,7 +11,14 @@ import type {
   CodexSandbox
 } from "@clero-local-agent/coding-agents";
 import type { ShellAccess } from "@clero-local-agent/shell-tools";
-import { defaultCapabilities, type AgentsSyncMessage, type BrokerId, type Capability, type SyncedAgent } from "@clero-local-agent/protocol";
+import {
+  defaultCapabilities,
+  type AgentsSyncMessage,
+  type BrokerId,
+  type Capability,
+  type JsonObject,
+  type SyncedAgent
+} from "@clero-local-agent/protocol";
 import type { LocalRuntimeCapabilityOptions } from "./daemon.ts";
 import { createTokenStore, type TokenStore } from "./token-store.ts";
 
@@ -178,6 +185,63 @@ export async function saveRuntimeConfig(configPath: string, config: LocalRuntime
   await writeFile(configPath, `${JSON.stringify(mergeRuntimeConfig(defaultRuntimeConfig(), config), null, 2)}\n`);
 }
 
+export function codingAgentConfigFromRuntimeConfig(config: LocalRuntimeConfig): JsonObject {
+  const coding = config.capabilities?.codex ?? {};
+  return {
+    enabled: coding.enabled !== false,
+    provider: coding.provider ?? "codex",
+    command: coding.command ?? "",
+    model: coding.model ?? "",
+    reasoning_effort: coding.reasoning_effort ?? "",
+    antigravity_command: coding.antigravity_command ?? "",
+    cursor_command: coding.cursor_command ?? "",
+    cursor_model: coding.cursor_model ?? "",
+    cursor_model_custom: coding.cursor_model_custom ?? "",
+    claude_command: coding.claude_command ?? "",
+    claude_model: coding.claude_model ?? "",
+    claude_model_custom: coding.claude_model_custom ?? "",
+    claude_reasoning_effort: coding.claude_reasoning_effort ?? "",
+    claude_permission_mode: coding.claude_permission_mode ?? "default",
+    default_sandbox: coding.default_sandbox ?? "read-only",
+    allow_workspace_write: coding.allow_workspace_write === true,
+    allow_danger_full_access: coding.allow_danger_full_access === true
+  };
+}
+
+export function updateCodingAgentRuntimeConfig(
+  config: LocalRuntimeConfig,
+  input: JsonObject
+): JsonObject {
+  config.capabilities ??= {};
+  config.capabilities.codex ??= {};
+  const coding = config.capabilities.codex;
+  coding.enabled = configBoolean(input.enabled, true);
+  coding.provider = configCodingProvider(input.provider);
+  coding.command = configString(input.command);
+  coding.model = configString(input.model);
+  coding.reasoning_effort = configCodexReasoning(input.reasoning_effort);
+  coding.antigravity_command = configString(input.antigravity_command);
+  coding.cursor_command = configString(input.cursor_command);
+  coding.cursor_model = configString(input.cursor_model);
+  coding.cursor_model_custom = configString(input.cursor_model_custom);
+  coding.claude_command = configString(input.claude_command);
+  coding.claude_model = configString(input.claude_model);
+  coding.claude_model_custom = configString(input.claude_model_custom);
+  coding.claude_reasoning_effort = configClaudeReasoning(input.claude_reasoning_effort);
+  coding.claude_permission_mode = configClaudePermission(input.claude_permission_mode);
+  coding.default_sandbox = configSandbox(input.default_sandbox);
+  coding.allow_workspace_write =
+    configBoolean(input.allow_workspace_write, false) ||
+    coding.default_sandbox === "workspace-write" ||
+    coding.default_sandbox === "danger-full-access" ||
+    (coding.provider === "claude-code" && coding.claude_permission_mode === "acceptEdits");
+  coding.allow_danger_full_access =
+    configBoolean(input.allow_danger_full_access, false) ||
+    coding.default_sandbox === "danger-full-access" ||
+    (coding.provider === "claude-code" && coding.claude_permission_mode === "bypassPermissions");
+  return codingAgentConfigFromRuntimeConfig(config);
+}
+
 export function defaultRuntimeConfigPath(): string {
   return path.join(os.homedir(), ".clero-local-agent", "config.json");
 }
@@ -305,16 +369,27 @@ export function capabilitiesFromConfig(config: LocalRuntimeConfig): Capability[]
     if (capability.name.startsWith("workspace.")) {
       return options.workspace?.enabled !== false;
     }
+    if (capability.name.startsWith("filesystem.")) {
+      return options.workspace?.enabled !== false;
+    }
     if (capability.name.startsWith("shell.")) {
       return options.shell?.enabled === true;
     }
     if (capability.name.startsWith("coding_agent.")) {
       return options.codex?.enabled !== false;
     }
-    if (capability.name === "git.status" || capability.name === "git.diff") {
+    if (
+      capability.name === "git.status" ||
+      capability.name === "git.diff" ||
+      capability.name === "git.list_branches"
+    ) {
       return options.git?.readEnabled !== false;
     }
-    if (capability.name === "git.commit" || capability.name === "git.push") {
+    if (
+      capability.name === "git.checkout" ||
+      capability.name === "git.commit" ||
+      capability.name === "git.push"
+    ) {
       return options.git?.writeEnabled !== false;
     }
     return true;
@@ -416,4 +491,50 @@ function stringOrNullValue(value: unknown): string | null | undefined {
 
 function booleanValue(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;
+}
+
+function configString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function configBoolean(value: unknown, fallback: boolean): boolean {
+  return typeof value === "boolean" ? value : fallback;
+}
+
+function configCodingProvider(value: unknown): CodingAgentProvider {
+  return value === "claude-code" || value === "antigravity" || value === "cursor"
+    ? value
+    : "codex";
+}
+
+function configSandbox(value: unknown): CodexSandbox {
+  return value === "workspace-write" || value === "danger-full-access"
+    ? value
+    : "read-only";
+}
+
+function configCodexReasoning(value: unknown): CodexReasoningEffort | undefined {
+  return value === "low" || value === "medium" || value === "high" || value === "xhigh"
+    ? value
+    : undefined;
+}
+
+function configClaudeReasoning(value: unknown): ClaudeCodeReasoningEffort | undefined {
+  return value === "low" ||
+    value === "medium" ||
+    value === "high" ||
+    value === "xhigh" ||
+    value === "max"
+    ? value
+    : undefined;
+}
+
+function configClaudePermission(value: unknown): ClaudeCodePermissionMode {
+  return value === "acceptEdits" ||
+    value === "plan" ||
+    value === "auto" ||
+    value === "dontAsk" ||
+    value === "bypassPermissions"
+    ? value
+    : "default";
 }

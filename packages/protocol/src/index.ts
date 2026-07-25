@@ -33,6 +33,14 @@ export type ToolName =
   | "workspace.list_roots"
   | "workspace.list_projects"
   | "workspace.describe_project"
+  | "filesystem.read_text_file"
+  | "filesystem.read_multiple_files"
+  | "filesystem.list_directory"
+  | "filesystem.directory_tree"
+  | "filesystem.search_files"
+  | "filesystem.create_directory"
+  | "filesystem.write_file"
+  | "filesystem.edit_file"
   | "shell.run"
   | "coding_agent.start_task"
   | "coding_agent.get_status"
@@ -40,6 +48,8 @@ export type ToolName =
   | "coding_agent.cancel"
   | "git.status"
   | "git.diff"
+  | "git.list_branches"
+  | "git.checkout"
   | "git.commit"
   | "git.push"
   | `${string}.${string}`;
@@ -64,6 +74,25 @@ export type Capability = {
   description: string;
   inputSchema?: JsonSchema;
   groups?: string[];
+};
+
+export type RuntimeCapabilitySettings = {
+  browser?: {
+    provider?: "managed" | "mcp-chrome" | string;
+    channel?: "chromium" | "chrome" | "chrome-beta" | "msedge" | string;
+    remember_session?: boolean;
+    headless?: boolean;
+  };
+  coding_agent?: {
+    enabled?: boolean;
+    provider?: "codex" | "claude-code" | "antigravity" | "cursor" | string;
+    sandbox?: "read-only" | "workspace-write" | "danger-full-access" | string;
+  };
+  shell?: {
+    default_access?: "read-only" | "workspace-write" | "danger-full-access" | string;
+    write_enabled?: boolean;
+    guardrail_mode?: "ask_approval" | "auto_review" | "full_access" | string;
+  };
 };
 
 export type ActiveLease = {
@@ -121,7 +150,9 @@ export type ControlAction =
   | "heartbeat_lease"
   | "release_lease"
   | "get_daemon_status"
-  | "list_capabilities";
+  | "list_capabilities"
+  | "get_coding_agent_config"
+  | "set_coding_agent_config";
 
 export type ControlRequestMessage = {
   type: "control_request";
@@ -152,6 +183,7 @@ export type HelloMessage = {
   daemon_version: string;
   capabilities: {
     tools: Capability[];
+    settings?: RuntimeCapabilitySettings;
   };
 };
 
@@ -159,6 +191,7 @@ export type HeartbeatMessage = {
   type: "heartbeat";
   capabilities?: {
     tools: Capability[];
+    settings?: RuntimeCapabilitySettings;
   };
 };
 
@@ -196,6 +229,8 @@ export type SyncedAgent = {
   avatar_url?: string | null;
   browser_enabled?: boolean;
   coding_enabled?: boolean;
+  shell_enabled?: boolean;
+  shell_write_enabled?: boolean;
   git_read_enabled?: boolean;
   git_write_enabled?: boolean;
   browser_profile_key?: string;
@@ -322,15 +357,21 @@ export function isApprovalResponseMessage(value: unknown): value is ApprovalResp
 }
 
 export function toolRequiresLease(tool: string): boolean {
-  if (tool === "coding_agent.start_task" || tool === "shell.run") {
+  if (
+    tool === "coding_agent.start_task" ||
+    tool === "shell.run" ||
+    tool === "filesystem.create_directory" ||
+    tool === "filesystem.write_file" ||
+    tool === "filesystem.edit_file"
+  ) {
     return true;
   }
 
-  return tool === "git.commit" || tool === "git.push";
+  return tool === "git.checkout" || tool === "git.commit" || tool === "git.push";
 }
 
 export function toolCapabilityAccess(tool: string): CapabilityAccess {
-  if (tool === "git.commit" || tool === "git.push") {
+  if (tool === "git.checkout" || tool === "git.commit" || tool === "git.push") {
     return "approval_required";
   }
 
@@ -441,8 +482,8 @@ export function inputSchemaForTool(tool: string): JsonSchema {
         page_id: stringSchema("Optional page id. Defaults to the active page."),
         ref: stringSchema("File-input ref from browser.get_snapshot or browser.get_interactive_elements."),
         selector: stringSchema("CSS selector for an input element with type=file."),
-        file_path: stringSchema("One local file to upload. The file must be inside an allowed workspace or temporary upload directory."),
-        file_paths: stringArraySchema("One or more local files to upload. Every file must be inside an allowed workspace or temporary upload directory."),
+        file_path: stringSchema("One accessible local file to upload."),
+        file_paths: stringArraySchema("One or more accessible local files to upload."),
         expected_url: stringSchema("Optional exact page URL from the latest snapshot. The upload is rejected if the active page has changed."),
         timeout_ms: numberSchema("Maximum upload-field wait in milliseconds. Defaults to 30000.")
       });
@@ -482,25 +523,93 @@ export function inputSchemaForTool(tool: string): JsonSchema {
       return emptyObjectSchema();
     case "workspace.list_projects":
       return objectSchema({
-        root: stringSchema("Optional allowed workspace root to scan. Defaults to all allowed roots."),
+        root: stringSchema("Optional local directory to scan. Defaults to the user's home directory."),
         max_depth: numberSchema("Maximum directory depth to scan. Defaults to 3, maximum 8."),
         max_results: numberSchema("Maximum projects to return. Defaults to 50, maximum 200.")
       });
     case "workspace.describe_project":
       return objectSchema({
         project: stringSchema("Preferred project key/name from workspace.list_projects. Use this instead of inventing absolute paths."),
-        path: stringSchema("Optional allowed local project directory to describe.")
+        path: stringSchema("Optional local project directory to describe.")
       });
+    case "filesystem.read_text_file":
+      return objectSchema(
+        {
+          project: stringSchema("Preferred project key/name from workspace.list_projects. Relative paths are resolved inside this project."),
+          path: stringSchema("File path relative to project, or an absolute local path."),
+          head: numberSchema("Return only the first N lines. Cannot be combined with tail."),
+          tail: numberSchema("Return only the last N lines. Cannot be combined with head.")
+        },
+        ["path"]
+      );
+    case "filesystem.read_multiple_files":
+      return objectSchema(
+        {
+          project: stringSchema("Preferred project key/name from workspace.list_projects. Relative paths are resolved inside this project."),
+          paths: stringArraySchema("One or more file paths relative to project, or absolute local paths.")
+        },
+        ["paths"]
+      );
+    case "filesystem.list_directory":
+      return filesystemPathSchema("Directory path relative to project, or an absolute local path.");
+    case "filesystem.directory_tree":
+      return objectSchema(
+        {
+          project: stringSchema("Preferred project key/name from workspace.list_projects. Relative paths are resolved inside this project."),
+          path: stringSchema("Directory path relative to project, or an absolute local path."),
+          excludePatterns: stringArraySchema("Optional glob patterns to exclude, for example node_modules, .git, or **/dist/**.")
+        },
+        ["path"]
+      );
+    case "filesystem.search_files":
+      return objectSchema(
+        {
+          project: stringSchema("Preferred project key/name from workspace.list_projects. Relative paths are resolved inside this project."),
+          path: stringSchema("Directory path relative to project, or an absolute local path. Filesystem roots and the home directory are rejected as too broad."),
+          pattern: stringSchema("Glob pattern relative to path, for example *.ts or **/*.vue."),
+          excludePatterns: stringArraySchema("Optional glob patterns to exclude from the search.")
+        },
+        ["path", "pattern"]
+      );
+    case "filesystem.create_directory":
+      return filesystemPathSchema("Directory path to create relative to project, or an absolute local path.");
+    case "filesystem.write_file":
+      return objectSchema(
+        {
+          project: stringSchema("Preferred project key/name from workspace.list_projects. Relative paths are resolved inside this project."),
+          path: stringSchema("File path to create or overwrite relative to project, or an absolute local path."),
+          content: stringSchema("Complete UTF-8 text content for the file.")
+        },
+        ["path", "content"]
+      );
+    case "filesystem.edit_file":
+      return objectSchema(
+        {
+          project: stringSchema("Preferred project key/name from workspace.list_projects. Relative paths are resolved inside this project."),
+          path: stringSchema("Existing file path relative to project, or an absolute local path."),
+          edits: {
+            type: "array",
+            description: "Exact text replacements to apply in order.",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                oldText: stringSchema("Exact text to find."),
+                newText: stringSchema("Replacement text.")
+              },
+              required: ["oldText", "newText"]
+            }
+          },
+          dryRun: booleanSchema("Preview changes and return a diff without writing the file.")
+        },
+        ["path", "edits"]
+      );
     case "shell.run":
       return objectSchema(
         {
-          command: stringSchema("Shell command to run. Prefer simple inspection commands. Output is bounded."),
+          command: stringSchema("Shell command to run. Output is bounded. Permission and approval are controlled by Clero before the command is forwarded."),
           project: stringSchema("Preferred project key/name from workspace.list_projects. Use this instead of inventing absolute paths."),
           cwd: stringSchema("Optional allowed working directory. Prefer project unless the user provided an exact path."),
-          access: stringEnumSchema(
-            ["read-only", "workspace-write", "danger-full-access"],
-            "Requested shell access. The local connector must explicitly allow write or full local access."
-          ),
           timeout_ms: numberSchema("Maximum runtime in milliseconds. Defaults to 30000 and is capped by local settings."),
           max_output_bytes: numberSchema("Maximum stdout/stderr bytes to retain per stream. Defaults to 200000 and is capped by local settings."),
           shell: stringSchema("Optional shell executable configured locally. Most agents should omit this.")
@@ -544,12 +653,7 @@ export function inputSchemaForTool(tool: string): JsonSchema {
     case "coding_agent.get_output":
       return objectSchema(
         {
-          task_id: stringSchema("Local coding task id returned by coding_agent.start_task."),
-          include_events: booleanSchema("Include parsed coding-agent JSONL events for diagnostics. Defaults to false."),
-          include_raw: booleanSchema("Include raw stdout, stderr, and mixed raw output for diagnostics. Defaults to false."),
-          debug: booleanSchema("Include both raw streams and parsed events. Defaults to false."),
-          since_event_index: numberSchema("When including events, return coding-agent JSONL events starting at this event index."),
-          max_events: numberSchema("When including events, maximum number of events to return.")
+          task_id: stringSchema("Local coding task id returned by coding_agent.start_task.")
         },
         ["task_id"]
       );
@@ -564,13 +668,30 @@ export function inputSchemaForTool(tool: string): JsonSchema {
         cwd: stringSchema("Optional allowed git working directory. Prefer project unless the user provided an exact path."),
         staged: booleanSchema("Return staged diff instead of unstaged diff.")
       });
+    case "git.list_branches":
+      return objectSchema({
+        project: stringSchema("Preferred project key/name from workspace.list_projects. Use this instead of inventing absolute paths."),
+        cwd: stringSchema("Optional allowed git working directory. Prefer project unless the user provided an exact path.")
+      });
+    case "git.checkout":
+      return objectSchema(
+        {
+          project: stringSchema("Preferred project key/name from workspace.list_projects. Use this instead of inventing absolute paths."),
+          cwd: stringSchema("Optional allowed git working directory. Prefer project unless the user provided an exact path."),
+          branch: stringSchema("Existing branch to switch to, or the name of the new branch."),
+          create: booleanSchema("Create the branch before switching to it."),
+          approval_token: stringSchema("Internal one-time approval token supplied by Clero after explicit user confirmation.")
+        },
+        ["branch"]
+      );
     case "git.commit":
       return objectSchema(
         {
           project: stringSchema("Preferred project key/name from workspace.list_projects. Use this instead of inventing absolute paths."),
           cwd: stringSchema("Optional allowed git working directory. Prefer project unless the user provided an exact path."),
           message: stringSchema("Commit message."),
-          paths: stringArraySchema("Optional paths to stage before committing.")
+          paths: stringArraySchema("Optional paths to stage before committing."),
+          approval_token: stringSchema("Internal one-time approval token supplied by Clero after explicit user confirmation.")
         },
         ["message"]
       );
@@ -579,7 +700,9 @@ export function inputSchemaForTool(tool: string): JsonSchema {
         project: stringSchema("Preferred project key/name from workspace.list_projects. Use this instead of inventing absolute paths."),
         cwd: stringSchema("Optional allowed git working directory. Prefer project unless the user provided an exact path."),
         remote: stringSchema("Git remote name. Defaults to origin."),
-        branch: stringSchema("Branch to push. Defaults to the current branch.")
+        branch: stringSchema("Branch to push. Defaults to the current branch."),
+        set_upstream: booleanSchema("Set the selected remote branch as upstream."),
+        approval_token: stringSchema("Internal one-time approval token supplied by Clero after explicit user confirmation.")
       });
     default:
       return emptyObjectSchema();
@@ -601,7 +724,7 @@ export function defaultCapabilities(): Capability[] {
     capability("browser.drag", "Drag from one page coordinate to another."),
     capability("browser.type", "Type text using keyboard input. With a target field, click first and append without clearing existing text."),
     capability("browser.fill", "Replace the value of a targeted input field by ref or selector."),
-    capability("browser.upload_file", "Select allowed workspace or temporary files on a browser file input and dispatch its input/change events. Inspect the page afterward for application-level acceptance."),
+    capability("browser.upload_file", "Select accessible local files on a browser file input and dispatch its input/change events. Inspect the page afterward for application-level acceptance."),
     capability("browser.press_key", "Press a keyboard key or shortcut in the browser."),
     capability("browser.screenshot", "Capture a screenshot from the active tab."),
     capability("browser.get_console_logs", "Return captured console output."),
@@ -612,16 +735,26 @@ export function defaultCapabilities(): Capability[] {
     capability("browser.close_page", "Compatibility alias for browser.close_tab."),
     capability("browser_debug.list_tools", "List Chrome DevTools MCP debugging tools available for the local browser."),
     capability("browser_debug.call_tool", "Call a Chrome DevTools MCP debugging tool by name. Use browser_debug.list_tools first."),
-    capability("workspace.list_roots", "List local filesystem roots the agent is allowed to inspect. Use this before choosing a project path."),
-    capability("workspace.list_projects", "Discover local projects under allowed roots. Use the returned project key/name for coding and git tools instead of inventing absolute paths."),
+    capability("workspace.list_roots", "List the local filesystem roots available to the desktop runtime and its default working directory."),
+    capability("workspace.list_projects", "Discover local projects under a requested directory, or the user's home directory by default."),
     capability("workspace.describe_project", "Inspect a discovered local project key/name or path and summarize markers, stack, package metadata, and git state."),
-    capability("shell.run", "Run a bounded local shell command in a discovered project. Shell is disabled by default and write/full access require local user settings."),
+    capability("filesystem.read_text_file", "Read a text file from a local project through the MCP Filesystem server."),
+    capability("filesystem.read_multiple_files", "Read several text files from a local project through the MCP Filesystem server."),
+    capability("filesystem.list_directory", "List a directory in a local project through the MCP Filesystem server."),
+    capability("filesystem.directory_tree", "Return a recursive directory tree through the MCP Filesystem server."),
+    capability("filesystem.search_files", "Find files and directories by glob pattern inside a selected project or narrow directory through the MCP Filesystem server."),
+    capability("filesystem.create_directory", "Create a directory in a local project through the MCP Filesystem server."),
+    capability("filesystem.write_file", "Create or overwrite a text file in a local project through the MCP Filesystem server."),
+    capability("filesystem.edit_file", "Apply exact text edits to a file and return a diff through the MCP Filesystem server."),
+    capability("shell.run", "Run a bounded local shell command in a discovered project. Shell permission and approval are controlled by Clero backend guardrails."),
     capability("coding_agent.start_task", "Start a local Codex, Claude Code, Antigravity, or Cursor task in a discovered project. Prefer project over absolute cwd. Set continue_session=true to resume prior context for the same agent/project when available. Returns immediately with task_id; poll coding_agent.get_status/get_output."),
     capability("coding_agent.get_status", "Get local coding-agent task status by task_id."),
-    capability("coding_agent.get_output", "Read local coding-agent message output by task_id. Raw streams and events are opt-in diagnostics."),
+    capability("coding_agent.get_output", "Read only the latest concise progress update or final result for a local coding-agent task."),
     capability("coding_agent.cancel", "Cancel a running local coding-agent task."),
     capability("git.status", "Read git status for a discovered project. Prefer project over absolute cwd."),
     capability("git.diff", "Read git diff for a discovered project. Prefer project over absolute cwd."),
+    capability("git.list_branches", "List local and remote git branches for a discovered project."),
+    capability("git.checkout", "Switch to or create a git branch after local approval."),
     capability("git.commit", "Create a git commit in a discovered project after local approval. Prefer project over absolute cwd."),
     capability("git.push", "Push git commits from a discovered project after local approval. Prefer project over absolute cwd.")
   ];
@@ -647,6 +780,9 @@ export function capabilityGroups(tool: string): string[] {
   if (tool.startsWith("workspace.")) {
     return ["codex", "git_read", "git_write", "shell"];
   }
+  if (tool.startsWith("filesystem.")) {
+    return ["shell"];
+  }
   if (tool.startsWith("shell.")) {
     return ["shell"];
   }
@@ -664,6 +800,16 @@ export function capabilityGroups(tool: string): string[] {
 
 function emptyObjectSchema(): JsonSchema {
   return objectSchema({});
+}
+
+function filesystemPathSchema(pathDescription: string): JsonSchema {
+  return objectSchema(
+    {
+      project: stringSchema("Preferred project key/name from workspace.list_projects. Relative paths are resolved inside this project."),
+      path: stringSchema(pathDescription)
+    },
+    ["path"]
+  );
 }
 
 function objectSchema(properties: JsonObject, required: string[] = []): JsonSchema {

@@ -1,4 +1,5 @@
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { readdir, readFile } from "node:fs/promises";
@@ -9,11 +10,14 @@ import type { JsonObject } from "@clero-local-agent/protocol";
 export type WorkspacePolicyOptions = {
   allowedDirectories: string[];
   allowedFileDirectories?: string[];
+  defaultDirectory?: string;
 };
 
 export class WorkspacePolicy {
   private readonly allowedDirectories: string[];
   private readonly allowedFileDirectories: string[];
+  private readonly discoveryDirectories: string[];
+  private readonly defaultWorkspaceDirectory: string | null;
   private readonly unavailableDirectories: string[];
 
   constructor(options: WorkspacePolicyOptions) {
@@ -46,6 +50,19 @@ export class WorkspacePolicy {
       }
     }
     this.allowedFileDirectories = uniqueStrings(allowedFileDirectories);
+    const homeDirectory = tryRealpath(os.homedir());
+    this.discoveryDirectories = homeDirectory &&
+      this.isResolvedPathAllowed(homeDirectory) &&
+      this.allowedDirectories.some(isFilesystemRoot)
+      ? [homeDirectory]
+      : [...this.allowedDirectories];
+    const configuredDefaultDirectory = options.defaultDirectory
+      ? tryRealpath(path.resolve(options.defaultDirectory))
+      : null;
+    this.defaultWorkspaceDirectory = configuredDefaultDirectory &&
+      this.isResolvedPathAllowed(configuredDefaultDirectory)
+      ? configuredDefaultDirectory
+      : null;
     this.unavailableDirectories = uniqueStrings(unavailableDirectories);
   }
 
@@ -81,7 +98,7 @@ export class WorkspacePolicy {
 
     const candidates = path.isAbsolute(trimmed)
       ? [trimmed]
-      : this.allowedDirectories.map((root) => path.join(root, trimmed));
+      : this.discoveryDirectories.map((root) => path.join(root, trimmed));
     const matches: string[] = [];
     for (const filePath of uniqueStrings(candidates)) {
       const resolved = tryRealpath(filePath);
@@ -123,17 +140,50 @@ export class WorkspacePolicy {
     );
   }
 
+  resolveAllowedPath(candidate: string, baseDirectory?: string): string {
+    const trimmed = String(candidate ?? "").trim();
+    if (!trimmed) {
+      throw new ToolExecutionError("invalid_arguments", "path is required");
+    }
+
+    const base = baseDirectory
+      ? this.resolveAllowedDirectory(baseDirectory)
+      : this.defaultDirectory();
+    const absolutePath = path.resolve(path.isAbsolute(trimmed) ? trimmed : path.join(base, trimmed));
+    const existingAncestor = nearestExistingPath(absolutePath);
+    if (!existingAncestor) {
+      throw new ToolExecutionError(
+        "invalid_arguments",
+        `Path cannot be resolved inside an allowed workspace: ${candidate}`,
+        { allowed_roots: this.listAllowedDirectories() }
+      );
+    }
+
+    const resolvedAncestor = realpathSync(existingAncestor);
+    const unresolvedSuffix = path.relative(existingAncestor, absolutePath);
+    const resolvedPath = path.resolve(resolvedAncestor, unresolvedSuffix);
+    if (!this.isResolvedPathAllowed(resolvedPath)) {
+      throw new ToolExecutionError(
+        "invalid_arguments",
+        `Path is outside allowed workspaces: ${candidate}. Allowed roots: ${this.allowedDirectories.join(", ")}`,
+        { allowed_roots: this.listAllowedDirectories() }
+      );
+    }
+
+    return resolvedPath;
+  }
+
   isAllowed(candidate: string): boolean {
     const resolved = resolveExistingCwd(candidate);
     return this.isResolvedPathAllowed(resolved);
   }
 
   private isResolvedPathAllowed(resolved: string): boolean {
-    return this.allowedDirectories.some((allowed) => resolved === allowed || resolved.startsWith(`${allowed}${path.sep}`));
+    return this.allowedDirectories.some((allowed) => isPathWithinRoot(resolved, allowed));
   }
 
   private isResolvedFilePathAllowed(resolved: string): boolean {
-    return this.allowedFileDirectories.some((allowed) => resolved === allowed || resolved.startsWith(`${allowed}${path.sep}`));
+    return this.allowedFileDirectories.some((allowed) => isPathWithinRoot(resolved, allowed));
   }
 
   private resolveCandidateDirectory(candidate: string): string {
@@ -144,7 +194,11 @@ export class WorkspacePolicy {
     const trimmed = candidate.trim();
     const directCandidates = path.isAbsolute(trimmed)
       ? [trimmed]
-      : [path.resolve(trimmed), ...this.allowedDirectories.map((root) => path.join(root, trimmed))];
+      : [
+          path.resolve(trimmed),
+          path.join(this.defaultDirectory(), trimmed),
+          ...this.allowedDirectories.map((root) => path.join(root, trimmed))
+        ];
 
     for (const directCandidate of uniqueStrings(directCandidates)) {
       const resolved = tryRealpath(directCandidate);
@@ -188,6 +242,10 @@ export class WorkspacePolicy {
       return this.resolveAllowedDirectory(candidate);
     }
 
+    if (this.defaultWorkspaceDirectory) {
+      return this.defaultWorkspaceDirectory;
+    }
+
     const defaultDirectory = this.defaultDirectory();
     if (directoryHasProjectMarkers(defaultDirectory)) {
       return defaultDirectory;
@@ -212,7 +270,8 @@ export class WorkspacePolicy {
   }
 
   private projectSuggestion(projectPath: string): JsonObject {
-    const root = this.allowedDirectories.find((allowedRoot) => projectPath === allowedRoot || projectPath.startsWith(`${allowedRoot}${path.sep}`));
+    const root = [...this.discoveryDirectories, ...this.allowedDirectories]
+      .find((allowedRoot) => isPathWithinRoot(projectPath, allowedRoot));
     return {
       project: path.relative(root ?? this.defaultDirectory(), projectPath) || path.basename(projectPath),
       path: projectPath
@@ -221,7 +280,7 @@ export class WorkspacePolicy {
 
   private findProjectMatches(lookup: string): string[] {
     const matches: string[] = [];
-    for (const root of this.allowedDirectories) {
+    for (const root of this.discoveryDirectories) {
       scanProjectsSync({
         current: root,
         depth: 0,
@@ -235,7 +294,7 @@ export class WorkspacePolicy {
 
   private findProjects(): string[] {
     const projects: string[] = [];
-    for (const root of this.allowedDirectories) {
+    for (const root of this.discoveryDirectories) {
       scanProjectDirectoriesSync({
         current: root,
         depth: 0,
@@ -250,6 +309,10 @@ export class WorkspacePolicy {
     return [...this.allowedDirectories];
   }
 
+  listDiscoveryDirectories(): string[] {
+    return [...this.discoveryDirectories];
+  }
+
   listAllowedFileDirectories(): string[] {
     return [...this.allowedFileDirectories];
   }
@@ -259,7 +322,9 @@ export class WorkspacePolicy {
   }
 
   defaultDirectory(): string {
-    const defaultDirectory = this.allowedDirectories[0];
+    const defaultDirectory = this.defaultWorkspaceDirectory ??
+      this.discoveryDirectories[0] ??
+      this.allowedDirectories[0];
     if (!defaultDirectory) {
       throw this.noAllowedDirectoriesError();
     }
@@ -270,7 +335,7 @@ export class WorkspacePolicy {
     const missing = this.unavailableDirectories.length > 0 ? ` Missing configured roots: ${this.unavailableDirectories.join(", ")}` : "";
     return new ToolExecutionError(
       "invalid_arguments",
-      `No allowed workspace directories are available. Add an existing folder in Clero Local Agent settings.${missing}`,
+      `No local filesystem roots are available.${missing}`,
       {
         allowed_roots: this.listAllowedDirectories(),
         unavailable_roots: this.listUnavailableDirectories()
@@ -296,7 +361,7 @@ export class WorkspaceTools {
       },
       {
         name: "workspace.list_projects",
-        description: "Discover local projects under allowed roots. Use the returned project key/name for coding and git tools instead of inventing absolute paths.",
+        description: "Discover local projects under a requested root, or the home directory by default. Use the returned project key/name or exact path for coding and git tools.",
         requiresLease: false,
         handler: (args) => this.listProjects(args)
       },
@@ -310,18 +375,22 @@ export class WorkspaceTools {
   }
 
   listRoots(): JsonObject {
+    const roots = this.workspacePolicy.listAllowedDirectories();
     return {
-      roots: this.workspacePolicy.listAllowedDirectories().map((root) => ({
+      roots: roots.map((root) => ({
         path: root,
-        name: path.basename(root)
+        name: path.basename(root) || "Filesystem"
       })),
+      default_directory: roots.length > 0
+        ? this.workspacePolicy.defaultDirectory()
+        : null,
       unavailable_roots: this.workspacePolicy.listUnavailableDirectories()
     };
   }
 
   async listProjects(args: JsonObject = {}): Promise<JsonObject> {
     const root = optionalString(args, "root");
-    const roots = root ? [this.workspacePolicy.resolveAllowedDirectory(root)] : this.workspacePolicy.listAllowedDirectories();
+    const roots = root ? [this.workspacePolicy.resolveAllowedDirectory(root)] : this.workspacePolicy.listDiscoveryDirectories();
     const maxDepth = clampInteger(optionalNumber(args, "max_depth") ?? 3, 0, 8);
     const maxResults = clampInteger(optionalNumber(args, "max_results") ?? 50, 1, 200);
     const projects: JsonObject[] = [];
@@ -405,7 +474,7 @@ export class WorkspaceTools {
       if (input.projects.length >= input.maxResults) {
         return;
       }
-      if (!entry.isDirectory() || SKIP_DIRECTORIES.has(entry.name)) {
+      if (!entry.isDirectory() || shouldSkipDirectory(entry.name)) {
         continue;
       }
       await this.scanDirectory({
@@ -437,9 +506,30 @@ function tryRealpath(candidate: string): string | null {
   }
 }
 
+function nearestExistingPath(candidate: string): string | null {
+  let current = path.resolve(candidate);
+  while (!existsSync(current)) {
+    const parent = path.dirname(current);
+    if (parent === current) {
+      return null;
+    }
+    current = parent;
+  }
+  return current;
+}
+
 function projectLookupName(candidate: string): string {
   const normalized = candidate.replace(/[\\/]+$/, "");
   return path.basename(normalized).trim();
+}
+
+function isFilesystemRoot(directory: string): boolean {
+  return path.parse(directory).root === directory;
+}
+
+function isPathWithinRoot(candidate: string, root: string): boolean {
+  const rootPrefix = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
+  return candidate === root || candidate.startsWith(rootPrefix);
 }
 
 function uniqueStrings(values: string[]): string[] {
@@ -457,7 +547,7 @@ function scanProjectsSync(input: {
   const markers = markerNames(entries);
   const basename = path.basename(input.current);
   const packageName = readPackageJsonNameSync(input.current, markers);
-  if (markers.length > 0 && (basename === input.lookup || packageName === input.lookup)) {
+  if (basename === input.lookup || (markers.length > 0 && packageName === input.lookup)) {
     const resolved = tryRealpath(input.current);
     if (resolved) {
       input.matches.push(resolved);
@@ -469,7 +559,7 @@ function scanProjectsSync(input: {
   }
 
   for (const entry of entries) {
-    if (!entry.isDirectory() || SKIP_DIRECTORIES.has(entry.name)) {
+    if (!entry.isDirectory() || shouldSkipDirectory(entry.name)) {
       continue;
     }
     scanProjectsSync({
@@ -524,7 +614,7 @@ function scanProjectDirectoriesSync(input: {
   }
 
   for (const entry of entries) {
-    if (!entry.isDirectory() || SKIP_DIRECTORIES.has(entry.name)) {
+    if (!entry.isDirectory() || shouldSkipDirectory(entry.name)) {
       continue;
     }
     scanProjectDirectoriesSync({
@@ -571,6 +661,10 @@ const SKIP_DIRECTORIES = new Set([
   "target",
   "vendor"
 ]);
+
+function shouldSkipDirectory(name: string): boolean {
+  return name.startsWith(".") || SKIP_DIRECTORIES.has(name);
+}
 
 async function safeReadDir(directory: string): Promise<Dirent[]> {
   try {
