@@ -12,7 +12,11 @@ import {
 } from "@clero-local-agent/filesystem";
 import { ToolRegistry } from "@clero-local-agent/mcp-runtime";
 import type { JsonObject, JsonValue } from "@clero-local-agent/protocol";
-import { WorkspacePolicy, WorkspaceTools } from "@clero-local-agent/workspace";
+import {
+  withBackendAuthorizedDirectories,
+  WorkspacePolicy,
+  WorkspaceTools
+} from "@clero-local-agent/workspace";
 import { LeaseManager } from "../../daemon/src/lease-manager.ts";
 
 test("filesystem-root policy accepts any accessible folder and keeps discovery home-based", async () => {
@@ -86,6 +90,40 @@ test("filesystem tools call the official MCP server inside allowed roots", async
   } finally {
     await client.dispose();
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("filesystem MCP follows backend-authorized project roots per call", async () => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "clero-filesystem-backend-root-"));
+  const configuredRoot = path.join(parent, "configured");
+  const projectRoot = path.join(parent, "server-project");
+  await mkdir(configuredRoot);
+  await mkdir(projectRoot);
+  await writeFile(path.join(projectRoot, "README.md"), "backend authorized\n");
+  const workspacePolicy = new WorkspacePolicy({
+    allowedDirectories: [configuredRoot]
+  });
+  const client = new OfficialFilesystemMcpClient({
+    allowedDirectories: () => workspacePolicy.listAllowedDirectories()
+  });
+  const definitions = new FilesystemTools({ workspacePolicy, client }).definitions();
+
+  try {
+    await withBackendAuthorizedDirectories([projectRoot], async () => {
+      const result = await callTool(definitions, "filesystem.read_text_file", {
+        path: path.join(projectRoot, "README.md")
+      });
+      assert.equal(resultContent(result), "backend authorized\n");
+    });
+    await assert.rejects(
+      () => callTool(definitions, "filesystem.read_text_file", {
+        path: path.join(projectRoot, "README.md")
+      }),
+      /outside allowed workspaces/
+    );
+  } finally {
+    await client.dispose();
+    await rm(parent, { recursive: true, force: true });
   }
 });
 

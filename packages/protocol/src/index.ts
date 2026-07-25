@@ -129,6 +129,7 @@ export type ToolCallMessage = {
   parameters?: ToolArgumentsPayload;
   params?: ToolArgumentsPayload;
   metadata?: ToolArgumentsPayload;
+  authorized_directories?: string[];
 };
 
 export type ToolResultMessage =
@@ -321,7 +322,14 @@ export function isToolCallMessage(value: unknown): value is ToolCallMessage {
     isToolArgumentsPayload(value.tool_input) &&
     isToolArgumentsPayload(value.parameters) &&
     isToolArgumentsPayload(value.params) &&
-    isToolArgumentsPayload(value.metadata)
+    isToolArgumentsPayload(value.metadata) &&
+    (
+      value.authorized_directories === undefined ||
+      (
+        Array.isArray(value.authorized_directories) &&
+        value.authorized_directories.every((item) => typeof item === "string")
+      )
+    )
   );
 }
 

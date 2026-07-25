@@ -58,7 +58,11 @@ import {
   type RuntimeCapabilitySettings,
   type RuntimeMessage
 } from "@clero-local-agent/protocol";
-import { WorkspacePolicy, WorkspaceTools } from "@clero-local-agent/workspace";
+import {
+  withBackendAuthorizedDirectories,
+  WorkspacePolicy,
+  WorkspaceTools
+} from "@clero-local-agent/workspace";
 import { ConsoleAuditLogger, type AuditLogger } from "./audit-log.ts";
 import { LeaseManager } from "./lease-manager.ts";
 import { ConsoleLogger, type Logger } from "./logger.ts";
@@ -327,7 +331,10 @@ export class LocalRuntimeDaemon {
     if (isToolCallMessage(message)) {
       const runContext = toolCallRunContext(message);
       const toolArguments = toolCallArguments(message);
-      const result = await this.registry.execute(message, this.leaseManager);
+      const result = await withBackendAuthorizedDirectories(
+        message.authorized_directories ?? [],
+        () => this.registry.execute(message, this.leaseManager)
+      );
       this.auditLogger.record({
         at: new Date().toISOString(),
         event: "tool_call",
@@ -881,7 +888,7 @@ export class LocalRuntimeDaemon {
     });
     const workspaceTools = new WorkspaceTools(workspacePolicy);
     const filesystemMcpClient = new OfficialFilesystemMcpClient({
-      allowedDirectories: workspacePolicy.listAllowedDirectories()
+      allowedDirectories: () => workspacePolicy.listAllowedDirectories()
     });
     this.filesystemMcpClient = filesystemMcpClient;
     const filesystemTools = new FilesystemTools({

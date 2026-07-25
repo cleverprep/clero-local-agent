@@ -1749,11 +1749,19 @@ fn default_device_name() -> String {
 }
 
 fn default_allowed_directories() -> Vec<String> {
-    dirs::home_dir()
-        .map(|home| home.join("Projects"))
-        .filter(|projects| projects.is_dir())
-        .map(|projects| vec![projects.to_string_lossy().to_string()])
-        .unwrap_or_default()
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
+    [
+        home.join("Projects"),
+        home.join("projects"),
+        home.join("workspace"),
+        home.join("workspaces"),
+    ]
+    .into_iter()
+    .filter(|directory| directory.is_dir())
+    .map(|directory| directory.to_string_lossy().to_string())
+    .collect()
 }
 
 fn default_browser_profile_dir() -> PathBuf {

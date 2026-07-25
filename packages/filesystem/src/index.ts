@@ -141,7 +141,7 @@ export interface FilesystemMcpClient {
 }
 
 export type OfficialFilesystemMcpClientOptions = {
-  allowedDirectories: string[];
+  allowedDirectories: string[] | (() => string[]);
   serverEntrypoint?: string;
   maxResultBytes?: number;
   requestTimeoutMs?: number;
@@ -155,6 +155,7 @@ export class OfficialFilesystemMcpClient implements FilesystemMcpClient {
   private stderrTail = "";
   private nextId = 1;
   private readonly pending = new Map<number, PendingRequest>();
+  private activeAllowedDirectories: string[] = [];
 
   constructor(options: OfficialFilesystemMcpClientOptions) {
     this.options = options;
@@ -162,6 +163,7 @@ export class OfficialFilesystemMcpClient implements FilesystemMcpClient {
 
   async callTool(name: string, args: JsonObject): Promise<JsonValue> {
     try {
+      this.refreshAllowedDirectories();
       await this.ensureInitialized();
       const result = await this.request("tools/call", { name, arguments: args });
       if (isJsonObject(result) && result.isError === true) {
@@ -249,7 +251,7 @@ export class OfficialFilesystemMcpClient implements FilesystemMcpClient {
     const serverEntrypoint = resolveFilesystemServerEntrypoint(this.options.serverEntrypoint);
     this.stdoutBuffer = "";
     this.stderrTail = "";
-    const child = spawn(process.execPath, [serverEntrypoint, ...this.options.allowedDirectories], {
+    const child = spawn(process.execPath, [serverEntrypoint, ...this.activeAllowedDirectories], {
       env: process.env,
       stdio: "pipe"
     });
@@ -283,6 +285,34 @@ export class OfficialFilesystemMcpClient implements FilesystemMcpClient {
     });
 
     return child;
+  }
+
+  private configuredAllowedDirectories(): string[] {
+    const configured = typeof this.options.allowedDirectories === "function"
+      ? this.options.allowedDirectories()
+      : this.options.allowedDirectories;
+    return uniqueStrings(
+      configured
+        .map((directory) => String(directory ?? "").trim())
+        .filter(Boolean)
+    );
+  }
+
+  private refreshAllowedDirectories(): void {
+    const next = this.configuredAllowedDirectories();
+    if (
+      next.length === this.activeAllowedDirectories.length &&
+      next.every((directory, index) => directory === this.activeAllowedDirectories[index])
+    ) {
+      return;
+    }
+    const child = this.child;
+    this.child = null;
+    this.initializePromise = null;
+    this.stdoutBuffer = "";
+    this.rejectPending(new Error("MCP Filesystem roots changed"));
+    child?.kill();
+    this.activeAllowedDirectories = next;
   }
 
   private handleStdout(chunk: string): void {

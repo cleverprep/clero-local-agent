@@ -152,8 +152,15 @@ export function defaultRuntimeConfig(): LocalRuntimeConfig {
 }
 
 function defaultAllowedDirectories(): string[] {
-  const projectsDirectory = path.join(os.homedir(), "Projects");
-  return existsSync(projectsDirectory) ? [projectsDirectory] : [];
+  const homeDirectory = os.homedir();
+  return [...new Set(
+    [
+      path.join(homeDirectory, "Projects"),
+      path.join(homeDirectory, "projects"),
+      path.join(homeDirectory, "workspace"),
+      path.join(homeDirectory, "workspaces")
+    ].filter((directory) => existsSync(directory))
+  )];
 }
 
 export async function loadRuntimeConfig(configPath: string): Promise<LocalRuntimeConfig> {

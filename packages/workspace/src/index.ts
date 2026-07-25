@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -12,6 +13,21 @@ export type WorkspacePolicyOptions = {
   allowedFileDirectories?: string[];
   defaultDirectory?: string;
 };
+
+const backendAuthorizedDirectories = new AsyncLocalStorage<string[]>();
+
+export function withBackendAuthorizedDirectories<T>(
+  directories: string[],
+  operation: () => Promise<T>
+): Promise<T> {
+  const resolved = uniqueStrings(
+    directories
+      .map((directory) => tryRealpath(path.resolve(String(directory ?? "").trim())))
+      .filter((directory): directory is string => Boolean(directory))
+      .filter((directory) => !isFilesystemRoot(directory))
+  );
+  return backendAuthorizedDirectories.run(resolved, operation);
+}
 
 export class WorkspacePolicy {
   private readonly allowedDirectories: string[];
@@ -179,7 +195,7 @@ export class WorkspacePolicy {
   }
 
   private isResolvedPathAllowed(resolved: string): boolean {
-    return this.allowedDirectories.some((allowed) => isPathWithinRoot(resolved, allowed));
+    return this.effectiveAllowedDirectories().some((allowed) => isPathWithinRoot(resolved, allowed));
   }
 
   private isResolvedFilePathAllowed(resolved: string): boolean {
@@ -187,7 +203,8 @@ export class WorkspacePolicy {
   }
 
   private resolveCandidateDirectory(candidate: string): string {
-    if (this.allowedDirectories.length === 0) {
+    const allowedDirectories = this.effectiveAllowedDirectories();
+    if (allowedDirectories.length === 0) {
       throw this.noAllowedDirectoriesError();
     }
 
@@ -197,7 +214,7 @@ export class WorkspacePolicy {
       : [
           path.resolve(trimmed),
           path.join(this.defaultDirectory(), trimmed),
-          ...this.allowedDirectories.map((root) => path.join(root, trimmed))
+          ...allowedDirectories.map((root) => path.join(root, trimmed))
         ];
 
     for (const directCandidate of uniqueStrings(directCandidates)) {
@@ -208,7 +225,7 @@ export class WorkspacePolicy {
       if (!this.isResolvedPathAllowed(resolved)) {
         throw new ToolExecutionError(
           "invalid_arguments",
-          `Path is outside allowed workspaces: ${candidate}. Allowed roots: ${this.allowedDirectories.join(", ")}`,
+          `Path is outside allowed workspaces: ${candidate}. Allowed roots: ${allowedDirectories.join(", ")}`,
           { allowed_roots: this.listAllowedDirectories() }
         );
       }
@@ -306,7 +323,7 @@ export class WorkspacePolicy {
   }
 
   listAllowedDirectories(): string[] {
-    return [...this.allowedDirectories];
+    return this.effectiveAllowedDirectories();
   }
 
   listDiscoveryDirectories(): string[] {
@@ -322,13 +339,21 @@ export class WorkspacePolicy {
   }
 
   defaultDirectory(): string {
+    const allowedDirectories = this.effectiveAllowedDirectories();
     const defaultDirectory = this.defaultWorkspaceDirectory ??
       this.discoveryDirectories[0] ??
-      this.allowedDirectories[0];
+      allowedDirectories[0];
     if (!defaultDirectory) {
       throw this.noAllowedDirectoriesError();
     }
     return defaultDirectory;
+  }
+
+  private effectiveAllowedDirectories(): string[] {
+    return uniqueStrings([
+      ...this.allowedDirectories,
+      ...(backendAuthorizedDirectories.getStore() ?? [])
+    ]);
   }
 
   private noAllowedDirectoriesError(): ToolExecutionError {

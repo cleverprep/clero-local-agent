@@ -5,7 +5,11 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { ToolExecutionError } from "@clero-local-agent/mcp-runtime";
-import { WorkspacePolicy, WorkspaceTools } from "../src/index.ts";
+import {
+  withBackendAuthorizedDirectories,
+  WorkspacePolicy,
+  WorkspaceTools
+} from "../src/index.ts";
 
 test("lists allowed workspace roots", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "clero-workspace-test-"));
@@ -26,6 +30,32 @@ test("uses the first allowed root as the default directory", async (t) => {
 
   assert.equal(policy.resolveAllowedDirectory(), realRoot);
   assert.equal(policy.resolveAllowedDirectory("."), realRoot);
+});
+
+test("temporarily allows an exact backend-authorized project root", async (t) => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "clero-backend-root-test-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const configuredRoot = path.join(parent, "configured");
+  const projectRoot = path.join(parent, "server-project");
+  await mkdir(configuredRoot);
+  await mkdir(projectRoot);
+  const policy = new WorkspacePolicy({ allowedDirectories: [configuredRoot] });
+
+  assert.throws(
+    () => policy.resolveAllowedDirectory(projectRoot),
+    /outside allowed workspaces/
+  );
+  await withBackendAuthorizedDirectories([projectRoot], async () => {
+    assert.equal(policy.resolveAllowedDirectory(projectRoot), realpathSync(projectRoot));
+    assert.deepEqual(policy.listAllowedDirectories(), [
+      realpathSync(configuredRoot),
+      realpathSync(projectRoot)
+    ]);
+  });
+  assert.throws(
+    () => policy.resolveAllowedDirectory(projectRoot),
+    /outside allowed workspaces/
+  );
 });
 
 test("rejects a missing cwd with an invalid arguments error", async (t) => {
