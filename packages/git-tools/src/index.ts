@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { access } from "node:fs/promises";
+import { isAbsolute, resolve } from "node:path";
 import type { ApprovalProvider } from "@clero-local-agent/approvals";
 import { ToolExecutionError, type ToolDefinition } from "@clero-local-agent/mcp-runtime";
 import type { JsonObject } from "@clero-local-agent/protocol";
@@ -56,6 +58,16 @@ export class GitTools {
         name: "git.push",
         description: "Push commits from a discovered project after local approval. Prefer project over absolute cwd.",
         handler: (args) => this.push(args)
+      },
+      {
+        name: "git.pull",
+        description: "Pull the configured upstream branch with rebase or merge after local approval.",
+        handler: (args) => this.pull(args)
+      },
+      {
+        name: "git.abort_pull",
+        description: "Abort an in-progress pull rebase or merge after local approval.",
+        handler: (args) => this.abortPull(args)
       }
     ];
   }
@@ -77,10 +89,12 @@ export class GitTools {
     const remote = await runGit(cwd, ["remote", "get-url", "origin"]);
     const unstagedCounts = parseNumstat(unstagedLines.stdout, "unstaged");
     const stagedCounts = parseNumstat(stagedLines.stdout, "staged");
+    const operation = await detectGitOperation(cwd);
     return {
       cwd,
       is_repository: true,
       ...parsePorcelainStatus(status.stdout),
+      operation,
       lines: {
         ...unstagedCounts,
         ...stagedCounts,
@@ -225,6 +239,122 @@ export class GitTools {
         : ["push", "--", remote]
     );
     return { cwd, approved: true, ...result };
+  }
+
+  async pull(args: JsonObject): Promise<JsonObject> {
+    const cwd = this.cwd(args);
+    const strategy = requiredString(args, "strategy").trim().toLowerCase();
+    if (strategy !== "rebase" && strategy !== "merge") {
+      throw new ToolExecutionError(
+        "invalid_arguments",
+        "Choose either rebase or merge."
+      );
+    }
+
+    const currentOperation = await detectGitOperation(cwd);
+    if (currentOperation) {
+      throw new ToolExecutionError(
+        "tool_failed",
+        `A Git ${currentOperation} is already in progress. Resolve it or abort it before pulling.`
+      );
+    }
+    const worktree = await runGit(cwd, ["status", "--porcelain"]);
+    if (worktree.exit_code !== 0) {
+      throw new ToolExecutionError(
+        "tool_failed",
+        worktree.stderr.trim() || "Could not inspect the Git working tree."
+      );
+    }
+    if (worktree.stdout.trim()) {
+      throw new ToolExecutionError(
+        "tool_failed",
+        "Commit or stash local changes before pulling remote changes."
+      );
+    }
+
+    const approvalToken = optionalString(args, "approval_token");
+    const approval = await this.options.approvalProvider.requestApproval({
+      tool: "git.pull",
+      summary: `Pull the configured upstream into ${cwd} with ${strategy}`,
+      metadata: approvalToken
+        ? { cwd, strategy, approval_token: approvalToken }
+        : { cwd, strategy }
+    });
+    if (!approval.approved) {
+      throw new ToolExecutionError("approval_denied", `Approval denied: ${approval.reason ?? "No reason provided"}`);
+    }
+
+    const result = await runGit(
+      cwd,
+      strategy === "rebase"
+        ? ["pull", "--rebase"]
+        : ["pull", "--no-rebase", "--no-edit"]
+    );
+    if (result.exit_code === 0) {
+      return {
+        cwd,
+        approved: true,
+        strategy,
+        operation: null,
+        conflicted: false,
+        conflict_paths: [],
+        ...result
+      };
+    }
+
+    const conflictPathsResult = await runGit(cwd, ["diff", "--name-only", "--diff-filter=U"]);
+    const conflictPaths = conflictPathsResult.exit_code === 0
+      ? conflictPathsResult.stdout.split(/\r?\n/).map((path) => path.trim()).filter(Boolean)
+      : [];
+    const operation = await detectGitOperation(cwd);
+    if (conflictPaths.length > 0 && operation) {
+      return {
+        cwd,
+        approved: true,
+        strategy,
+        operation,
+        conflicted: true,
+        conflict_paths: conflictPaths,
+        ...result
+      };
+    }
+
+    throw new ToolExecutionError(
+      "tool_failed",
+      result.stderr.trim() || result.stdout.trim() || "Could not pull remote changes."
+    );
+  }
+
+  async abortPull(args: JsonObject): Promise<JsonObject> {
+    const cwd = this.cwd(args);
+    const operation = await detectGitOperation(cwd);
+    if (operation !== "rebase" && operation !== "merge") {
+      throw new ToolExecutionError(
+        "tool_failed",
+        "There is no pull rebase or merge to abort."
+      );
+    }
+
+    const approvalToken = optionalString(args, "approval_token");
+    const approval = await this.options.approvalProvider.requestApproval({
+      tool: "git.abort_pull",
+      summary: `Abort the in-progress Git ${operation} in ${cwd}`,
+      metadata: approvalToken
+        ? { cwd, operation, approval_token: approvalToken }
+        : { cwd, operation }
+    });
+    if (!approval.approved) {
+      throw new ToolExecutionError("approval_denied", `Approval denied: ${approval.reason ?? "No reason provided"}`);
+    }
+
+    const result = await runGit(cwd, [operation, "--abort"]);
+    if (result.exit_code !== 0) {
+      throw new ToolExecutionError(
+        "tool_failed",
+        result.stderr.trim() || result.stdout.trim() || `Could not abort Git ${operation}.`
+      );
+    }
+    return { cwd, approved: true, aborted: true, operation, ...result };
   }
 
   private cwd(args: JsonObject): string {
@@ -384,6 +514,27 @@ async function runGit(cwd: string, args: string[]): Promise<GitCommandResult> {
       });
     });
   });
+}
+
+async function detectGitOperation(cwd: string): Promise<"rebase" | "merge" | null> {
+  const mergeHead = await runGit(cwd, ["rev-parse", "-q", "--verify", "MERGE_HEAD"]);
+  if (mergeHead.exit_code === 0) return "merge";
+
+  const rebaseHead = await runGit(cwd, ["rev-parse", "-q", "--verify", "REBASE_HEAD"]);
+  if (rebaseHead.exit_code === 0) return "rebase";
+
+  for (const marker of ["rebase-merge", "rebase-apply"]) {
+    const gitPath = await runGit(cwd, ["rev-parse", "--git-path", marker]);
+    if (gitPath.exit_code !== 0 || !gitPath.stdout.trim()) continue;
+    try {
+      const markerPath = gitPath.stdout.trim();
+      await access(isAbsolute(markerPath) ? markerPath : resolve(cwd, markerPath));
+      return "rebase";
+    } catch {
+      // The marker does not exist.
+    }
+  }
+  return null;
 }
 
 function requiredString(args: JsonObject, key: string): string {

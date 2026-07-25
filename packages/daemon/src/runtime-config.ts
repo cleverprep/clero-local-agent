@@ -388,7 +388,9 @@ export function capabilitiesFromConfig(config: LocalRuntimeConfig): Capability[]
     if (
       capability.name === "git.checkout" ||
       capability.name === "git.commit" ||
-      capability.name === "git.push"
+      capability.name === "git.push" ||
+      capability.name === "git.pull" ||
+      capability.name === "git.abort_pull"
     ) {
       return options.git?.writeEnabled !== false;
     }

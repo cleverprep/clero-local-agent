@@ -1131,7 +1131,9 @@ export class LocalRuntimeDaemon {
     if (
       toolName === "git.checkout" ||
       toolName === "git.commit" ||
-      toolName === "git.push"
+      toolName === "git.push" ||
+      toolName === "git.pull" ||
+      toolName === "git.abort_pull"
     ) {
       return this.options.capabilities?.git?.writeEnabled !== false;
     }

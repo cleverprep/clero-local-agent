@@ -52,6 +52,8 @@ export type ToolName =
   | "git.checkout"
   | "git.commit"
   | "git.push"
+  | "git.pull"
+  | "git.abort_pull"
   | `${string}.${string}`;
 
 export type ErrorCode =
@@ -367,11 +369,23 @@ export function toolRequiresLease(tool: string): boolean {
     return true;
   }
 
-  return tool === "git.checkout" || tool === "git.commit" || tool === "git.push";
+  return (
+    tool === "git.checkout" ||
+    tool === "git.commit" ||
+    tool === "git.push" ||
+    tool === "git.pull" ||
+    tool === "git.abort_pull"
+  );
 }
 
 export function toolCapabilityAccess(tool: string): CapabilityAccess {
-  if (tool === "git.checkout" || tool === "git.commit" || tool === "git.push") {
+  if (
+    tool === "git.checkout" ||
+    tool === "git.commit" ||
+    tool === "git.push" ||
+    tool === "git.pull" ||
+    tool === "git.abort_pull"
+  ) {
     return "approval_required";
   }
 
@@ -704,6 +718,22 @@ export function inputSchemaForTool(tool: string): JsonSchema {
         set_upstream: booleanSchema("Set the selected remote branch as upstream."),
         approval_token: stringSchema("Internal one-time approval token supplied by Clero after explicit user confirmation.")
       });
+    case "git.pull":
+      return objectSchema(
+        {
+          project: stringSchema("Preferred project key/name from workspace.list_projects. Use this instead of inventing absolute paths."),
+          cwd: stringSchema("Optional allowed git working directory. Prefer project unless the user provided an exact path."),
+          strategy: stringEnumSchema(["rebase", "merge"], "How to integrate upstream changes."),
+          approval_token: stringSchema("Internal one-time approval token supplied by Clero after explicit user confirmation.")
+        },
+        ["strategy"]
+      );
+    case "git.abort_pull":
+      return objectSchema({
+        project: stringSchema("Preferred project key/name from workspace.list_projects. Use this instead of inventing absolute paths."),
+        cwd: stringSchema("Optional allowed git working directory. Prefer project unless the user provided an exact path."),
+        approval_token: stringSchema("Internal one-time approval token supplied by Clero after explicit user confirmation.")
+      });
     default:
       return emptyObjectSchema();
   }
@@ -756,7 +786,9 @@ export function defaultCapabilities(): Capability[] {
     capability("git.list_branches", "List local and remote git branches for a discovered project."),
     capability("git.checkout", "Switch to or create a git branch after local approval."),
     capability("git.commit", "Create a git commit in a discovered project after local approval. Prefer project over absolute cwd."),
-    capability("git.push", "Push git commits from a discovered project after local approval. Prefer project over absolute cwd.")
+    capability("git.push", "Push git commits from a discovered project after local approval. Prefer project over absolute cwd."),
+    capability("git.pull", "Pull the configured upstream branch with rebase or merge after local approval."),
+    capability("git.abort_pull", "Abort an in-progress pull rebase or merge after local approval.")
   ];
 }
 
@@ -791,7 +823,7 @@ export function capabilityGroups(tool: string): string[] {
   }
   if (tool.startsWith("git.")) {
     const verb = tool.split(".", 2)[1];
-    return ["commit", "push", "tag", "checkout", "reset", "merge", "rebase"].includes(verb)
+    return ["commit", "push", "pull", "abort_pull", "tag", "checkout", "reset", "merge", "rebase"].includes(verb)
       ? ["git_write"]
       : ["git_read"];
   }

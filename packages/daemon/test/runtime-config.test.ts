@@ -61,6 +61,8 @@ test("filters advertised capabilities from runtime config", () => {
   assert.equal(names.some((name) => name.startsWith("coding_agent.")), false);
   assert.equal(names.includes("git.status"), true);
   assert.equal(names.includes("git.commit"), false);
+  assert.equal(names.includes("git.pull"), false);
+  assert.equal(names.includes("git.abort_pull"), false);
   assert.equal(names.includes("workspace.list_projects"), true);
 });
 

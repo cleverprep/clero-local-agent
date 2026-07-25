@@ -635,10 +635,14 @@ Git tools:
 
 - `git.status`
 - `git.diff`
+- `git.list_branches`
+- `git.checkout`
 - `git.commit`
 - `git.push`
+- `git.pull`
+- `git.abort_pull`
 
-`git.commit` and `git.push` require local approval. `git.status` and `git.diff` are read-only and do not require the active lease.
+Git write operations (`checkout`, `commit`, `push`, `pull`, and aborting a pull) require local approval. `git.status`, `git.diff`, and branch listing are read-only and do not require the active lease.
 
 ## Backend Integration Notes
 

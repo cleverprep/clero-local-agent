@@ -194,6 +194,8 @@ function workspaceKeyForToolCall(tool: ToolName, args: JsonObject): string | und
     tool !== "git.checkout" &&
     tool !== "git.commit" &&
     tool !== "git.push" &&
+    tool !== "git.pull" &&
+    tool !== "git.abort_pull" &&
     tool !== "shell.run" &&
     !tool.startsWith("filesystem.")
   ) {

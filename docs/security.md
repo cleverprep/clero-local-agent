@@ -63,6 +63,8 @@ Risky actions require local approval. For MVP this includes:
 
 - `git.commit`
 - `git.push`
+- `git.pull`
+- `git.abort_pull`
 - `shell.run` when requesting `workspace-write` or `danger-full-access`
 - coding-agent modes that can modify files or run with elevated sandbox permissions
 
