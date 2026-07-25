@@ -183,12 +183,24 @@ async function main(): Promise<void> {
   }
 
   if (command === "capabilities") {
-    console.log(JSON.stringify(capabilitiesFromConfig(runtimeConfig), null, 2));
+    console.log(
+      JSON.stringify(
+        capabilitiesFromConfig(runtimeConfig, capabilityOverrides(args)),
+        null,
+        2
+      )
+    );
     return;
   }
 
   if (command === "status") {
-    console.log(JSON.stringify(localStatus(configPath, runtimeConfig), null, 2));
+    console.log(
+      JSON.stringify(
+        localStatus(configPath, runtimeConfig, capabilityOverrides(args)),
+        null,
+        2
+      )
+    );
     return;
   }
 
@@ -599,7 +611,10 @@ async function runDaemon(args: CliArgs, runtimeConfig: LocalRuntimeConfig, confi
         return saved;
       }
     },
-    capabilities: capabilityOptionsFromConfig(runtimeConfig)
+    capabilities: capabilityOptionsFromConfig(
+      runtimeConfig,
+      capabilityOverrides(args)
+    )
   });
 
   await daemon.start();
@@ -623,7 +638,9 @@ async function pairWithBackend(
     code,
     deviceName: config.device_name,
     capabilities: {
-      tools: capabilitiesFromConfig(config).map((capability) => {
+      tools: capabilitiesFromConfig(config, {
+        gitWriteEnabled: true
+      }).map((capability) => {
         const tool = {
           name: capability.name,
           access: capability.access,
@@ -850,15 +867,20 @@ function applyGitFlags(config: LocalRuntimeConfig, args: CliArgs): void {
   if (getBoolean(args, "disable-git-read")) {
     config.capabilities.git.read_enabled = false;
   }
-  if (getBoolean(args, "enable-git-write")) {
-    config.capabilities.git.write_enabled = true;
-  }
-  if (getBoolean(args, "disable-git-write")) {
-    config.capabilities.git.write_enabled = false;
-  }
 }
 
-function localStatus(configPath: string, runtimeConfig: LocalRuntimeConfig): Record<string, unknown> {
+function capabilityOverrides(args: CliArgs): { gitWriteEnabled?: boolean } {
+  return getBoolean(args, "desktop-app")
+    ? {}
+    : { gitWriteEnabled: true };
+}
+
+function localStatus(
+  configPath: string,
+  runtimeConfig: LocalRuntimeConfig,
+  overrides: { gitWriteEnabled?: boolean }
+): Record<string, unknown> {
+  const capabilities = capabilityOptionsFromConfig(runtimeConfig, overrides);
   return {
     status: "offline",
     message: "Status is available while the daemon is running.",
@@ -875,7 +897,7 @@ function localStatus(configPath: string, runtimeConfig: LocalRuntimeConfig): Rec
       coding: runtimeConfig.capabilities?.codex?.enabled !== false,
       coding_provider: runtimeConfig.capabilities?.codex?.provider,
       git_read: runtimeConfig.capabilities?.git?.read_enabled !== false,
-      git_write: runtimeConfig.capabilities?.git?.write_enabled === true
+      git_write: capabilities.git?.writeEnabled !== false
     }
   };
 }
