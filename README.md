@@ -644,6 +644,8 @@ Git tools:
 
 Git write operations (`checkout`, `commit`, `push`, `pull`, and aborting a pull) require local approval. `git.status`, `git.diff`, and branch listing are read-only and do not require the active lease.
 
+The standalone `clero-connector` always advertises these approval-gated Git write tools. No Git-write enable flag is required. The Clero desktop app keeps its own local permission setting.
+
 ## Backend Integration Notes
 
 The backend should add a `LOCAL_RUNTIME` provider with:

@@ -266,7 +266,14 @@ export async function loadAgentsSyncSnapshot(filePath: string): Promise<AgentsSy
   return parseAgentsSyncSnapshot(JSON.parse(raw) as unknown);
 }
 
-export function capabilityOptionsFromConfig(config: LocalRuntimeConfig): LocalRuntimeCapabilityOptions {
+export type RuntimeCapabilityOverrides = {
+  gitWriteEnabled?: boolean;
+};
+
+export function capabilityOptionsFromConfig(
+  config: LocalRuntimeConfig,
+  overrides: RuntimeCapabilityOverrides = {}
+): LocalRuntimeCapabilityOptions {
   const codexSandbox = config.capabilities?.codex?.default_sandbox;
   const claudePermissionMode = config.capabilities?.codex?.claude_permission_mode;
   const claudeAllowWorkspaceWrite =
@@ -325,7 +332,9 @@ export function capabilityOptionsFromConfig(config: LocalRuntimeConfig): LocalRu
     },
     git: {
       readEnabled: config.capabilities?.git?.read_enabled,
-      writeEnabled: config.capabilities?.git?.write_enabled
+      writeEnabled:
+        overrides.gitWriteEnabled ??
+        config.capabilities?.git?.write_enabled
     }
   };
 }
@@ -351,8 +360,11 @@ function nonEmptyString(value: string | null | undefined): string | undefined {
   return trimmed ? trimmed : undefined;
 }
 
-export function capabilitiesFromConfig(config: LocalRuntimeConfig): Capability[] {
-  const options = capabilityOptionsFromConfig(config);
+export function capabilitiesFromConfig(
+  config: LocalRuntimeConfig,
+  overrides: RuntimeCapabilityOverrides = {}
+): Capability[] {
+  const options = capabilityOptionsFromConfig(config, overrides);
   return defaultCapabilities().filter((capability) => {
     if (capability.name.startsWith("browser.")) {
       if (

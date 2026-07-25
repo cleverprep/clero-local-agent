@@ -66,6 +66,25 @@ test("filters advertised capabilities from runtime config", () => {
   assert.equal(names.includes("workspace.list_projects"), true);
 });
 
+test("standalone override always advertises approval-gated git writes", () => {
+  const config = defaultRuntimeConfig();
+  config.capabilities!.git!.write_enabled = false;
+
+  const options = capabilityOptionsFromConfig(config, {
+    gitWriteEnabled: true
+  });
+  const names = capabilitiesFromConfig(config, {
+    gitWriteEnabled: true
+  }).map((capability) => capability.name);
+
+  assert.equal(options.git?.writeEnabled, true);
+  assert.equal(names.includes("git.checkout"), true);
+  assert.equal(names.includes("git.commit"), true);
+  assert.equal(names.includes("git.push"), true);
+  assert.equal(names.includes("git.pull"), true);
+  assert.equal(names.includes("git.abort_pull"), true);
+});
+
 test("advertises browser upload only for the managed browser provider", () => {
   const config = defaultRuntimeConfig();
 

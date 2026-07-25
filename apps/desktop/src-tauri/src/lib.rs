@@ -755,6 +755,7 @@ fn runtime_cli_command(config_path: &Path, subcommand: &str) -> Result<Command, 
             .arg(subcommand)
             .arg("--config")
             .arg(config_path)
+            .arg("--desktop-app")
             .env("PATH", runtime_path_env());
         return Ok(command);
     }
@@ -765,6 +766,7 @@ fn runtime_cli_command(config_path: &Path, subcommand: &str) -> Result<Command, 
             .arg(subcommand)
             .arg("--config")
             .arg(config_path)
+            .arg("--desktop-app")
             .env("PATH", runtime_path_env());
         return Ok(command);
     }
@@ -781,6 +783,7 @@ fn runtime_cli_command(config_path: &Path, subcommand: &str) -> Result<Command, 
         .arg(subcommand)
         .arg("--config")
         .arg(config_path)
+        .arg("--desktop-app")
         .env("PATH", runtime_path_env())
         .current_dir(repo_root);
     Ok(command)
