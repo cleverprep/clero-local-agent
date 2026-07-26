@@ -156,14 +156,31 @@ export class OfficialFilesystemMcpClient implements FilesystemMcpClient {
   private nextId = 1;
   private readonly pending = new Map<number, PendingRequest>();
   private activeAllowedDirectories: string[] = [];
+  private callQueue: Promise<void> = Promise.resolve();
 
   constructor(options: OfficialFilesystemMcpClientOptions) {
     this.options = options;
   }
 
-  async callTool(name: string, args: JsonObject): Promise<JsonValue> {
+  callTool(name: string, args: JsonObject): Promise<JsonValue> {
+    const allowedDirectories = this.configuredAllowedDirectories();
+    const operation = this.callQueue.then(
+      () => this.callToolWithDirectories(name, args, allowedDirectories)
+    );
+    this.callQueue = operation.then(
+      () => undefined,
+      () => undefined
+    );
+    return operation;
+  }
+
+  private async callToolWithDirectories(
+    name: string,
+    args: JsonObject,
+    allowedDirectories: string[]
+  ): Promise<JsonValue> {
     try {
-      this.refreshAllowedDirectories();
+      this.refreshAllowedDirectories(allowedDirectories);
       await this.ensureInitialized();
       const result = await this.request("tools/call", { name, arguments: args });
       if (isJsonObject(result) && result.isError === true) {
@@ -298,8 +315,7 @@ export class OfficialFilesystemMcpClient implements FilesystemMcpClient {
     );
   }
 
-  private refreshAllowedDirectories(): void {
-    const next = this.configuredAllowedDirectories();
+  private refreshAllowedDirectories(next: string[]): void {
     if (
       next.length === this.activeAllowedDirectories.length &&
       next.every((directory, index) => directory === this.activeAllowedDirectories[index])

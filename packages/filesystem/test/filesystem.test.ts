@@ -127,6 +127,45 @@ test("filesystem MCP follows backend-authorized project roots per call", async (
   }
 });
 
+test("filesystem MCP serializes concurrent calls with different authorized roots", async () => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "clero-filesystem-concurrent-roots-"));
+  const configuredRoot = path.join(parent, "configured");
+  const firstProject = path.join(parent, "first-project");
+  const secondProject = path.join(parent, "second-project");
+  await mkdir(configuredRoot);
+  await mkdir(firstProject);
+  await mkdir(secondProject);
+  await writeFile(path.join(firstProject, "README.md"), "first project\n");
+  await writeFile(path.join(secondProject, "README.md"), "second project\n");
+  const workspacePolicy = new WorkspacePolicy({
+    allowedDirectories: [configuredRoot]
+  });
+  const client = new OfficialFilesystemMcpClient({
+    allowedDirectories: () => workspacePolicy.listAllowedDirectories()
+  });
+  const definitions = new FilesystemTools({ workspacePolicy, client }).definitions();
+
+  try {
+    const [first, second] = await Promise.all([
+      withBackendAuthorizedDirectories([firstProject], () =>
+        callTool(definitions, "filesystem.read_text_file", {
+          path: path.join(firstProject, "README.md")
+        })
+      ),
+      withBackendAuthorizedDirectories([secondProject], () =>
+        callTool(definitions, "filesystem.read_text_file", {
+          path: path.join(secondProject, "README.md")
+        })
+      )
+    ]);
+    assert.equal(resultContent(first), "first project\n");
+    assert.equal(resultContent(second), "second project\n");
+  } finally {
+    await client.dispose();
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
 test("filesystem MCP requests fail locally before the backend timeout", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "clero-filesystem-timeout-test-"));
   const serverEntrypoint = path.join(root, "silent-server.mjs");
