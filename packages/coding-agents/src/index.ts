@@ -15,6 +15,18 @@ export type CodexReasoningEffort = "low" | "medium" | "high" | "xhigh";
 export type ClaudeCodePermissionMode = "default" | "acceptEdits" | "plan" | "auto" | "dontAsk" | "bypassPermissions";
 export type ClaudeCodeReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max";
 
+export type CodingTaskActionKind = "command" | "file_change" | "read" | "search" | "plan" | "tool";
+export type CodingTaskActionPhase = "started" | "completed";
+export type CodingTaskAction = {
+  id: string;
+  phase: CodingTaskActionPhase;
+  kind: CodingTaskActionKind;
+  name: string;
+  detail?: string;
+  success?: boolean;
+  error?: string;
+};
+
 export type CodingTaskEvent = {
   index: number;
   at: string;
@@ -22,6 +34,7 @@ export type CodingTaskEvent = {
   type: string;
   data?: JsonObject;
   text?: string;
+  actions?: CodingTaskAction[];
 };
 
 export type CodingTask = {
@@ -173,6 +186,7 @@ type StoredCodingTask = CodingTask & {
   nextEventIndex: number;
   stdoutBuffer: string;
   leaseHeartbeatTimer: ReturnType<typeof setInterval> | null;
+  actionState: Map<string, CodingTaskAction>;
   terminalCallbackCalled?: boolean;
 };
 
@@ -288,7 +302,8 @@ export class CodexCliAdapter implements CodingAgentAdapter {
       events: [],
       nextEventIndex: 0,
       stdoutBuffer: "",
-      leaseHeartbeatTimer: null
+      leaseHeartbeatTimer: null,
+      actionState: new Map()
     };
 
     this.tasks.set(taskId, task);
@@ -510,11 +525,13 @@ export class CodexCliAdapter implements CodingAgentAdapter {
 
   private handleCodexEvent(task: StoredCodingTask, event: JsonObject): void {
     const type = stringValue(event.type) ?? "codex.event";
+    const actions = normalizeCodingTaskActions("codex", event, task.actionState);
     this.appendEvent(task, {
       at: new Date().toISOString(),
       source: "codex",
       type,
-      data: event
+      data: event,
+      ...(actions.length > 0 ? { actions } : {})
     });
 
     if (type === "thread.started" && typeof event.thread_id === "string") {
@@ -734,7 +751,8 @@ export class AntigravityCliAdapter implements CodingAgentAdapter {
       events: [],
       nextEventIndex: 0,
       stdoutBuffer: "",
-      leaseHeartbeatTimer: null
+      leaseHeartbeatTimer: null,
+      actionState: new Map()
     };
 
     this.tasks.set(taskId, task);
@@ -974,11 +992,13 @@ export class AntigravityCliAdapter implements CodingAgentAdapter {
 
   private handleAntigravityEvent(task: StoredCodingTask, event: JsonObject): void {
     const type = stringValue(event.type) ?? "antigravity.event";
+    const actions = normalizeCodingTaskActions("antigravity", event, task.actionState);
     this.appendEvent(task, {
       at: new Date().toISOString(),
       source: "antigravity",
       type,
-      data: event
+      data: event,
+      ...(actions.length > 0 ? { actions } : {})
     });
 
     const text = structuredTextFromEvent(event);
@@ -1197,7 +1217,8 @@ export class CursorCliAdapter implements CodingAgentAdapter {
       events: [],
       nextEventIndex: 0,
       stdoutBuffer: "",
-      leaseHeartbeatTimer: null
+      leaseHeartbeatTimer: null,
+      actionState: new Map()
     };
 
     this.tasks.set(taskId, task);
@@ -1450,11 +1471,13 @@ export class CursorCliAdapter implements CodingAgentAdapter {
 
   private handleCursorEvent(task: StoredCodingTask, event: JsonObject): void {
     const type = stringValue(event.type) ?? "cursor.event";
+    const actions = normalizeCodingTaskActions("cursor", event, task.actionState);
     this.appendEvent(task, {
       at: new Date().toISOString(),
       source: "cursor",
       type,
-      data: event
+      data: event,
+      ...(actions.length > 0 ? { actions } : {})
     });
 
     const text = cursorTextFromEvent(event);
@@ -1669,7 +1692,8 @@ export class ClaudeCodeAdapter implements CodingAgentAdapter {
       events: [],
       nextEventIndex: 0,
       stdoutBuffer: "",
-      leaseHeartbeatTimer: null
+      leaseHeartbeatTimer: null,
+      actionState: new Map()
     };
 
     this.tasks.set(taskId, task);
@@ -1862,11 +1886,13 @@ export class ClaudeCodeAdapter implements CodingAgentAdapter {
 
   private handleClaudeEvent(task: StoredCodingTask, event: JsonObject): void {
     const type = stringValue(event.type) ?? "claude.event";
+    const actions = normalizeCodingTaskActions("claude-code", event, task.actionState);
     this.appendEvent(task, {
       at: new Date().toISOString(),
       source: "claude",
       type,
-      data: event
+      data: event,
+      ...(actions.length > 0 ? { actions } : {})
     });
 
     const text = claudeTextFromEvent(event);
@@ -2112,13 +2138,17 @@ function codingSessionPlan(
 ): CodingSessionPlan {
   const continueSession = booleanArg(args, "continue_session");
   const explicitKey = optionalString(args, "session_key");
+  const explicitProviderSessionId = optionalString(args, "provider_session_id");
   const key = explicitKey ?? (continueSession ? `${context.agentId ?? "agent"}:${cwd}` : undefined);
   const stored = key ? sessions.get(key) : undefined;
+  const providerSessionId = continueSession
+    ? explicitProviderSessionId ?? stored?.providerSessionId
+    : undefined;
   return {
     key,
     continueSession,
-    providerSessionId: continueSession ? stored?.providerSessionId : undefined,
-    resumed: continueSession && Boolean(stored?.providerSessionId)
+    providerSessionId,
+    resumed: continueSession && Boolean(providerSessionId)
   };
 }
 
@@ -2205,7 +2235,8 @@ function codingTaskOutputResult(task: StoredCodingTask, options: CodingOutputOpt
     output,
     message: output,
     final_message: task.final_message,
-    next_event_index: task.nextEventIndex
+    next_event_index: task.nextEventIndex,
+    events: task.events.slice(-100).map(publicCodingTaskEvent)
   };
 
   if (options.includeRaw) {
@@ -2215,6 +2246,57 @@ function codingTaskOutputResult(task: StoredCodingTask, options: CodingOutputOpt
   }
 
   return result;
+}
+
+function publicCodingTaskEvent(event: CodingTaskEvent): JsonObject {
+  const result: JsonObject = {
+    index: event.index,
+    at: event.at,
+    source: event.source,
+    type: event.type
+  };
+  const text = publicCodingTaskEventText(event);
+  if (text) {
+    result.text = appendBounded("", text, 4_000);
+  }
+  if (event.actions?.length) {
+    result.actions = event.actions as unknown as JsonValue;
+  }
+  if (isJsonObject(event.data?.item) && typeof event.data.item.type === "string") {
+    result.item_type = event.data.item.type;
+  }
+  return result;
+}
+
+function publicCodingTaskEventText(event: CodingTaskEvent): string | undefined {
+  if (event.actions?.[0]) {
+    const action = event.actions[0];
+    return action.detail || action.error || action.name;
+  }
+  if (event.text?.trim()) {
+    return event.text.trim();
+  }
+  const data = event.data;
+  if (!data) {
+    return undefined;
+  }
+  if (isJsonObject(data.item)) {
+    const itemText = stringValue(data.item.text) ?? stringValue(data.item.output);
+    if (itemText?.trim()) {
+      return itemText.trim();
+    }
+  }
+  const directText =
+    stringValue(data.result) ??
+    stringValue(data.text) ??
+    stringValue(data.message);
+  if (directText?.trim()) {
+    return directText.trim();
+  }
+  if (isJsonObject(data.message)) {
+    return claudeContentText(data.message.content)?.trim();
+  }
+  return undefined;
 }
 
 function agentVisibleOutput(task: CodingTask): string {
@@ -2390,6 +2472,329 @@ function claudeContentText(value: JsonValue | undefined): string | undefined {
     .map((item) => (isJsonObject(item) && typeof item.text === "string" ? item.text : undefined))
     .filter((text): text is string => Boolean(text && text.trim().length > 0));
   return chunks.length > 0 ? chunks.join("\n") : undefined;
+}
+
+export function normalizeCodingTaskActions(
+  provider: CodingAgentProvider,
+  event: JsonObject,
+  state: Map<string, CodingTaskAction> = new Map()
+): CodingTaskAction[] {
+  let actions: CodingTaskAction[] = [];
+  if (provider === "codex") {
+    actions = codexActionsFromEvent(event);
+  } else if (provider === "claude-code") {
+    actions = claudeActionsFromEvent(event, state);
+  } else if (provider === "cursor") {
+    actions = cursorActionsFromEvent(event);
+  } else if (provider === "antigravity") {
+    actions = antigravityActionsFromEvent(event, state);
+  }
+
+  return rememberNormalizedActions(actions, state);
+}
+
+function codexActionsFromEvent(event: JsonObject): CodingTaskAction[] {
+  if (!isJsonObject(event.item)) {
+    return [];
+  }
+
+  const item = event.item;
+  const itemType = normalizedActionName(stringValue(item.type) ?? "");
+  if (!isActionItemType(itemType)) {
+    return [];
+  }
+
+  const phase = actionPhaseFromEvent(event, item);
+  if (!phase) {
+    return [];
+  }
+
+  const name = codexActionName(itemType, item);
+  const detail = actionDetail(actionKindFromName(`${itemType} ${name}`), item);
+  const id = stringValue(item.id) ?? actionFallbackId(itemType, detail);
+  const error = actionError(item);
+  return [{
+    id,
+    phase,
+    kind: actionKindFromName(`${itemType} ${name}`),
+    name,
+    ...(detail ? { detail } : {}),
+    ...(phase === "completed" ? { success: !error && !isFailedStatus(item.status) } : {}),
+    ...(error ? { error } : {})
+  }];
+}
+
+function claudeActionsFromEvent(
+  event: JsonObject,
+  state: Map<string, CodingTaskAction>
+): CodingTaskAction[] {
+  const blocks = claudeActionBlocks(event);
+  const actions: CodingTaskAction[] = [];
+
+  for (const block of blocks) {
+    if (block.type === "tool_use") {
+      const name = stringValue(block.name) ?? "tool";
+      const input = isJsonObject(block.input) ? block.input : {};
+      const detail = actionDetail(actionKindFromName(name), input);
+      actions.push({
+        id: stringValue(block.id) ?? actionFallbackId(name, detail),
+        phase: "started",
+        kind: actionKindFromName(name),
+        name,
+        ...(detail ? { detail } : {})
+      });
+      continue;
+    }
+
+    if (block.type !== "tool_result") {
+      continue;
+    }
+
+    const id = stringValue(block.tool_use_id) ?? stringValue(block.id);
+    if (!id) {
+      continue;
+    }
+    const previous = state.get(id);
+    const error = block.is_error === true
+      ? claudeContentText(block.content) ?? "Tool execution failed"
+      : undefined;
+    actions.push({
+      id,
+      phase: "completed",
+      kind: previous?.kind ?? "tool",
+      name: previous?.name ?? "tool",
+      ...(previous?.detail ? { detail: previous.detail } : {}),
+      success: !error,
+      ...(error ? { error } : {})
+    });
+  }
+
+  return actions;
+}
+
+function claudeActionBlocks(event: JsonObject): JsonObject[] {
+  const blocks: JsonObject[] = [];
+  const add = (value: JsonValue | undefined) => {
+    if (isJsonObject(value) && (value.type === "tool_use" || value.type === "tool_result")) {
+      blocks.push(value);
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach(add);
+    }
+  };
+
+  add(event);
+  add(event.content);
+  if (isJsonObject(event.message)) {
+    add(event.message.content);
+  }
+  if (isJsonObject(event.event)) {
+    add(event.event.content_block);
+    add(event.event.content);
+  }
+  return blocks;
+}
+
+function cursorActionsFromEvent(event: JsonObject): CodingTaskAction[] {
+  if (event.type !== "tool_call" || !isJsonObject(event.tool_call)) {
+    return [];
+  }
+
+  const toolCall = event.tool_call;
+  const namedEntry = Object.entries(toolCall)
+    .find(([key, value]) => /toolCall$/i.test(key) && isJsonObject(value));
+  const rawName = namedEntry?.[0] ?? stringValue(toolCall.name) ?? stringValue(event.name) ?? "tool";
+  const body = namedEntry && isJsonObject(namedEntry[1]) ? namedEntry[1] : toolCall;
+  const input = isJsonObject(body.args)
+    ? body.args
+    : isJsonObject(body.input)
+      ? body.input
+      : body;
+  const name = rawName.replace(/ToolCall$/i, "") || rawName;
+  const phase: CodingTaskActionPhase = normalizedActionName(stringValue(event.subtype) ?? "") === "completed"
+    ? "completed"
+    : "started";
+  const detail = actionDetail(actionKindFromName(name), input);
+  const error = actionError(body) ?? actionError(event);
+  const id = stringValue(event.call_id) ?? stringValue(body.id) ?? actionFallbackId(name, detail);
+
+  return [{
+    id,
+    phase,
+    kind: actionKindFromName(name),
+    name,
+    ...(detail ? { detail } : {}),
+    ...(phase === "completed" ? { success: !error && !isFailedStatus(body.status) } : {}),
+    ...(error ? { error } : {})
+  }];
+}
+
+function antigravityActionsFromEvent(
+  event: JsonObject,
+  state: Map<string, CodingTaskAction>
+): CodingTaskAction[] {
+  const conversationId = stringValue(event.conversationId) ?? stringValue(event.conversation_id) ?? "conversation";
+  const stepIdx = typeof event.stepIdx === "number" ? event.stepIdx : event.step_idx;
+  const step = typeof stepIdx === "number" ? String(stepIdx) : "unknown";
+  const id = `${conversationId}:${step}`;
+
+  if (isJsonObject(event.toolCall)) {
+    const name = stringValue(event.toolCall.name) ?? "tool";
+    const input = isJsonObject(event.toolCall.args) ? event.toolCall.args : {};
+    const detail = actionDetail(actionKindFromName(name), input);
+    return [{
+      id,
+      phase: "started",
+      kind: actionKindFromName(name),
+      name,
+      ...(detail ? { detail } : {})
+    }];
+  }
+
+  if (event.type !== "hook.post_tool_use" && event.hook_phase !== "completed") {
+    return [];
+  }
+  const previous = state.get(id);
+  const error = stringValue(event.error);
+  return [{
+    id,
+    phase: "completed",
+    kind: previous?.kind ?? "tool",
+    name: previous?.name ?? "tool",
+    ...(previous?.detail ? { detail: previous.detail } : {}),
+    success: !error,
+    ...(error ? { error } : {})
+  }];
+}
+
+function rememberNormalizedActions(
+  actions: CodingTaskAction[],
+  state: Map<string, CodingTaskAction>
+): CodingTaskAction[] {
+  const normalized: CodingTaskAction[] = [];
+  for (const action of actions) {
+    const previous = state.get(action.id);
+    const merged: CodingTaskAction = {
+      ...previous,
+      ...action,
+      kind: action.kind ?? previous?.kind ?? "tool",
+      name: action.name || previous?.name || "tool",
+      ...(action.detail || previous?.detail ? { detail: action.detail || previous?.detail } : {}),
+      ...(action.error || previous?.error ? { error: action.error || previous?.error } : {})
+    };
+    if (
+      previous &&
+      previous.phase === merged.phase &&
+      previous.kind === merged.kind &&
+      previous.name === merged.name &&
+      previous.detail === merged.detail &&
+      previous.success === merged.success &&
+      previous.error === merged.error
+    ) {
+      continue;
+    }
+    state.set(merged.id, merged);
+    normalized.push(merged);
+  }
+  return normalized;
+}
+
+function actionPhaseFromEvent(event: JsonObject, item: JsonObject): CodingTaskActionPhase | undefined {
+  const eventType = normalizedActionName(stringValue(event.type) ?? "");
+  if (eventType.endsWith("started")) return "started";
+  if (eventType.endsWith("completed")) return "completed";
+
+  const status = normalizedActionName(stringValue(item.status) ?? "");
+  if (["in_progress", "running", "pending"].includes(status)) return "started";
+  if (["completed", "failed", "error", "cancelled", "canceled"].includes(status)) return "completed";
+  return undefined;
+}
+
+function codexActionName(itemType: string, item: JsonObject): string {
+  if (itemType.includes("mcp_tool")) {
+    const server = stringValue(item.server);
+    const tool = stringValue(item.tool) ?? stringValue(item.name);
+    return [server, tool].filter(Boolean).join(".") || itemType;
+  }
+  return stringValue(item.name) ?? stringValue(item.tool) ?? itemType;
+}
+
+function isActionItemType(type: string): boolean {
+  return ["command", "file_change", "file_edit", "mcp_tool", "dynamic_tool", "web_search", "search", "plan", "read"]
+    .some((candidate) => type.includes(candidate));
+}
+
+function actionKindFromName(value: string): CodingTaskActionKind {
+  const name = normalizedActionName(value);
+  if (/(command|shell|terminal|bash|execute|run_command)/.test(name)) return "command";
+  if (/(plan|todo|task_update)/.test(name)) return "plan";
+  if (/(file_change|file_edit|edit|write|replace|apply_patch|create_file|delete_file|move_file)/.test(name)) return "file_change";
+  if (/(search|grep|glob|find_by_name|web|url|fetch)/.test(name)) return "search";
+  if (/(read|view_file|list_dir|directory|codebase)/.test(name)) return "read";
+  return "tool";
+}
+
+function actionDetail(kind: CodingTaskActionKind, input: JsonObject): string | undefined {
+  if (kind === "command") {
+    return trimmedActionDetail(findStringField(input, ["CommandLine", "command", "cmd", "shell_command"]));
+  }
+  if (kind === "file_change") {
+    const direct = findStringField(input, ["TargetFile", "path", "file_path", "filePath", "filename"]);
+    if (direct) return trimmedActionDetail(direct);
+    const changes = Array.isArray(input.changes) ? input.changes : [];
+    const paths = changes
+      .map((change) => isJsonObject(change)
+        ? findStringField(change, ["path", "file_path", "filePath", "filename"])
+        : undefined)
+      .filter((value): value is string => Boolean(value));
+    return trimmedActionDetail(paths.join(", "));
+  }
+  if (kind === "search") {
+    const query = findStringField(input, ["query", "Query", "pattern", "Pattern"]);
+    const scope = findStringField(input, ["SearchPath", "SearchDirectory", "domain", "Url", "url"]);
+    return trimmedActionDetail([query, scope].filter(Boolean).join(" · "));
+  }
+  if (kind === "read") {
+    return trimmedActionDetail(findStringField(input, [
+      "AbsolutePath",
+      "DirectoryPath",
+      "path",
+      "file_path",
+      "filePath",
+      "SearchDirectory"
+    ]));
+  }
+  if (kind === "plan") {
+    return trimmedActionDetail(findStringField(input, ["text", "plan", "explanation"]));
+  }
+  return trimmedActionDetail(findStringField(input, ["description", "query", "name"]));
+}
+
+function actionError(value: JsonObject): string | undefined {
+  if (value.is_error === true || value.success === false || isFailedStatus(value.status)) {
+    return trimmedActionDetail(findStringField(value, ["error", "error_message", "message", "reason"])) ?? "Action failed";
+  }
+  return undefined;
+}
+
+function isFailedStatus(value: JsonValue | undefined): boolean {
+  const status = normalizedActionName(stringValue(value) ?? "");
+  return ["failed", "error", "errored", "cancelled", "canceled"].includes(status);
+}
+
+function actionFallbackId(name: string, detail?: string): string {
+  return `${normalizedActionName(name) || "tool"}:${detail ?? "action"}`;
+}
+
+function normalizedActionName(value: string): string {
+  return value.trim().replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase().replace(/[.\s-]+/g, "_");
+}
+
+function trimmedActionDetail(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  return trimmed.length > 2_000 ? `${trimmed.slice(0, 1_999).trimEnd()}…` : trimmed;
 }
 
 function blockedReasonFromEvent(event: JsonObject): string | undefined {

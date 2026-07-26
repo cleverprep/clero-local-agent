@@ -8,7 +8,15 @@ import { StaticApprovalProvider } from "@clero-local-agent/approvals";
 import { ToolExecutionError } from "@clero-local-agent/mcp-runtime";
 import type { JsonObject, JsonValue } from "@clero-local-agent/protocol";
 import { WorkspacePolicy } from "@clero-local-agent/workspace";
-import { AntigravityCliAdapter, ClaudeCodeAdapter, CodexCliAdapter, CursorCliAdapter, type CodingAgentAdapter } from "../src/index.ts";
+import {
+  AntigravityCliAdapter,
+  ClaudeCodeAdapter,
+  CodexCliAdapter,
+  CursorCliAdapter,
+  normalizeCodingTaskActions,
+  type CodingAgentAdapter,
+  type CodingTaskEvent
+} from "../src/index.ts";
 
 test("runs codex exec as an async JSONL task", async (t) => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "clero-codex-test-"));
@@ -16,14 +24,14 @@ test("runs codex exec as an async JSONL task", async (t) => {
   const resolvedWorkspace = await realpath(workspace);
   const fakeCodex = await createFakeCodex(workspace, 0);
   const terminalTasks: Array<{ agent_id?: string; event_run_id?: string }> = [];
-  const streamedEvents: string[] = [];
+  const streamedEvents: CodingTaskEvent[] = [];
   const adapter = new CodexCliAdapter({
     workspacePolicy: new WorkspacePolicy({ allowedDirectories: [workspace] }),
     command: fakeCodex,
     defaultModel: "gpt-5.3-codex",
     defaultReasoningEffort: "high",
     onTaskEvent: (_task, event) => {
-      streamedEvents.push(event.type);
+      streamedEvents.push(event);
     },
     onTaskTerminal: (task) => {
       terminalTasks.push(task);
@@ -51,14 +59,29 @@ test("runs codex exec as an async JSONL task", async (t) => {
   assert.equal(status.final_message, "done: inspect repo");
   assert.equal(terminalTasks[0]?.agent_id, "agent_1");
   assert.equal(terminalTasks[0]?.event_run_id, "201");
-  assert.equal(streamedEvents.includes("item.completed"), true);
+  assert.equal(streamedEvents.some((event) => event.type === "item.completed"), true);
+  assert.equal(
+    streamedEvents.some((event) => event.actions?.some((action) => (
+      action.kind === "command" &&
+      action.phase === "started" &&
+      action.detail === "git status"
+    ))),
+    true
+  );
 
   const output = await adapter.getOutput(taskId);
   assert.equal(output.final_message, "done: inspect repo");
   assert.match(stringField(output, "output"), /done: inspect repo/);
   assert.match(stringField(output, "message"), /done: inspect repo/);
   assert.doesNotMatch(stringField(output, "output"), /edited README/);
-  assert.equal("events" in output, false);
+  const liveEvents = eventArray(output.events);
+  const liveAgentMessage = liveEvents.find((event) => event.item_type === "agent_message");
+  assert.equal(liveAgentMessage?.text, "done: inspect repo");
+  const startedCommand = liveEvents
+    .flatMap((event) => eventArrayOrEmpty(event.actions))
+    .find((action) => action.phase === "started" && action.kind === "command");
+  assert.ok(startedCommand);
+  assert.equal(startedCommand.detail, "git status");
   assert.equal("stderr" in output, false);
   assert.equal("raw_output" in output, false);
 
@@ -134,6 +157,52 @@ test("resumes codex exec when continue_session uses the same session key", async
     "thread_fake",
     "-"
   ]);
+});
+
+test("resumes an explicit provider session after the connector restarts", async (t) => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "clero-codex-test-"));
+  t.after(() => rm(workspace, { recursive: true, force: true }));
+  const resolvedWorkspace = await realpath(workspace);
+  const fakeCodex = await createFakeCodex(workspace, 0);
+  const adapter = new CodexCliAdapter({
+    workspacePolicy: new WorkspacePolicy({ allowedDirectories: [workspace] }),
+    command: fakeCodex
+  });
+
+  const start = await adapter.startTask(
+    {
+      prompt: "continued after restart",
+      cwd: workspace,
+      continue_session: true,
+      session_key: "agent_1:repo",
+      provider_session_id: "thread_saved"
+    },
+    { requestId: "req_1", leaseId: "lease_1", agentId: "agent_1", taskId: "task_1" }
+  );
+
+  assert.equal(start.resumed_session, true);
+  assert.equal(start.provider_session_id, "thread_saved");
+  const output = await adapter.getOutput(stringField(start, "task_id"), { include_events: true });
+  const processStarted = eventArray(output.events).find((event) => event.type === "process.started");
+  assert.ok(processStarted);
+  const args = stringArrayField(objectField(processStarted, "data"), "args");
+  assert.deepEqual(args, [
+    "--ask-for-approval",
+    "never",
+    "--sandbox",
+    "read-only",
+    "--cd",
+    resolvedWorkspace,
+    "exec",
+    "resume",
+    "--json",
+    "--skip-git-repo-check",
+    "thread_saved",
+    "-"
+  ]);
+
+  const status = await waitForTerminalStatus(adapter, stringField(start, "task_id"));
+  assert.equal(status.status, "completed");
 });
 
 test("requires approval before starting a writable codex exec task", async (t) => {
@@ -438,7 +507,7 @@ test("runs antigravity cli as an async text task", async (t) => {
   const output = await adapter.getOutput(stringField(start, "task_id"));
   assert.match(stringField(output, "output"), /done: inspect repo/);
   assert.equal("stdout" in output, false);
-  assert.equal("events" in output, false);
+  assert.equal(eventArray(output.events).length > 0, true);
 
   const debugOutput = await adapter.getOutput(stringField(start, "task_id"), { include_events: true, include_raw: true });
   assert.match(stringField(debugOutput, "stdout"), /done: inspect repo/);
@@ -497,6 +566,96 @@ test("runs cursor agent as an async stream-json task", async (t) => {
   assert.deepEqual(args.slice(7, 13), ["--model", "cursor-model", "--force", "--sandbox", "enabled", "inspect repo"]);
 });
 
+test("normalizes provider tool events into ordered coding actions", () => {
+  const state = new Map();
+  const codexStarted = normalizeCodingTaskActions(
+    "codex",
+    {
+      type: "item.started",
+      item: {
+        id: "command_1",
+        type: "command_execution",
+        command: "pnpm test",
+        status: "in_progress"
+      }
+    },
+    state
+  );
+  const codexCompleted = normalizeCodingTaskActions(
+    "codex",
+    {
+      type: "item.completed",
+      item: {
+        id: "command_1",
+        type: "command_execution",
+        command: "pnpm test",
+        status: "completed"
+      }
+    },
+    state
+  );
+  const claudeStarted = normalizeCodingTaskActions(
+    "claude-code",
+    {
+      type: "assistant",
+      message: {
+        content: [{
+          type: "tool_use",
+          id: "tool_1",
+          name: "Read",
+          input: { file_path: "/srv/app/main.ts" }
+        }]
+      }
+    },
+    state
+  );
+  const claudeCompleted = normalizeCodingTaskActions(
+    "claude-code",
+    {
+      type: "user",
+      message: {
+        content: [{
+          type: "tool_result",
+          tool_use_id: "tool_1",
+          content: "ok"
+        }]
+      }
+    },
+    state
+  );
+
+  assert.deepEqual(codexStarted, [{
+    id: "command_1",
+    phase: "started",
+    kind: "command",
+    name: "command_execution",
+    detail: "pnpm test"
+  }]);
+  assert.deepEqual(codexCompleted, [{
+    id: "command_1",
+    phase: "completed",
+    kind: "command",
+    name: "command_execution",
+    detail: "pnpm test",
+    success: true
+  }]);
+  assert.deepEqual(claudeStarted, [{
+    id: "tool_1",
+    phase: "started",
+    kind: "read",
+    name: "Read",
+    detail: "/srv/app/main.ts"
+  }]);
+  assert.deepEqual(claudeCompleted, [{
+    id: "tool_1",
+    phase: "completed",
+    kind: "read",
+    name: "Read",
+    detail: "/srv/app/main.ts",
+    success: true
+  }]);
+});
+
 test("creates a cursor chat before first continued session", async (t) => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "clero-cursor-test-"));
   t.after(() => rm(workspace, { recursive: true, force: true }));
@@ -541,7 +700,8 @@ process.stdin.on("end", () => {
   console.error(${JSON.stringify(errorMessage ?? "fake stderr")});
   console.log(JSON.stringify({ type: "thread.started", thread_id: "thread_fake" }));
   console.log(JSON.stringify({ type: "item.completed", item: { id: "item_1", type: "agent_message", text: "done: " + prompt.trim() } }));
-  console.log(JSON.stringify({ type: "item.completed", item: { id: "item_2", type: "command_execution", output: "edited README.md\\nM README.md\\n" } }));
+  console.log(JSON.stringify({ type: "item.started", item: { id: "item_2", type: "command_execution", command: "git status", status: "in_progress" } }));
+  console.log(JSON.stringify({ type: "item.completed", item: { id: "item_2", type: "command_execution", command: "git status", status: "completed", output: "edited README.md\\nM README.md\\n" } }));
   console.log(JSON.stringify({ type: ${JSON.stringify(errorMessage ? "error" : "turn.completed")}, message: ${JSON.stringify(errorMessage ?? "ok")} }));
   process.exit(${exitCode});
 });
@@ -706,6 +866,12 @@ function stringArrayField(object: JsonObject, key: string): string[] {
 function eventArray(value: JsonValue | undefined): JsonObject[] {
   assert.equal(Array.isArray(value), true);
   return (value as JsonValue[]).map((event) => objectFromJsonValue(event));
+}
+
+function eventArrayOrEmpty(value: JsonValue | undefined): JsonObject[] {
+  return Array.isArray(value)
+    ? value.map((event) => objectFromJsonValue(event))
+    : [];
 }
 
 function objectFromJsonValue(value: JsonValue): JsonObject {

@@ -55,6 +55,7 @@ import {
   type JsonObject,
   type JsonValue,
   type LocalTaskCompletedMessage,
+  type LocalTaskEventMessage,
   type RuntimeCapabilitySettings,
   type RuntimeMessage
 } from "@clero-local-agent/protocol";
@@ -635,10 +636,65 @@ export class LocalRuntimeDaemon {
         git_branch: task.git_branch ?? null,
         blocked_reason: task.blocked_reason ?? null,
         progress_update: task.progress_update || null,
-        output_tail: tailText(task.output || task.stderr || task.stdout)
+        output_tail: tailText(task.output || task.stderr || task.stdout),
+        provider_session_id: task.provider_session_id ?? null,
+        codex_thread_id: task.codex_thread_id ?? null,
+        claude_session_id: task.claude_session_id ?? null,
+        antigravity_conversation_id: task.antigravity_conversation_id ?? null,
+        cursor_chat_id: task.cursor_chat_id ?? null
       }
     };
     this.sendLocalTaskCompletion(message);
+  }
+
+  private sendCodingTaskEvent(task: CodingTask, event: CodingTaskEvent, text: string): void {
+    const normalizedEvent: JsonObject = {
+      index: event.index,
+      at: event.at,
+      source: event.source,
+      type: event.type,
+      item_type: codingTaskEventItemType(event),
+      text
+    };
+    if (event.actions?.length) {
+      normalizedEvent.actions = event.actions as unknown as JsonValue;
+    }
+
+    const message: LocalTaskEventMessage = {
+      type: "local_task_event",
+      request_id: task.request_id,
+      tool: "coding_agent.start_task",
+      agent_id: task.agent_id,
+      event_run_id: task.event_run_id ?? task.local_task_id,
+      task_id: task.task_id,
+      local_task_id: task.task_id,
+      task: {
+        provider: task.provider,
+        status: task.status,
+        cwd: task.cwd,
+        git_branch: task.git_branch ?? null,
+        model: task.model ?? null,
+        progress_update: task.progress_update ?? null,
+        final_message: task.final_message,
+        blocked_reason: task.blocked_reason ?? null,
+        provider_session_id: task.provider_session_id ?? null,
+        codex_thread_id: task.codex_thread_id ?? null,
+        claude_session_id: task.claude_session_id ?? null,
+        antigravity_conversation_id: task.antigravity_conversation_id ?? null,
+        cursor_chat_id: task.cursor_chat_id ?? null
+      },
+      event: normalizedEvent
+    };
+
+    try {
+      this.sendRuntimeMessage(message, { queueOnFailure: false });
+    } catch (error: unknown) {
+      this.logger.debug("skipped live coding event while websocket is unavailable", {
+        taskId: task.task_id,
+        eventIndex: event.index,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
   }
 
   private handleBackendError(message: BackendErrorMessage): void {
@@ -1043,6 +1099,26 @@ export class LocalRuntimeDaemon {
         if (!text && event.source !== "process") {
           return;
         }
+        const metadata: JsonObject = {
+          local_task_id: task.task_id,
+          provider: task.provider,
+          status: task.status,
+          cwd: task.cwd,
+          git_branch: task.git_branch ?? null,
+          event_index: event.index,
+          event_type: event.type,
+          event_item_type: codingTaskEventItemType(event),
+          source: event.source
+        };
+        const result: JsonObject = {
+          text: text ?? processEventLabel(event),
+          event_type: event.type
+        };
+        if (event.actions?.length) {
+          const actions = event.actions as unknown as JsonValue;
+          metadata.coding_actions = actions;
+          result.coding_actions = actions;
+        }
         this.auditLogger.record({
           at: event.at,
           event: "coding_task_event",
@@ -1051,20 +1127,10 @@ export class LocalRuntimeDaemon {
           taskId: task.local_task_id,
           eventRunId: task.event_run_id,
           tool: "coding_agent.start_task",
-          metadata: {
-            local_task_id: task.task_id,
-            provider: task.provider,
-            status: task.status,
-            cwd: task.cwd,
-            event_index: event.index,
-            event_type: event.type,
-            source: event.source
-          },
-          result: {
-            text: text ?? processEventLabel(event),
-            event_type: event.type
-          }
+          metadata,
+          result
         });
+        this.sendCodingTaskEvent(task, event, text ?? processEventLabel(event));
       },
       onTaskTerminal: (task: CodingTask) => {
         if (task.lease_id) {
@@ -1237,6 +1303,11 @@ function tailText(value: string, maxChars = 8_000): string {
 }
 
 function codingTaskEventText(event: CodingTaskEvent): string | undefined {
+  const action = event.actions?.[0];
+  if (action) {
+    return tailText(action.detail || action.error || action.name, 4_000);
+  }
+
   if (event.text?.trim()) {
     return tailText(event.text.trim(), 4_000);
   }
@@ -1244,6 +1315,13 @@ function codingTaskEventText(event: CodingTaskEvent): string | undefined {
   const data = event.data;
   if (!data) {
     return undefined;
+  }
+
+  if (isJsonObject(data.item)) {
+    const actionText = codingTaskItemActionText(data.item);
+    if (actionText) {
+      return tailText(actionText, 4_000);
+    }
   }
 
   if (typeof data.result === "string" && data.result.trim()) {
@@ -1266,6 +1344,13 @@ function codingTaskEventText(event: CodingTaskEvent): string | undefined {
   }
 
   if (isJsonObject(data.message) && Array.isArray(data.message.content)) {
+    const toolUse = data.message.content.find((part) => (
+      isJsonObject(part) && part.type === "tool_use" && typeof part.name === "string"
+    ));
+    if (isJsonObject(toolUse) && typeof toolUse.name === "string") {
+      return tailText(toolUse.name, 4_000);
+    }
+
     const text = data.message.content
       .map((part) => (isJsonObject(part) && typeof part.text === "string" ? part.text : ""))
       .filter(Boolean)
@@ -1277,6 +1362,70 @@ function codingTaskEventText(event: CodingTaskEvent): string | undefined {
   }
 
   return undefined;
+}
+
+function codingTaskItemActionText(item: JsonObject): string | undefined {
+  const itemType = typeof item.type === "string" ? item.type.toLowerCase() : "";
+
+  if (itemType.includes("command")) {
+    const command = item.command ?? item.cmd ?? item.shell_command;
+    return typeof command === "string" && command.trim() ? command.trim() : undefined;
+  }
+
+  if (itemType.includes("file_change") || itemType.includes("file_edit")) {
+    const path = item.path ?? item.file_path ?? item.filename;
+    if (typeof path === "string" && path.trim()) {
+      return path.trim();
+    }
+
+    if (Array.isArray(item.changes)) {
+      const paths = item.changes
+        .map((change) => {
+          if (!isJsonObject(change)) return "";
+          const changedPath = change.path ?? change.file_path ?? change.filename;
+          return typeof changedPath === "string" ? changedPath.trim() : "";
+        })
+        .filter(Boolean);
+      if (paths.length > 0) {
+        return paths.join(", ");
+      }
+    }
+  }
+
+  if (itemType.includes("search")) {
+    const query = item.query ?? item.text;
+    return typeof query === "string" && query.trim() ? query.trim() : undefined;
+  }
+
+  if (itemType.includes("tool")) {
+    const toolName = item.name ?? item.tool_name ?? item.tool;
+    return typeof toolName === "string" && toolName.trim() ? toolName.trim() : undefined;
+  }
+
+  return undefined;
+}
+
+function codingTaskEventItemType(event: CodingTaskEvent): string {
+  if (event.actions?.[0]) {
+    return event.actions[0].kind;
+  }
+
+  if (!isJsonObject(event.data)) {
+    return "";
+  }
+
+  if (isJsonObject(event.data.item) && typeof event.data.item.type === "string") {
+    return event.data.item.type;
+  }
+
+  if (isJsonObject(event.data.message) && Array.isArray(event.data.message.content)) {
+    const toolUse = event.data.message.content.find((part) => isJsonObject(part) && part.type === "tool_use");
+    if (isJsonObject(toolUse)) {
+      return "tool_use";
+    }
+  }
+
+  return "";
 }
 
 function processEventLabel(event: CodingTaskEvent): string {

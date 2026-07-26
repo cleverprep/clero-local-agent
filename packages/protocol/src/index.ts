@@ -210,6 +210,18 @@ export type LocalTaskCompletedMessage = {
   result: JsonObject;
 };
 
+export type LocalTaskEventMessage = {
+  type: "local_task_event";
+  request_id?: string;
+  tool: ToolName;
+  agent_id?: BrokerId;
+  event_run_id?: BrokerId;
+  task_id: string;
+  local_task_id?: string;
+  task: JsonObject;
+  event: JsonObject;
+};
+
 export type ApprovalRequestMessage = {
   type: "approval_request";
   request_id: string;
@@ -252,6 +264,7 @@ export type RuntimeMessage =
   | ControlResultMessage
   | HelloMessage
   | HeartbeatMessage
+  | LocalTaskEventMessage
   | LocalTaskCompletedMessage
   | ApprovalRequestMessage
   | ApprovalResponseMessage
@@ -646,6 +659,7 @@ export function inputSchemaForTool(tool: string): JsonSchema {
           cwd: stringSchema("Optional allowed working directory for the task. Prefer project unless the user provided an exact path."),
           continue_session: booleanSchema("Continue the previous local coding-agent session for this agent/project when available. Defaults to false."),
           session_key: stringSchema("Optional stable session key. Use the same key with continue_session=true to resume a specific coding-agent session."),
+          provider_session_id: stringSchema("Optional provider conversation id previously returned by this coding agent. When continue_session=true, use it to resume after the connector or desktop app restarts."),
           sandbox: stringEnumSchema(
             ["read-only", "workspace-write", "danger-full-access"],
             "Requested coding-agent sandbox policy. Local connector settings may force danger-full-access when the user explicitly enabled full local access."
@@ -787,7 +801,7 @@ export function defaultCapabilities(): Capability[] {
     capability("shell.run", "Run a bounded local shell command in a discovered project. Shell permission and approval are controlled by Clero backend guardrails."),
     capability("coding_agent.start_task", "Start a local Codex, Claude Code, Antigravity, or Cursor task in a discovered project. Prefer project over absolute cwd. Set continue_session=true to resume prior context for the same agent/project when available. Returns immediately with task_id; poll coding_agent.get_status/get_output."),
     capability("coding_agent.get_status", "Get local coding-agent task status by task_id."),
-    capability("coding_agent.get_output", "Read only the latest concise progress update or final result for a local coding-agent task."),
+    capability("coding_agent.get_output", "Read the latest concise progress update or final result plus recent coding activity for a local coding-agent task."),
     capability("coding_agent.cancel", "Cancel a running local coding-agent task."),
     capability("git.status", "Read git status for a discovered project. Prefer project over absolute cwd."),
     capability("git.diff", "Read git diff for a discovered project. Prefer project over absolute cwd."),
