@@ -60,7 +60,7 @@ test("derives advertised capabilities from registered tool definitions", () => {
   assert.equal((browser?.inputSchema?.properties as { url?: { type?: string } } | undefined)?.url?.type, "string");
 
   const codingAgent = capabilities.find((capability) => capability.name === "coding_agent.start_task");
-  assert.equal(codingAgent?.access, "lease_required");
+  assert.equal(codingAgent?.access, "passive");
   assert.deepEqual(codingAgent?.inputSchema?.required, ["prompt"]);
   assert.deepEqual(codingAgent?.groups, ["codex"]);
 
@@ -175,11 +175,60 @@ test("executes coding-agent polling tools without acquiring a lease", async () =
   }
 });
 
-test("rejects stateful tools without a lease", async () => {
+test("allows concurrent coding-agent tasks in the same workspace without a lease", async () => {
+  const started: string[] = [];
+  const releases: Array<() => void> = [];
   const registry = new ToolRegistry();
   registry.register({
     name: "coding_agent.start_task",
     description: "start",
+    handler: async (args, context) => {
+      started.push(String(context.agentId));
+      await new Promise<void>((resolve) => releases.push(resolve));
+      return { prompt: args.prompt };
+    }
+  });
+
+  const leaseGuard: LeaseGuard = {
+    hasActiveLease: () => false,
+    ensureLeaseForToolCall: () => {
+      throw new Error("coding-agent tasks must not acquire a workspace lease");
+    }
+  };
+  const first = registry.execute(
+    {
+      type: "tool_call",
+      request_id: "req_1",
+      agent_id: "agent_1",
+      tool: "coding_agent.start_task",
+      arguments: { prompt: "first task", cwd: "/workspace/shared" }
+    },
+    leaseGuard
+  );
+  const second = registry.execute(
+    {
+      type: "tool_call",
+      request_id: "req_2",
+      agent_id: "agent_2",
+      tool: "coding_agent.start_task",
+      arguments: { prompt: "second task", cwd: "/workspace/shared" }
+    },
+    leaseGuard
+  );
+
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(started, ["agent_1", "agent_2"]);
+  releases.splice(0).forEach((release) => release());
+
+  const results = await Promise.all([first, second]);
+  assert.deepEqual(results.map((result) => result.status), ["ok", "ok"]);
+});
+
+test("rejects stateful shell tools without a lease", async () => {
+  const registry = new ToolRegistry();
+  registry.register({
+    name: "shell.run",
+    description: "run",
     handler: () => ({ ok: true })
   });
 
@@ -187,8 +236,8 @@ test("rejects stateful tools without a lease", async () => {
     {
       type: "tool_call",
       request_id: "req_1",
-      tool: "coding_agent.start_task",
-      arguments: { prompt: "check the repo" }
+      tool: "shell.run",
+      arguments: { command: "pwd" }
     },
     activeLeaseGuard
   );
@@ -197,12 +246,12 @@ test("rejects stateful tools without a lease", async () => {
   assert.equal(result.error_code, "lease_required");
 });
 
-test("executes stateful tools with the active lease", async () => {
+test("executes stateful shell tools with the active lease", async () => {
   const registry = new ToolRegistry();
   registry.register({
-    name: "coding_agent.start_task",
-    description: "start",
-    handler: (args) => ({ prompt: args.prompt })
+    name: "shell.run",
+    description: "run",
+    handler: (args) => ({ command: args.command })
   });
 
   const result = await registry.execute(
@@ -210,15 +259,15 @@ test("executes stateful tools with the active lease", async () => {
       type: "tool_call",
       request_id: "req_1",
       lease_id: "lease_active",
-      tool: "coding_agent.start_task",
-      arguments: { prompt: "check the repo" }
+      tool: "shell.run",
+      arguments: { command: "pwd" }
     },
     activeLeaseGuard
   );
 
   assert.equal(result.status, "ok");
   if (result.status === "ok") {
-    assert.deepEqual(result.result, { prompt: "check the repo" });
+    assert.deepEqual(result.result, { command: "pwd" });
   }
 });
 
@@ -276,8 +325,8 @@ test("uses lease guard auto-acquire for stateful tools without a lease id", asyn
   const ensured: EnsureLeaseForToolCallInput[] = [];
   const registry = new ToolRegistry();
   registry.register({
-    name: "coding_agent.start_task",
-    description: "start",
+    name: "shell.run",
+    description: "run",
     handler: (_args, context) => ({
       lease_id: context.leaseId ?? null,
       agent_id: context.agentId ?? null,
@@ -293,9 +342,9 @@ test("uses lease guard auto-acquire for stateful tools without a lease id", asyn
       request_id: "req_1",
       agent_id: 12,
       event_run_id: 192,
-      requested_action_key: "local_runtime_45.codex",
-      tool: "coding_agent.start_task",
-      arguments: { prompt: "check the repo", project: "clero_back", cwd: "/workspace/a" }
+      requested_action_key: "local_runtime_45.shell",
+      tool: "shell.run",
+      arguments: { command: "pwd", project: "clero_back", cwd: "/workspace/a" }
     },
     {
       hasActiveLease: () => false,
@@ -312,8 +361,8 @@ test("uses lease guard auto-acquire for stateful tools without a lease id", asyn
     leaseId: undefined,
     agentId: "12",
     taskId: "192",
-    requestedActionKey: "local_runtime_45.codex",
-    toolName: "coding_agent.start_task",
+    requestedActionKey: "local_runtime_45.shell",
+    toolName: "shell.run",
     workspaceKey: "clero_back"
   });
   if (result.status === "ok") {
@@ -322,7 +371,7 @@ test("uses lease guard auto-acquire for stateful tools without a lease id", asyn
       agent_id: "12",
       task_id: "192",
       event_run_id: "192",
-      requested_action_key: "local_runtime_45.codex"
+      requested_action_key: "local_runtime_45.shell"
     });
   }
 });
@@ -330,8 +379,8 @@ test("uses lease guard auto-acquire for stateful tools without a lease id", asyn
 test("returns busy from lease guard when another lease is active", async () => {
   const registry = new ToolRegistry();
   registry.register({
-    name: "coding_agent.start_task",
-    description: "start",
+    name: "shell.run",
+    description: "run",
     handler: () => ({ ok: true })
   });
 
@@ -341,8 +390,8 @@ test("returns busy from lease guard when another lease is active", async () => {
       request_id: "req_1",
       agent_id: "agent_2",
       task_id: "task_2",
-      tool: "coding_agent.start_task",
-      arguments: { prompt: "check the repo" }
+      tool: "shell.run",
+      arguments: { command: "pwd" }
     },
     {
       hasActiveLease: () => false,

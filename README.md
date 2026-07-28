@@ -613,12 +613,12 @@ Supported `shell.run` arguments:
 
 Coding-agent tools:
 
-- `coding_agent.start_task` lease required per `cwd`
+- `coding_agent.start_task` passive
 - `coding_agent.get_status` passive
 - `coding_agent.get_output` passive
 - `coding_agent.cancel` passive
 
-`coding_agent.start_task` runs Codex, Claude Code, Antigravity, or Cursor as a background job and returns a local `task_id` immediately. By default it uses the `read-only` sandbox setting. If `sandbox` is `workspace-write` or `danger-full-access`, local approval is required before the coding process starts. When the connector's local default sandbox is `danger-full-access`, that local user setting is authoritative and is not downgraded by a remote task argument. Runtime approval prompts from the coding CLI are not used in this mode; if sandbox or permission policy blocks progress, the task is marked `blocked` and the details are returned through `coding_agent.get_status` / `coding_agent.get_output`. While the child coding process is running, the daemon keeps that workspace lease alive.
+`coding_agent.start_task` runs Codex, Claude Code, Antigravity, or Cursor as a background job and returns a local `task_id` immediately. Coding tasks do not acquire workspace leases, so multiple agents can work in the same project at the same time. Use separate branches or worktrees when overlapping edits need isolation. By default the task uses the `read-only` sandbox setting. If `sandbox` is `workspace-write` or `danger-full-access`, local approval is required before the coding process starts. When the connector's local default sandbox is `danger-full-access`, that local user setting is authoritative and is not downgraded by a remote task argument. Runtime approval prompts from the coding CLI are not used in this mode; if sandbox or permission policy blocks progress, the task is marked `blocked` and the details are returned through `coding_agent.get_status` / `coding_agent.get_output`.
 
 Supported `coding_agent.start_task` arguments:
 

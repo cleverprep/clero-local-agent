@@ -381,7 +381,6 @@ export function isApprovalResponseMessage(value: unknown): value is ApprovalResp
 
 export function toolRequiresLease(tool: string): boolean {
   if (
-    tool === "coding_agent.start_task" ||
     tool === "shell.run" ||
     tool === "filesystem.create_directory" ||
     tool === "filesystem.write_file" ||
