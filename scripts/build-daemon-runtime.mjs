@@ -102,7 +102,10 @@ if [ ! -d "$RESOURCE_DIR" ]; then
 fi
 
 NODE_BIN="$RESOURCE_DIR/node/bin/node"
-if [ ! -x "$NODE_BIN" ]; then
+if [ -x "$NODE_BIN" ]; then
+  PATH="$RESOURCE_DIR/node/bin\${PATH:+:$PATH}"
+  export PATH
+else
   NODE_BIN="node"
 fi
 

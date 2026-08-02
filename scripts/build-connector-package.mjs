@@ -133,6 +133,7 @@ setlocal\r
 set "SELF_DIR=%~dp0"\r
 set "ROOT_DIR=%SELF_DIR%.."\r
 set "NODE_BIN=%ROOT_DIR%\\runtime\\node\\node.exe"\r
+set "PATH=%ROOT_DIR%\\runtime\\node;%PATH%"\r
 "%NODE_BIN%" "%ROOT_DIR%\\runtime\\daemon\\index.mjs" %*\r
 `;
     await writeFile(join(binDir, "clero-connector.cmd"), script);
@@ -144,7 +145,11 @@ set -eu
 
 SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT_DIR=$(CDPATH= cd -- "$SELF_DIR/.." && pwd)
-NODE_BIN="$ROOT_DIR/runtime/node/bin/node"
+NODE_DIR="$ROOT_DIR/runtime/node/bin"
+NODE_BIN="$NODE_DIR/node"
+
+PATH="$NODE_DIR\${PATH:+:$PATH}"
+export PATH
 
 exec "$NODE_BIN" "$ROOT_DIR/runtime/daemon/index.mjs" "$@"
 `;
