@@ -385,6 +385,8 @@ clero-connector setup \
   --sandbox read-only
 ```
 
+Managed browser sessions use the official Stagehand SDK for `browser.observe`, `browser.act`, and `browser.extract`. Browser instructions and page DOM are processed through Clero’s backend with Gemini 3.5 Flash-Lite by default (`LOCAL_STAGEHAND_MODEL` in backend configuration). The connector stores no model provider keys; each model request requires an invocation grant from the backend. The optional mcp-chrome extension provider does not advertise these Stagehand tools.
+
 Browser channels are `chromium`, `chrome`, `chrome-beta`, and `msedge`. Headless browser sessions default to a `1440x900` viewport unless `--browser-width` and `--browser-height` are configured. Coding providers are `codex`, `claude-code`, `antigravity`, and `cursor`. Sandboxes are `read-only`, `workspace-write`, and `danger-full-access`. If the local connector is configured with `--sandbox danger-full-access`, that explicit local setting wins over a remote task request that asks for `read-only` or `workspace-write`.
 
 Cursor Agent uses Cursor's local `agent` CLI. Install and authenticate it before enabling Cursor:

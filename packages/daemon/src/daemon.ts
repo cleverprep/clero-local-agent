@@ -22,6 +22,7 @@ import {
   CodexCliAdapter,
   CursorCliAdapter,
   CodingAgentTools,
+  codingTaskEventItemType,
   type ClaudeCodePermissionMode,
   type ClaudeCodeReasoningEffort,
   type CodingAgentAdapter,
@@ -926,7 +927,7 @@ export class LocalRuntimeDaemon {
       allowedFileDirectories: [os.tmpdir(), "/tmp"]
     });
     const approvalProvider = this.createApprovalProvider();
-    const browserAdapter =
+    const browserAdapter: BrowserAdapter =
       this.options.browserProvider === "mcp-chrome"
         ? new McpChromeBrowserAdapter({
             endpointUrl: this.options.browserMcpUrl
@@ -939,6 +940,14 @@ export class LocalRuntimeDaemon {
             viewport: this.options.browserViewport
     });
     this.browserAdapter = browserAdapter;
+    if (browserAdapter.stagehand) {
+      const nativeStagehand = browserAdapter.stagehand.bind(browserAdapter);
+      const relay = new URL(this.options.wsUrl);
+      relay.protocol = relay.protocol === "wss:" ? "https:" : "http:";
+      relay.pathname = "/api/v1/integrations/local-runtime/stagehand/";
+      relay.search = ""; relay.hash = "";
+      browserAdapter.stagehand = (args, context) => nativeStagehand(args, { ...context!, stagehandRelayUrl: relay.toString() });
+    }
     const browserTools = new BrowserTools(browserAdapter, {
       resolveFilePath: (filePath) => workspacePolicy.resolveAllowedFile(filePath)
     });
@@ -1403,29 +1412,6 @@ function codingTaskItemActionText(item: JsonObject): string | undefined {
   }
 
   return undefined;
-}
-
-function codingTaskEventItemType(event: CodingTaskEvent): string {
-  if (event.actions?.[0]) {
-    return event.actions[0].kind;
-  }
-
-  if (!isJsonObject(event.data)) {
-    return "";
-  }
-
-  if (isJsonObject(event.data.item) && typeof event.data.item.type === "string") {
-    return event.data.item.type;
-  }
-
-  if (isJsonObject(event.data.message) && Array.isArray(event.data.message.content)) {
-    const toolUse = event.data.message.content.find((part) => isJsonObject(part) && part.type === "tool_use");
-    if (isJsonObject(toolUse)) {
-      return "tool_use";
-    }
-  }
-
-  return "";
 }
 
 function processEventLabel(event: CodingTaskEvent): string {

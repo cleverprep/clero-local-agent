@@ -374,6 +374,7 @@ export function capabilitiesFromConfig(
   const options = capabilityOptionsFromConfig(config, overrides);
   return defaultCapabilities().filter((capability) => {
     if (capability.name.startsWith("browser.")) {
+      if (["browser.act", "browser.observe", "browser.extract"].includes(capability.name) && config.capabilities?.browser?.provider === "mcp-chrome") return false;
       if (
         capability.name === "browser.upload_file" &&
         config.capabilities?.browser?.provider === "mcp-chrome"

@@ -187,6 +187,8 @@ type StoredCodingTask = CodingTask & {
   stdoutBuffer: string;
   leaseHeartbeatTimer: ReturnType<typeof setInterval> | null;
   actionState: Map<string, CodingTaskAction>;
+  cursorLastAssistantText?: string;
+  cursorLastAssistantHadModelCallId?: boolean;
   terminalCallbackCalled?: boolean;
 };
 
@@ -1472,19 +1474,20 @@ export class CursorCliAdapter implements CodingAgentAdapter {
   private handleCursorEvent(task: StoredCodingTask, event: JsonObject): void {
     const type = stringValue(event.type) ?? "cursor.event";
     const actions = normalizeCodingTaskActions("cursor", event, task.actionState);
+    const text = cursorTextFromEvent(event);
+    if (text) {
+      this.updateCursorText(task, event, text);
+    }
+
     this.appendEvent(task, {
       at: new Date().toISOString(),
       source: "cursor",
       type,
       data: event,
+      ...(text ? { text } : {}),
       ...(actions.length > 0 ? { actions } : {})
     });
-
-    const text = cursorTextFromEvent(event);
     if (text) {
-      task.final_message = text;
-      task.output = appendBounded(task.output, `${text}\n`, this.maxOutputBytes);
-      appendAgentOutput(task, text, this.maxOutputBytes);
       this.markBlockedFromText(task, text);
     }
 
@@ -1499,6 +1502,28 @@ export class CursorCliAdapter implements CodingAgentAdapter {
     if (blockedReason) {
       this.markTaskBlocked(task, blockedReason);
     }
+  }
+
+  private updateCursorText(task: StoredCodingTask, event: JsonObject, text: string): void {
+    if (event.type === "result") {
+      const finalText = text.trimEnd();
+      task.final_message = finalText;
+      task.agent_output = appendBounded("", finalText, this.maxOutputBytes);
+      task.progress_update = appendBounded("", finalText, Math.min(this.maxOutputBytes, 20_000));
+      task.output = appendBounded("", finalText, this.maxOutputBytes);
+      return;
+    }
+
+    const hasModelCallId = typeof event.model_call_id === "string" && event.model_call_id.length > 0;
+    const isMirroredDelta = task.cursorLastAssistantText === text &&
+      task.cursorLastAssistantHadModelCallId === false &&
+      hasModelCallId;
+    const mergedText = isMirroredDelta ? task.agent_output : mergeCursorAssistantText(task.agent_output, text);
+    task.agent_output = appendBounded("", mergedText, this.maxOutputBytes);
+    task.progress_update = appendBounded("", task.agent_output, Math.min(this.maxOutputBytes, 20_000));
+    task.output = appendBounded("", task.agent_output, this.maxOutputBytes);
+    task.cursorLastAssistantText = text;
+    task.cursorLastAssistantHadModelCallId = hasModelCallId;
   }
 
   private statusFromExit(task: StoredCodingTask, code: number | null): CodingTaskStatus {
@@ -2262,8 +2287,9 @@ function publicCodingTaskEvent(event: CodingTaskEvent): JsonObject {
   if (event.actions?.length) {
     result.actions = event.actions as unknown as JsonValue;
   }
-  if (isJsonObject(event.data?.item) && typeof event.data.item.type === "string") {
-    result.item_type = event.data.item.type;
+  const itemType = codingTaskEventItemType(event);
+  if (itemType) {
+    result.item_type = itemType;
   }
   return result;
 }
@@ -2413,10 +2439,47 @@ function structuredTextFromEvent(event: JsonObject): string | undefined {
 }
 
 function cursorTextFromEvent(event: JsonObject): string | undefined {
-  if (event.type === "tool_call") {
+  if (event.type !== "assistant" && event.type !== "result") {
     return undefined;
   }
   return claudeTextFromEvent(event);
+}
+
+function mergeCursorAssistantText(current: string, incoming: string): string {
+  if (!current) {
+    return incoming;
+  }
+  if (incoming.startsWith(current)) {
+    return incoming;
+  }
+  return `${current}${incoming}`;
+}
+
+export function codingTaskEventItemType(event: CodingTaskEvent): string {
+  if (event.actions?.[0]) {
+    return event.actions[0].kind;
+  }
+
+  if (event.source === "cursor" && event.type === "assistant") {
+    return "assistant_delta";
+  }
+
+  if (!isJsonObject(event.data)) {
+    return "";
+  }
+
+  if (isJsonObject(event.data.item) && typeof event.data.item.type === "string") {
+    return event.data.item.type;
+  }
+
+  if (isJsonObject(event.data.message) && Array.isArray(event.data.message.content)) {
+    const toolUse = event.data.message.content.find((part) => isJsonObject(part) && part.type === "tool_use");
+    if (isJsonObject(toolUse)) {
+      return "tool_use";
+    }
+  }
+
+  return "";
 }
 
 function cursorChatIdFromEvent(event: JsonObject): string | undefined {

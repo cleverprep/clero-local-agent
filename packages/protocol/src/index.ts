@@ -130,6 +130,7 @@ export type ToolCallMessage = {
   params?: ToolArgumentsPayload;
   metadata?: ToolArgumentsPayload;
   authorized_directories?: string[];
+  stagehand_token?: string;
 };
 
 export type ToolResultMessage =
@@ -445,6 +446,13 @@ export function inputSchemaForTool(tool: string): JsonSchema {
       return objectSchema({
         page_id: stringSchema("Optional page id. Defaults to the active page.")
       });
+    case "browser.observe":
+    case "browser.act":
+    case "browser.extract":
+      return objectSchema({
+        instruction: stringSchema("Focused natural-language instruction for Stagehand."),
+        page_id: stringSchema("Optional existing local page ID.")
+      }, tool === "browser.extract" ? [] : ["instruction"]);
     case "browser.get_snapshot":
       return objectSchema({
         page_id: stringSchema("Optional page id. Defaults to the active page."),
@@ -762,6 +770,9 @@ export function inputSchemaForTool(tool: string): JsonSchema {
 
 export function defaultCapabilities(): Capability[] {
   return [
+    capability("browser.observe", "Find controls with official Stagehand."),
+    capability("browser.act", "Perform one natural-language browser action with official Stagehand."),
+    capability("browser.extract", "Extract page information with official Stagehand."),
     capability("browser.list_tabs", "List pages in the local managed browser session."),
     capability("browser.open_url", "Open a URL in the local managed browser session."),
     capability("browser.switch_tab", "Switch to an existing browser page."),

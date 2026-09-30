@@ -78,7 +78,7 @@ export class RuntimeWebSocketClient extends EventEmitter {
     socket.addEventListener("message", (event: { data: string }) => {
       try {
         const message: unknown = JSON.parse(event.data);
-        this.options.logger.info("received websocket message", { inbound: message });
+        this.options.logger.info("received websocket message", { inbound: isRecord(message) && "stagehand_token" in message ? { ...message, stagehand_token: "[redacted]" } : message });
         if (!this.authenticated && isAuthAcknowledgementMessage(message)) {
           this.authenticated = true;
           this.options.logger.info("local runtime websocket authenticated");

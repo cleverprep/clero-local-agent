@@ -566,6 +566,37 @@ test("runs cursor agent as an async stream-json task", async (t) => {
   assert.deepEqual(args.slice(7, 13), ["--model", "cursor-model", "--force", "--sandbox", "enabled", "inspect repo"]);
 });
 
+test("concatenates cursor assistant deltas without replacing or duplicating text", async (t) => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "clero-cursor-delta-test-"));
+  t.after(() => rm(workspace, { recursive: true, force: true }));
+  const fakeCursor = await createFakeCursorWithPartialOutput(workspace);
+  const streamedUpdates: string[] = [];
+  const adapter = new CursorCliAdapter({
+    workspacePolicy: new WorkspacePolicy({ allowedDirectories: [workspace] }),
+    command: fakeCursor,
+    onTaskEvent: (task, event) => {
+      if (event.type === "assistant") {
+        streamedUpdates.push(task.progress_update ?? "");
+      }
+    }
+  });
+
+  const start = await adapter.startTask(
+    { prompt: "stream a greeting", cwd: workspace },
+    { requestId: "req_delta", leaseId: "lease_delta", agentId: "agent_1", taskId: "task_delta" }
+  );
+  const taskId = stringField(start, "task_id");
+  const status = await waitForTerminalStatus(adapter, taskId);
+  const output = await adapter.getOutput(taskId, { include_raw: true });
+
+  assert.equal(status.final_message, "Hello world");
+  assert.equal(output.output, "Hello world");
+  assert.equal(output.raw_output, "Hello world");
+  assert.deepEqual(streamedUpdates, ["Hello", "Hello world", "Hello world", "Hello world"]);
+  const assistantEvents = eventArray(output.events).filter((event) => event.type === "assistant");
+  assert.equal(assistantEvents.every((event) => event.item_type === "assistant_delta"), true);
+});
+
 test("normalizes provider tool events into ordered coding actions", () => {
   const state = new Map();
   const codexStarted = normalizeCodingTaskActions(
@@ -800,6 +831,25 @@ console.log(JSON.stringify({ type: "system", subtype: "init", chat_id: chatId, m
 console.log(JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "done: " + prompt.trim() }] } }));
 console.log(JSON.stringify({ type: "result", result: "done: " + prompt.trim(), chat_id: chatId }));
 process.exit(${exitCode});
+`
+  );
+  await chmod(fakeCursor, 0o755);
+  return fakeCursor;
+}
+
+async function createFakeCursorWithPartialOutput(workspace: string): Promise<string> {
+  const fakeCursor = path.join(workspace, "fake-cursor-partial.js");
+  await writeFile(
+    fakeCursor,
+    `#!/usr/bin/env node
+console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "cursor_partial" }));
+console.log(JSON.stringify({ type: "user", message: { content: [{ type: "text", text: "stream a greeting" }] } }));
+console.log(JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "Hello" }] } }));
+console.log(JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: " world" }] } }));
+console.log(JSON.stringify({ type: "assistant", model_call_id: "call_1", message: { content: [{ type: "text", text: " world" }] } }));
+console.log(JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "Hello world" }] } }));
+console.log(JSON.stringify({ type: "result", result: "Hello world", session_id: "cursor_partial" }));
+process.exit(0);
 `
   );
   await chmod(fakeCursor, 0o755);

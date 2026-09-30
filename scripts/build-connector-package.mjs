@@ -33,6 +33,8 @@ await esbuild.build({
   platform: "node",
   format: "esm",
   target: "node22",
+  // Stagehand includes CommonJS dependencies that need Node's native require.
+  banner: { js: 'import { createRequire as __cleroCreateRequire } from "node:module"; const require = __cleroCreateRequire(import.meta.url);' },
   external: ["playwright"]
 });
 

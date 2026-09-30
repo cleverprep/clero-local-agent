@@ -24,6 +24,8 @@ export type ToolExecutionContext = {
   taskId?: string;
   eventRunId?: string;
   requestedActionKey?: string;
+  stagehandToken?: string;
+  stagehandRelayUrl?: string;
 };
 
 export type ToolHandler = (args: JsonObject, context: ToolExecutionContext) => Promise<JsonValue> | JsonValue;
@@ -128,6 +130,7 @@ export class ToolRegistry {
     try {
       const result = await definition.handler(args, {
         requestId: message.request_id,
+        stagehandToken: message.stagehand_token,
         leaseId: leaseResult.leaseId,
         agentId: runContext.agentId,
         taskId: runContext.taskId,
