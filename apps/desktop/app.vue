@@ -454,7 +454,7 @@
               </label>
               <label>
                 Permissions
-                <select v-model="config.capabilities.codex.claude_permission_mode">
+                <select v-model="claudePermissionMode">
                   <option value="default">Default</option>
                   <option value="plan">Plan</option>
                   <option value="acceptEdits">Accept edits</option>
@@ -524,6 +524,8 @@
               <input v-model="fullLocalAccessEnabled" type="checkbox" />
               Allow full local access
             </label>
+            <p v-if="fullAccessHint" class="settings-tip wide">{{ fullAccessHint }}</p>
+            <p v-if="otherHarnessAccessNote" class="settings-tip wide">{{ otherHarnessAccessNote }}</p>
 
             <div class="folder-tools wide">
               <div class="folder-tools-header">
@@ -655,6 +657,7 @@
                 <input v-model="writeAccessEnabled" type="checkbox" :disabled="writeActionsUnavailable" />
                 Commit and push with approval
               </label>
+              <p v-if="writeAccessNote" class="settings-tip wide">{{ writeAccessNote }}</p>
             </div>
           </Transition>
         </article>
@@ -679,10 +682,18 @@
 
 <script setup lang="ts">
 import {
-  mergeFreshCodingConfig,
+  effectiveCodingAccess,
+  CODING_PROVIDER_LABELS,
+  fullAccessDefaultHint,
+  gitWriteOnlyNote,
+  mergeCodingConfigFromDisk,
   normalizeCodingProviders,
+  otherHarnessAccess,
   reconcileCodingAccess,
   selectSingleCodingProvider,
+  setFullLocalAccess,
+  setWriteAccess,
+  syncGrantsWithSettings,
   type CodingProvider
 } from "./coding-config";
 
@@ -938,7 +949,15 @@ const codingProvider = computed({
 
 // The coding section as last loaded from (or saved to) the config file. Used to
 // tell the user's edits apart from changes Clero or the CLI made on disk since.
-let loadedCodingConfig: RuntimeConfig["capabilities"]["codex"] | null = null;
+const loadedCodingConfig = shallowRef<RuntimeConfig["capabilities"]["codex"] | null>(null);
+// Set when the enabled list on disk changed under the user's unsaved edits;
+// that save is then reconciled as a changed list. Cleared when a config is applied.
+const codingListChangedOnDisk = ref(false);
+
+// The enabled list the access controls compare against (null: treat as changed).
+function codingListAtLoad(): readonly string[] | null {
+  return codingListChangedOnDisk.value ? null : loadedCodingConfig.value?.providers ?? null;
+}
 
 const codexEnabled = computed({
   get: () => config.capabilities.codex.enabled && !codexUnavailable.value,
@@ -951,37 +970,52 @@ const codexEnabled = computed({
   }
 });
 
+// Access the daemon actually enforces for the harness shown in the Agent picker.
+const shownHarnessAccess = computed(() =>
+  effectiveCodingAccess(config.capabilities.codex, config.capabilities.codex.provider)
+);
+
 const writeAccessEnabled = computed({
   get: () =>
     !writeActionsUnavailable.value &&
-    (config.capabilities.codex.allow_workspace_write || config.capabilities.git.write_enabled),
+    (config.capabilities.git.write_enabled || shownHarnessAccess.value.write),
   set: (enabled: boolean) => {
     if (enabled && writeActionsUnavailable.value) {
       notice.value = selectedCodingDependency.value.message;
       return;
     }
-    config.capabilities.codex.allow_workspace_write = enabled;
     config.capabilities.git.write_enabled = enabled;
     if (enabled) {
       config.capabilities.codex.enabled = true;
-      if (config.capabilities.codex.provider === "claude-code") {
-        config.capabilities.codex.claude_permission_mode = "acceptEdits";
-      } else {
-        config.capabilities.codex.default_sandbox = "workspace-write";
-      }
-    } else {
-      if (
-        config.capabilities.codex.default_sandbox === "workspace-write" ||
-        config.capabilities.codex.default_sandbox === "danger-full-access"
-      ) {
-        config.capabilities.codex.default_sandbox = "read-only";
-      }
-      config.capabilities.codex.allow_danger_full_access = false;
-      if (config.capabilities.codex.claude_permission_mode === "acceptEdits") {
-        config.capabilities.codex.claude_permission_mode = "default";
-      }
     }
+    setWriteAccess(config.capabilities.codex, enabled, codingListAtLoad());
   }
+});
+
+const claudePermissionMode = computed({
+  get: () => config.capabilities.codex.claude_permission_mode,
+  set: (mode: RuntimeConfig["capabilities"]["codex"]["claude_permission_mode"]) => {
+    config.capabilities.codex.claude_permission_mode = mode;
+    syncGrantsWithSettings(config.capabilities.codex, codingListAtLoad());
+  }
+});
+
+// Checking full access with several harnesses (or a changed harness list) sets the default for every task.
+const fullAccessHint = computed(() => fullAccessDefaultHint(config.capabilities.codex, codingListAtLoad()));
+
+// The write control also covers git writes; say so when the harness itself has no write access.
+const writeAccessNote = computed(() =>
+  writeActionsUnavailable.value ? "" : gitWriteOnlyNote(config.capabilities.codex, config.capabilities.git.write_enabled)
+);
+
+// Enabled harnesses these controls do not govern that still have write or full access.
+const otherHarnessAccessNote = computed(() => {
+  const others = otherHarnessAccess(config.capabilities.codex);
+  if (others.length === 0) return "";
+  const described = others.map(
+    (access) => `${CODING_PROVIDER_LABELS[access.provider]} (${access.full ? "full access" : "write access"})`
+  );
+  return `Also allowed by their own settings: ${described.join(", ")}.`;
 });
 
 const codexSandbox = computed({
@@ -1000,21 +1034,20 @@ const codexSandbox = computed({
     if (sandbox === "read-only") {
       config.capabilities.codex.allow_workspace_write = false;
     }
+    syncGrantsWithSettings(config.capabilities.codex, codingListAtLoad());
   }
 });
 
+// Shows and changes the full access the daemon enforces for the shown harness
+// (see setFullLocalAccess for what is written).
 const fullLocalAccessEnabled = computed({
-  get: () => config.capabilities.codex.allow_danger_full_access,
+  get: () => shownHarnessAccess.value.full,
   set: (enabled: boolean) => {
-    config.capabilities.codex.allow_danger_full_access = enabled;
     if (enabled) {
       config.capabilities.codex.enabled = true;
-      config.capabilities.codex.allow_workspace_write = true;
-      return;
     }
-    if (config.capabilities.codex.default_sandbox === "danger-full-access") {
-      config.capabilities.codex.default_sandbox = "workspace-write";
-    }
+    // Unchecking leaves write access; the write control removes it.
+    setFullLocalAccess(config.capabilities.codex, enabled, codingListAtLoad());
   }
 });
 
@@ -1685,7 +1718,8 @@ function folderName(folder: string): string {
 
 function applyRuntimeConfig(nextConfig: RuntimeConfig): void {
   Object.assign(config, normalizeLoadedConfig(nextConfig));
-  loadedCodingConfig = structuredClone(toRaw(config.capabilities.codex));
+  loadedCodingConfig.value = structuredClone(toRaw(config.capabilities.codex));
+  codingListChangedOnDisk.value = false;
   reconcileCodingPermissionSettings();
 }
 
@@ -1695,7 +1729,8 @@ function applyRuntimeConfig(nextConfig: RuntimeConfig): void {
  * edited here keep the user's value.
  */
 async function refreshCodingConfigFromDisk(): Promise<void> {
-  if (!loadedCodingConfig) {
+  const loaded = loadedCodingConfig.value;
+  if (!loaded) {
     return;
   }
   let fresh: RuntimeConfig;
@@ -1705,12 +1740,12 @@ async function refreshCodingConfigFromDisk(): Promise<void> {
     return;
   }
   const freshCoding = fresh.capabilities.codex;
-  config.capabilities.codex = mergeFreshCodingConfig(
-    loadedCodingConfig,
-    structuredClone(toRaw(config.capabilities.codex)),
-    freshCoding
-  );
-  loadedCodingConfig = structuredClone(freshCoding);
+  const merged = mergeCodingConfigFromDisk(loaded, structuredClone(toRaw(config.capabilities.codex)), freshCoding);
+  config.capabilities.codex = merged.config;
+  loadedCodingConfig.value = structuredClone(freshCoding);
+  if (merged.listChanged) {
+    codingListChangedOnDisk.value = true;
+  }
 }
 
 function normalizeLoadedConfig(nextConfig: RuntimeConfig): RuntimeConfig {
@@ -1780,7 +1815,7 @@ function reconcileCodingPermissionSettings(): void {
 
   // The loaded harness list tells the reconcile whether stored grants still
   // belong to the enabled harnesses (see reconcileCodingAccess).
-  reconcileCodingAccess(config.capabilities.codex, loadedCodingConfig?.providers ?? null);
+  reconcileCodingAccess(config.capabilities.codex, codingListAtLoad());
 }
 
 function isLocalEndpoint(value: string | undefined): boolean {

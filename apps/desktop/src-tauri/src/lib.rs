@@ -2185,6 +2185,99 @@ mod tests {
         assert_eq!(single.capabilities.codex.default_sandbox, "workspace-write");
     }
 
+    /// Configs as the desktop access controls write them (apps/desktop/coding-config.ts)
+    /// are saved unchanged when the harness list is the one on disk.
+    #[test]
+    fn saving_what_the_access_controls_wrote_changes_nothing() {
+        let written = [
+            // Codex + Claude, full access checked while Codex is shown.
+            serde_json::json!({
+                "enabled": true, "provider": "codex", "providers": ["codex", "claude-code"],
+                "default_sandbox": "danger-full-access", "claude_permission_mode": "default",
+                "allow_workspace_write": true, "allow_danger_full_access": true
+            }),
+            // Codex + Claude, full access unchecked while Claude (bypass) is shown, write on.
+            serde_json::json!({
+                "enabled": true, "provider": "claude-code", "providers": ["codex", "claude-code"],
+                "default_sandbox": "read-only", "claude_permission_mode": "acceptEdits",
+                "allow_workspace_write": true, "allow_danger_full_access": false
+            }),
+            // Codex, Cursor and Claude, shared sandbox full, Claude bypass.
+            serde_json::json!({
+                "enabled": true, "provider": "codex", "providers": ["codex", "cursor", "claude-code"],
+                "default_sandbox": "danger-full-access", "claude_permission_mode": "bypassPermissions",
+                "allow_workspace_write": true, "allow_danger_full_access": true
+            }),
+            // Codex alone, full access checked as before (stored grant, sandbox unchanged).
+            serde_json::json!({
+                "enabled": true, "provider": "codex", "providers": ["codex"],
+                "default_sandbox": "workspace-write", "claude_permission_mode": "default",
+                "allow_workspace_write": true, "allow_danger_full_access": true
+            }),
+            // Codex alone, full access unchecked from a full sandbox.
+            serde_json::json!({
+                "enabled": true, "provider": "codex", "providers": ["codex"],
+                "default_sandbox": "workspace-write", "claude_permission_mode": "default",
+                "allow_workspace_write": true, "allow_danger_full_access": false
+            }),
+            // Claude alone, full access unchecked from bypassPermissions.
+            serde_json::json!({
+                "enabled": true, "provider": "claude-code", "providers": ["claude-code"],
+                "default_sandbox": "read-only", "claude_permission_mode": "acceptEdits",
+                "allow_workspace_write": true, "allow_danger_full_access": false
+            }),
+        ];
+        for value in written {
+            let mut config = coding_config(value.clone());
+            let previous = config.capabilities.codex.providers.clone();
+            super::normalize_runtime_config(&mut config, Some(&previous));
+            let codex = &config.capabilities.codex;
+            assert_eq!(codex.default_sandbox, value["default_sandbox"], "{value}");
+            assert_eq!(codex.claude_permission_mode, value["claude_permission_mode"], "{value}");
+            assert_eq!(codex.allow_workspace_write, value["allow_workspace_write"], "{value}");
+            assert_eq!(codex.allow_danger_full_access, value["allow_danger_full_access"], "{value}");
+        }
+
+        // After the Agent picker changed the list (disk: Codex only), full access is
+        // written as the harness's own setting and survives the recompute.
+        let picked = [
+            serde_json::json!({
+                "enabled": true, "provider": "cursor", "providers": ["cursor"],
+                "default_sandbox": "danger-full-access", "claude_permission_mode": "default",
+                "allow_workspace_write": true, "allow_danger_full_access": true
+            }),
+            serde_json::json!({
+                "enabled": true, "provider": "claude-code", "providers": ["claude-code"],
+                "default_sandbox": "read-only", "claude_permission_mode": "bypassPermissions",
+                "allow_workspace_write": false, "allow_danger_full_access": true
+            }),
+        ];
+        for value in picked {
+            let mut config = coding_config(value.clone());
+            let previous = list(&["codex"]);
+            super::normalize_runtime_config(&mut config, Some(&previous));
+            let codex = &config.capabilities.codex;
+            assert_eq!(codex.default_sandbox, value["default_sandbox"], "{value}");
+            assert_eq!(codex.claude_permission_mode, value["claude_permission_mode"], "{value}");
+            assert_eq!(codex.allow_workspace_write, value["allow_workspace_write"], "{value}");
+            assert_eq!(codex.allow_danger_full_access, value["allow_danger_full_access"], "{value}");
+        }
+
+        // Codex alone, full access checked from a read-only sandbox (the previous
+        // behaviour stores the grants): the unchanged-list reconcile upgrades the
+        // sandbox to workspace-write, as before, and keeps both grants.
+        let mut from_read_only = coding_config(serde_json::json!({
+            "enabled": true, "provider": "codex", "providers": ["codex"],
+            "default_sandbox": "read-only", "claude_permission_mode": "default",
+            "allow_workspace_write": true, "allow_danger_full_access": true
+        }));
+        let previous = list(&["codex"]);
+        super::normalize_runtime_config(&mut from_read_only, Some(&previous));
+        assert_eq!(from_read_only.capabilities.codex.default_sandbox, "workspace-write");
+        assert!(from_read_only.capabilities.codex.allow_workspace_write);
+        assert!(from_read_only.capabilities.codex.allow_danger_full_access);
+    }
+
     #[test]
     fn the_default_sandbox_never_grants_claude_code_access() {
         // [codex, claude-code] with a full-access sandbox shrunk to [claude-code].
