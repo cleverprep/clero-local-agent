@@ -33,6 +33,12 @@ export type ToolName =
   | "workspace.list_roots"
   | "workspace.list_projects"
   | "workspace.describe_project"
+  | "filesystem.list_entries"
+  | "filesystem.read_binary_file"
+  | "filesystem.read_mounted_text"
+  | "filesystem.write_text_file"
+  | "filesystem.open_file"
+  | "filesystem.search_mounted"
   | "filesystem.read_text_file"
   | "filesystem.read_multiple_files"
   | "filesystem.list_directory"
@@ -388,6 +394,8 @@ export function toolRequiresLease(tool: string): boolean {
     tool === "filesystem.edit_file"
   ) {
     return true;
+    tool === "filesystem.write_text_file" ||
+    tool === "filesystem.open_file" ||
   }
 
   return (
@@ -577,6 +585,20 @@ export function inputSchemaForTool(tool: string): JsonSchema {
     case "filesystem.read_text_file":
       return objectSchema(
         {
+    case "filesystem.list_entries":
+    case "filesystem.read_binary_file":
+    case "filesystem.read_mounted_text":
+    case "filesystem.write_text_file":
+    case "filesystem.open_file":
+    case "filesystem.search_mounted":
+      return objectSchema({
+        root: stringSchema("Absolute mounted folder root authorized by Clero."),
+        path: stringSchema("POSIX path relative to that root."),
+        content: stringSchema("Replacement UTF-8 text."),
+        expected_sha256: stringSchema("SHA-256 from the last read, required for writes."),
+        pattern: stringSchema("Search glob pattern."),
+        offset: numberSchema("Directory pagination offset.")
+      }, ["root", "path"]);
           project: stringSchema("Preferred project key/name from workspace.list_projects. Relative paths are resolved inside this project."),
           path: stringSchema("File path relative to project, or an absolute local path."),
           head: numberSchema("Return only the first N lines. Cannot be combined with tail."),
@@ -807,6 +829,7 @@ export function defaultCapabilities(): Capability[] {
     capability("filesystem.search_files", "Find files and directories by glob pattern inside a selected project or narrow directory through the MCP Filesystem server."),
     capability("filesystem.create_directory", "Create a directory in a local project through the MCP Filesystem server."),
     capability("filesystem.write_file", "Create or overwrite a text file in a local project through the MCP Filesystem server."),
+    ...["list_entries", "read_binary_file", "read_mounted_text", "write_text_file", "open_file", "search_mounted"].map(name => capability(`filesystem.${name}` as ToolName, "Access a mounted desktop folder.")),
     capability("filesystem.edit_file", "Apply exact text edits to a file and return a diff through the MCP Filesystem server."),
     capability("shell.run", "Run a bounded local shell command in a discovered project. Shell permission and approval are controlled by Clero backend guardrails."),
     capability("coding_agent.start_task", "Start a local Codex, Claude Code, Antigravity, or Cursor task in a discovered project. Prefer project over absolute cwd. Set continue_session=true to resume prior context for the same agent/project when available. Returns immediately with task_id; poll coding_agent.get_status/get_output."),

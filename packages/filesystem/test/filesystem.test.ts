@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile, symlink } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -399,3 +399,48 @@ function resultContent(result: JsonValue): string | undefined {
     ? result.content
     : undefined;
 }
+
+
+test("mounted operations enforce the specific root even under a broad workspace policy", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "clero-mount-"));
+  const sibling = await mkdtemp(path.join(os.tmpdir(), "clero-mount-private-"));
+  const client: FilesystemMcpClient = { async callTool() { return {}; } };
+  const tools = new FilesystemTools({ workspacePolicy: new WorkspacePolicy({ allowedDirectories: [path.parse(root).root] }), client }).definitions();
+  try {
+    await writeFile(path.join(root, "notes.md"), "# Notes\n");
+    await writeFile(path.join(sibling, "secret.txt"), "secret");
+    await symlink(path.join(sibling, "secret.txt"), path.join(root, "escape.txt"));
+    const listing = await callTool(tools, "filesystem.list_entries", { root, path: "." }) as JsonObject;
+    assert.ok(Array.isArray(listing.entries));
+    await assert.rejects(callTool(tools, "filesystem.read_mounted_text", { root, path: "../secret.txt" }), /relative path/);
+    await assert.rejects(callTool(tools, "filesystem.read_mounted_text", { root, path: "escape.txt" }), /escapes the mounted folder/);
+    const initial = await callTool(tools, "filesystem.read_mounted_text", { root, path: "notes.md" }) as JsonObject;
+    assert.equal(initial.content, "# Notes\n");
+    const saves = await Promise.allSettled([
+      callTool(tools, "filesystem.write_text_file", { root, path: "notes.md", content: "first", expected_sha256: initial.sha256 }),
+      callTool(tools, "filesystem.write_text_file", { root, path: "notes.md", content: "second", expected_sha256: initial.sha256 })
+    ]);
+    assert.equal(saves.filter(result => result.status === "fulfilled").length, 1);
+    assert.equal(await readFile(path.join(root, "notes.md"), "utf8"), "first");
+    const binary = await callTool(tools, "filesystem.read_binary_file", { root, path: "notes.md" }) as JsonObject;
+    assert.equal(Buffer.from(String(binary.data), "base64").toString(), "first");
+  } finally { await rm(root, { recursive: true, force: true }); await rm(sibling, { recursive: true, force: true }); }
+});
+
+test("mounted listings page large directories and text reads refuse binary data", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "clero-mount-page-"));
+  const client: FilesystemMcpClient = { async callTool() { return {}; } };
+  const tools = new FilesystemTools({ workspacePolicy: new WorkspacePolicy({ allowedDirectories: [root] }), client }).definitions();
+  try {
+    await Promise.all(Array.from({ length: 205 }, (_, i) => writeFile(path.join(root, `note-${i}.txt`), "text")));
+    await writeFile(path.join(root, "binary.dat"), Buffer.from([0, 1, 2]));
+    const first = await callTool(tools, "filesystem.list_entries", { root, path: "." }) as JsonObject;
+    assert.equal((first.entries as JsonValue[]).length, 200);
+    assert.equal(first.next_offset, 200);
+    const second = await callTool(tools, "filesystem.list_entries", { root, path: ".", offset: 200 }) as JsonObject;
+    assert.equal((second.entries as JsonValue[]).length, 6);
+    assert.equal(second.next_offset, null);
+    await assert.rejects(callTool(tools, "filesystem.read_mounted_text", { root, path: "binary.dat" }), /Binary files/);
+    await assert.rejects(callTool(tools, "filesystem.open_file", { root, path: "binary.dat" }), /cannot be opened/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

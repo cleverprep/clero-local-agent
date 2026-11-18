@@ -1,6 +1,8 @@
 import { createRequire } from "node:module";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, constants } from "node:fs";
+import { readdir, open, stat, rename, unlink } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -410,19 +412,108 @@ export type FilesystemToolsOptions = {
 
 export class FilesystemTools {
   private readonly options: FilesystemToolsOptions;
+  private mountWrites: Promise<void> = Promise.resolve();
 
   constructor(options: FilesystemToolsOptions) {
     this.options = options;
   }
 
   definitions(): ToolDefinition[] {
-    return TOOL_DEFINITIONS.map((definition) => ({
+    return [...TOOL_DEFINITIONS.map((definition) => ({
       name: definition.name,
       description: definition.description,
       groups: ["shell"],
       requiresLease: definition.requiresLease,
-      handler: (args) => this.call(definition.name, definition.mcpName, args)
+      handler: (args: JsonObject) => this.call(definition.name, definition.mcpName, args)
+    })), ...this.mountDefinitions()];
+  }
+
+  private mountDefinitions(): ToolDefinition[] {
+    return ["list_entries", "read_binary_file", "read_mounted_text", "write_text_file", "open_file", "search_mounted"].map((operation) => ({
+      name: `filesystem.${operation}` as ToolName,
+      description: "Access a mounted folder using an explicit root and a relative path. Writes require the last read SHA-256.",
+      groups: ["shell"],
+      requiresLease: operation === "write_text_file" || operation === "open_file",
+      handler: (args: JsonObject) => {
+        if (operation !== "write_text_file") return this.mountCall(operation, args);
+        const write = this.mountWrites.then(() => this.mountCall(operation, args));
+        this.mountWrites = write.then(() => undefined, () => undefined);
+        return write;
+      }
     }));
+  }
+
+  private async mountCall(operation: string, args: JsonObject): Promise<JsonValue> {
+    const root = this.options.workspacePolicy.resolveAllowedDirectory(requiredString(args, "root"));
+    const relative = typeof args.path === "string" && args.path.length > 0 ? args.path : ".";
+    if (path.isAbsolute(relative) || relative.includes("\\") || relative.includes(":") || relative.split("/").includes("..")) {
+      throw new ToolExecutionError("invalid_arguments", "Expected a relative path within the mounted folder");
+    }
+    const target = this.options.workspacePolicy.resolveAllowedPath(relative, root);
+    const suffix = path.relative(root, target);
+    if (suffix === ".." || suffix.startsWith(`..${path.sep}`) || path.isAbsolute(suffix)) {
+      throw new ToolExecutionError("invalid_arguments", "Path escapes the mounted folder");
+    }
+    if (operation === "list_entries") {
+      const entries = await readdir(target, { withFileTypes: true });
+      const visible = entries.filter((entry) => ![".git", "node_modules", ".venv", "__pycache__"].includes(entry.name));
+      visible.sort((a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || a.name.localeCompare(b.name));
+      const offset = Math.max(0, Math.floor(Number(args.offset) || 0));
+      return { entries: visible.slice(offset, offset + 200).map((entry) => ({
+        name: entry.name, kind: entry.isSymbolicLink() ? "symlink" : entry.isDirectory() ? "directory" : "file",
+        path: path.relative(root, path.join(target, entry.name)).split(path.sep).join("/")
+      })), next_offset: visible.length > offset + 200 ? offset + 200 : null };
+    }
+    if (operation === "search_mounted") {
+      const result = await this.options.client.callTool("search_files", {
+        path: target, pattern: requiredString(args, "pattern"), excludePatterns: DEFAULT_SEARCH_EXCLUDE_PATTERNS
+      });
+      // Do not expose desktop absolute roots in project chat references.
+      return { content: JSON.stringify(result).split(root + path.sep).join("") };
+    }
+    if (!(await stat(target)).isFile()) throw new ToolExecutionError("invalid_arguments", "Select a regular file");
+    if (operation === "open_file") {
+      if (![".xlsx", ".xls", ".csv", ".docx", ".doc", ".pptx", ".pdf", ".txt", ".md"].includes(path.extname(target).toLowerCase())) {
+        throw new ToolExecutionError("invalid_arguments", "This file type cannot be opened externally");
+      }
+      if (process.platform !== "darwin" && process.platform !== "linux") {
+        throw new ToolExecutionError("tool_failed", "Open in default app is currently supported on macOS and Linux");
+      }
+      await new Promise<void>((resolve, reject) => {
+        const child = spawn(process.platform === "darwin" ? "open" : "xdg-open", [target], { stdio: "ignore" });
+        child.on("error", reject);
+        child.on("exit", (code) => code === 0 ? resolve() : reject(new Error("Could not open this file")));
+      });
+      return { opened: true };
+    }
+    const handle = await open(target, constants.O_RDONLY | (constants.O_NOFOLLOW || 0));
+    let bytes: Buffer;
+    try {
+      const info = await handle.stat();
+      if (!info.isFile() || info.size > 10 * 1024 * 1024) throw new ToolExecutionError("invalid_arguments", "File exceeds the 10 MB limit");
+      bytes = Buffer.alloc(info.size + 1);
+      const read = await handle.read(bytes, 0, bytes.length, 0);
+      bytes = bytes.subarray(0, read.bytesRead);
+      if (bytes.length > 10 * 1024 * 1024) throw new ToolExecutionError("invalid_arguments", "File exceeds the 10 MB limit");
+    } finally { await handle.close(); }
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    if (operation === "write_text_file") {
+      if (args.expected_sha256 !== sha256) throw new ToolExecutionError("tool_failed", "File changed on disk. Reload before saving.");
+      if (typeof args.content !== "string" || Buffer.byteLength(args.content) > 10 * 1024 * 1024) throw new ToolExecutionError("invalid_arguments", "Text must be at most 10 MB");
+      const temporary = path.join(path.dirname(target), `.clero-${randomUUID()}.tmp`);
+      try {
+        const output = await open(temporary, "wx", (await stat(target)).mode);
+        try { await output.writeFile(args.content, "utf8"); } finally { await output.close(); }
+        await rename(temporary, target);
+      } finally { await unlink(temporary).catch(() => {}); }
+      return { saved: true, sha256: createHash("sha256").update(args.content).digest("hex") };
+    }
+    if (operation === "read_binary_file") return { data: bytes.toString("base64"), bytes: bytes.length, sha256 };
+    if (bytes.includes(0)) throw new ToolExecutionError("invalid_arguments", "Binary files cannot be edited as text");
+    try { new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
+    catch { throw new ToolExecutionError("invalid_arguments", "This file is not UTF-8 text"); }
+    const limit = 200_000;
+    return { content: bytes.subarray(0, limit).toString("utf8"), truncated: bytes.length > limit, bytes: bytes.length, sha256 };
   }
 
   private async call(toolName: FilesystemToolName, mcpName: string, args: JsonObject): Promise<JsonValue> {
