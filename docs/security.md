@@ -66,7 +66,9 @@ Risky actions require local approval. For MVP this includes:
 - `git.pull`
 - `git.abort_pull`
 - `shell.run` when requesting `workspace-write` or `danger-full-access`
-- coding-agent modes that can modify files or run with elevated sandbox permissions
+- coding-agent modes that can modify files or run with elevated sandbox permissions, unless the local settings already grant that access
+
+For coding agents the local setting is the approval: when the computer's settings allow a mode, a task in that mode starts without a one-time prompt, whether the mode is the harness's default or requested by the task. This covers Codex, Cursor, and Antigravity `workspace-write` / `danger-full-access` and Claude Code `acceptEdits`. Claude Code `bypassPermissions` starts without a prompt only when Claude Code's own permission mode on this computer is `bypassPermissions` and the settings allow bypass (its own mode with several harnesses enabled, or the stored full-access grant with Claude Code alone; another harness's sandbox never allows it). A per-task bypass request on a computer whose Claude Code mode is something else still needs a one-time approval even when a full-access grant is stored (for example one left over from Codex), so an agent without one is denied. A mode the settings do not allow is refused outright, and Claude Code `auto` and `dontAsk` still ask for approval.
 
 Read-only operations such as `git.status`, `git.diff`, browser snapshots, and status checks should avoid unnecessary prompts.
 

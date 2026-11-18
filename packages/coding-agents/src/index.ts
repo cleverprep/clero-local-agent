@@ -2122,6 +2122,20 @@ export class ClaudeCodeAdapter implements CodingAgentAdapter {
       });
     }
 
+    // The local full-access setting is the approval, as for a Codex/Cursor/Antigravity
+    // danger-full-access task (agent-started tasks have no one-time user approval to
+    // give), but only when the user chose bypass for Claude Code itself: its configured
+    // permission mode on this computer is bypassPermissions. A full-access grant alone
+    // (an explicit --allow-danger-full-access, or one left over from another harness)
+    // still asks for approval, as before.
+    if (permissionMode === "bypassPermissions" && this.options.permissionMode === "bypassPermissions") {
+      return {
+        required: true,
+        approved: true,
+        reason: "Approved by local full-access setting"
+      };
+    }
+
     if (!this.options.approvalProvider) {
       throw new ToolExecutionError(
         "approval_denied",

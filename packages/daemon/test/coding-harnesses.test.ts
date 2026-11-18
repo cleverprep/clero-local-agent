@@ -16,6 +16,7 @@ import type { JsonObject } from "@clero-local-agent/protocol";
 import { CodingAgentRouter, LocalRuntimeDaemon } from "../src/daemon.ts";
 import {
   applyCodingAgentConfigUpdate,
+  capabilityOptionsFromConfig,
   codingAgentConfigFromRuntimeConfig,
   loadRuntimeConfig,
   saveRuntimeConfig
@@ -720,4 +721,129 @@ test("get_coding_agent_config reports the running state even if the embedder's s
   const set = await runtime.handleControlRequest({ type: "control_request", request_id: "s", action: "set_coding_agent_config", arguments: { model: "x" } });
   assert.equal(set.result.enabled, false);
   assert.equal(runtime.capabilityPayload().settings.coding_agent.enabled, false);
+});
+
+test("Claude bypassPermissions runs on the local full-access setting without a one-time user approval", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "clero-claude-bypass-"));
+  const fakeCli = path.join(directory, "fake-coding-cli.mjs");
+  await writeFile(fakeCli, `#!/usr/bin/env node
+const args = process.argv.slice(2);
+process.stdin.resume();
+process.stdin.on("end", () => {
+  if (args[0] === "-p") {
+    console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "claude-session" }));
+    console.log(JSON.stringify({ type: "result", subtype: "success", result: "claude done", session_id: "claude-session" }));
+  } else {
+    console.log(JSON.stringify({ type: "thread.started", thread_id: "codex-thread" }));
+    console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "codex done" } }));
+  }
+});
+`);
+  await chmod(fakeCli, 0o755);
+  const daemons: any[] = [];
+  // Settings as stored in config.json; options are built the way the CLI daemon builds them.
+  const start = (codex: Record<string, unknown>) => {
+    const daemon = new LocalRuntimeDaemon({
+      wsUrl: "wss://example.invalid/runtime",
+      token: "synthetic",
+      allowedDirectories: [directory],
+      interactiveApprovals: false,
+      logger: { debug() {}, info() {}, warn() {}, error() {} },
+      auditLogger: { record() {} },
+      capabilities: {
+        ...capabilityOptionsFromConfig({ capabilities: { codex: { enabled: true, command: fakeCli, claude_command: fakeCli, ...codex } } }),
+        browser: { enabled: false }
+      }
+    }) as any;
+    const sent: any[] = [];
+    daemon.websocket.send = (message: any) => sent.push(message);
+    daemons.push(daemon);
+    return { router: daemon.codingAgentAdapter as CodingAgentRouter, sent };
+  };
+  // A config file as written by an older version, loaded the way the CLI daemon loads it.
+  const loadLegacy = async (codex: Record<string, unknown>) => {
+    const legacyPath = path.join(directory, "legacy-config.json");
+    await writeFile(legacyPath, JSON.stringify({ capabilities: { codex } }));
+    const { command: _command, claude_command: _claudeCommand, ...loaded } = (await loadRuntimeConfig(legacyPath)).capabilities!.codex!;
+    return loaded as Record<string, unknown>;
+  };
+  // An agent-started task: no approval token, no interactive user.
+  const agentTask = (router: CodingAgentRouter, args: JsonObject) =>
+    router.startTask({ prompt: "go", cwd: directory, ...args }, { requestId: "request-1", agentId: "agent-1" });
+  const disabled = /Claude bypassPermissions mode is disabled in local settings/;
+  try {
+    // Codex + Claude, Claude's own mode is bypassPermissions.
+    const multi = start({ provider: "codex", providers: ["codex", "claude-code"], claude_permission_mode: "bypassPermissions" });
+    const ran = await agentTask(multi.router, { provider: "claude-code" });
+    assert.equal(ran.provider, "claude-code");
+    assert.equal(ran.permission_mode, "bypassPermissions");
+    assert.equal(ran.approval_reason, "Approved by local full-access setting");
+    assert.equal(multi.sent.some((message) => message.type === "approval_request"), false);
+
+    // Claude's mode is default: a per-task bypass request is still refused.
+    const defaultMode = start({ provider: "codex", providers: ["codex", "claude-code"], claude_permission_mode: "default" });
+    await assert.rejects(agentTask(defaultMode.router, { provider: "claude-code", permission_mode: "bypassPermissions" }), disabled);
+
+    // A Codex full-access sandbox next to a default-mode Claude gives Claude nothing.
+    const codexFull = start({
+      provider: "codex",
+      providers: ["codex", "claude-code"],
+      default_sandbox: "danger-full-access",
+      claude_permission_mode: "default",
+      allow_workspace_write: true,
+      allow_danger_full_access: true
+    });
+    await assert.rejects(agentTask(codexFull.router, { provider: "claude-code", permission_mode: "bypassPermissions" }), disabled);
+
+    // Claude alone: the stored full-access grant decides.
+    const granted = start({ provider: "claude-code", providers: ["claude-code"], claude_permission_mode: "bypassPermissions", allow_danger_full_access: true });
+    const lone = await agentTask(granted.router, {});
+    assert.equal(lone.permission_mode, "bypassPermissions");
+    assert.equal(lone.approval_reason, "Approved by local full-access setting");
+    const notGranted = start({ provider: "claude-code", providers: ["claude-code"], claude_permission_mode: "bypassPermissions", allow_danger_full_access: false });
+    await assert.rejects(agentTask(notGranted.router, {}), disabled);
+    // A full-access grant left over from Codex in a pre-multi-harness file (no providers
+    // key; switched with an old CLI that did not recompute grants): Claude Code's own mode
+    // is default, so a per-task bypass asks for approval, which an agent does not have.
+    const legacyFile = await loadLegacy({
+      enabled: true,
+      provider: "claude-code",
+      default_sandbox: "danger-full-access",
+      claude_permission_mode: "default",
+      allow_workspace_write: true,
+      allow_danger_full_access: true
+    });
+    assert.deepEqual(legacyFile.providers, ["claude-code"]);
+    const leftoverGrant = start(legacyFile);
+    await assert.rejects(
+      agentTask(leftoverGrant.router, { permission_mode: "bypassPermissions" }),
+      /Approval denied for Claude Code bypassPermissions task/
+    );
+    // Stored grant with Claude Code on acceptEdits: a per-task bypass also asks.
+    const acceptEdits = start({ provider: "claude-code", providers: ["claude-code"], claude_permission_mode: "acceptEdits", allow_workspace_write: true, allow_danger_full_access: true });
+    await assert.rejects(
+      agentTask(acceptEdits.router, { permission_mode: "bypassPermissions" }),
+      /Approval denied for Claude Code bypassPermissions task/
+    );
+    // ... and a leftover full-access sandbox does not count for Claude alone.
+    const leftover = start({ provider: "claude-code", providers: ["claude-code"], claude_permission_mode: "bypassPermissions", default_sandbox: "danger-full-access" });
+    await assert.rejects(agentTask(leftover.router, {}), disabled);
+
+    for (const { router } of [multi, granted]) {
+      for (const taskId of [String(ran.task_id), String(lone.task_id)]) {
+        for (let attempt = 0; attempt < 200; attempt += 1) {
+          const status = await router.getStatus(taskId).catch(() => ({ status: "unknown" }));
+          if (status.status !== "running") break;
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+      }
+    }
+  } finally {
+    for (const daemon of daemons) {
+      for (const pending of daemon.pendingLocalTaskCompletions.values()) daemon.clearLocalTaskCompletionTimers(pending);
+      daemon.pendingLocalTaskCompletions.clear();
+      await daemon.codingAgentAdapter.dispose();
+    }
+    await rm(directory, { recursive: true, force: true });
+  }
 });

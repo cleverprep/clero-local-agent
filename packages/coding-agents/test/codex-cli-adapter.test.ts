@@ -523,6 +523,158 @@ test("uses local workspace-write setting as Claude acceptEdits approval", async 
   assert.equal(status.status, "completed");
 });
 
+class RecordingApprovalProvider {
+  readonly requests: Array<{ summary: string; metadata?: Record<string, unknown> }> = [];
+  private readonly approved: boolean;
+  private readonly reason: string;
+
+  constructor(approved: boolean, reason = "recorded") {
+    this.approved = approved;
+    this.reason = reason;
+  }
+
+  async requestApproval(request: { summary: string; metadata?: Record<string, unknown> }) {
+    this.requests.push(request);
+    return { approved: this.approved, reason: this.reason };
+  }
+}
+
+test("Claude bypassPermissions is approved by the local full-access setting without asking the approval provider", async (t) => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "clero-claude-test-"));
+  t.after(() => rm(workspace, { recursive: true, force: true }));
+  const fakeClaude = await createFakeClaude(workspace, 0);
+  const context = { requestId: "req_1", agentId: "agent_1", taskId: "task_1" };
+
+  // Claude Code's configured mode is bypass: its own tasks and per-task requests are auto-approved.
+  const cases: Array<{ permissionMode: "bypassPermissions"; args: JsonObject }> = [
+    { permissionMode: "bypassPermissions", args: {} },
+    { permissionMode: "bypassPermissions", args: { permission_mode: "bypassPermissions" } }
+  ];
+  for (const options of cases) {
+    const approvals = new RecordingApprovalProvider(false, "No matching one-time user approval was found.");
+    const adapter = new ClaudeCodeAdapter({
+      workspacePolicy: new WorkspacePolicy({ allowedDirectories: [workspace] }),
+      approvalProvider: approvals,
+      command: fakeClaude,
+      permissionMode: options.permissionMode,
+      allowBypassPermissions: true
+    });
+    const start = await adapter.startTask({ prompt: "do it", cwd: workspace, ...options.args }, context);
+    assert.equal(start.status, "running");
+    assert.equal(start.permission_mode, "bypassPermissions");
+    assert.equal(start.approval_required, true);
+    assert.equal(start.approved, true);
+    assert.equal(start.approval_reason, "Approved by local full-access setting");
+    assert.equal(approvals.requests.length, 0, "no one-time user approval is requested");
+    assert.equal((await waitForTerminalStatus(adapter, stringField(start, "task_id"))).status, "completed");
+  }
+
+  // Allowed, but Claude Code's configured mode is not bypass (an explicit full-access
+  // grant, or one left over from another harness): a per-task bypass request asks for
+  // approval as before, and an agent without a one-time approval is denied.
+  for (const permissionMode of ["default", "acceptEdits", undefined] as const) {
+    const approvals = new RecordingApprovalProvider(false, "No matching one-time user approval was found.");
+    const adapter = new ClaudeCodeAdapter({
+      workspacePolicy: new WorkspacePolicy({ allowedDirectories: [workspace] }),
+      approvalProvider: approvals,
+      command: fakeClaude,
+      permissionMode,
+      allowWorkspaceWrite: true,
+      allowBypassPermissions: true
+    });
+    await assert.rejects(
+      adapter.startTask({ prompt: "do it", cwd: workspace, permission_mode: "bypassPermissions" }, context),
+      /Approval denied for Claude Code bypassPermissions task: No matching one-time user approval was found\./
+    );
+    assert.equal(approvals.requests.length, 1, String(permissionMode));
+    const userApproved = new ClaudeCodeAdapter({
+      workspacePolicy: new WorkspacePolicy({ allowedDirectories: [workspace] }),
+      approvalProvider: new RecordingApprovalProvider(true, "approved by the user"),
+      command: fakeClaude,
+      permissionMode,
+      allowBypassPermissions: true
+    });
+    const approvedStart = await userApproved.startTask({ prompt: "do it", cwd: workspace, permission_mode: "bypassPermissions" }, context);
+    assert.equal(approvedStart.approval_reason, "approved by the user");
+    await waitForTerminalStatus(userApproved, stringField(approvedStart, "task_id"));
+  }
+
+  // Not allowed locally: the same hard error as before, still without asking.
+  for (const allowBypassPermissions of [false, undefined]) {
+    const approvals = new RecordingApprovalProvider(true);
+    const adapter = new ClaudeCodeAdapter({
+      workspacePolicy: new WorkspacePolicy({ allowedDirectories: [workspace] }),
+      approvalProvider: approvals,
+      command: fakeClaude,
+      permissionMode: "bypassPermissions",
+      allowBypassPermissions
+    });
+    await assert.rejects(
+      adapter.startTask({ prompt: "do it", cwd: workspace }, context),
+      (error: unknown) =>
+        error instanceof ToolExecutionError &&
+        error.errorCode === "approval_denied" &&
+        error.message === "Claude bypassPermissions mode is disabled in local settings."
+    );
+    assert.equal(approvals.requests.length, 0);
+  }
+});
+
+test("Claude auto and dontAsk modes still ask the approval provider; acceptEdits is unchanged", async (t) => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "clero-claude-test-"));
+  t.after(() => rm(workspace, { recursive: true, force: true }));
+  const fakeClaude = await createFakeClaude(workspace, 0);
+  const context = { requestId: "req_1", agentId: "agent_1", taskId: "task_1" };
+  for (const permissionMode of ["auto", "dontAsk"] as const) {
+    const approvals = new RecordingApprovalProvider(false, "not approved");
+    const adapter = new ClaudeCodeAdapter({
+      workspacePolicy: new WorkspacePolicy({ allowedDirectories: [workspace] }),
+      approvalProvider: approvals,
+      command: fakeClaude,
+      permissionMode,
+      allowWorkspaceWrite: true,
+      allowBypassPermissions: true
+    });
+    await assert.rejects(adapter.startTask({ prompt: "do it", cwd: workspace }, context), /Approval denied for Claude Code/);
+    assert.equal(approvals.requests.length, 1, permissionMode);
+  }
+
+  // acceptEdits: local setting approves, false denies, undefined asks.
+  const approved = new RecordingApprovalProvider(false);
+  const writable = new ClaudeCodeAdapter({
+    workspacePolicy: new WorkspacePolicy({ allowedDirectories: [workspace] }),
+    approvalProvider: approved,
+    command: fakeClaude,
+    permissionMode: "acceptEdits",
+    allowWorkspaceWrite: true
+  });
+  const start = await writable.startTask({ prompt: "edit", cwd: workspace }, context);
+  assert.equal(start.approval_reason, "Approved by local workspace-write setting");
+  assert.equal(approved.requests.length, 0);
+  await waitForTerminalStatus(writable, stringField(start, "task_id"));
+  await assert.rejects(
+    new ClaudeCodeAdapter({
+      workspacePolicy: new WorkspacePolicy({ allowedDirectories: [workspace] }),
+      approvalProvider: approved,
+      command: fakeClaude,
+      permissionMode: "acceptEdits",
+      allowWorkspaceWrite: false
+    }).startTask({ prompt: "edit", cwd: workspace }, context),
+    /acceptEdits mode is disabled in local settings/
+  );
+  const asks = new RecordingApprovalProvider(false, "not approved");
+  await assert.rejects(
+    new ClaudeCodeAdapter({
+      workspacePolicy: new WorkspacePolicy({ allowedDirectories: [workspace] }),
+      approvalProvider: asks,
+      command: fakeClaude,
+      permissionMode: "acceptEdits"
+    }).startTask({ prompt: "edit", cwd: workspace }, context),
+    /Approval denied for Claude Code acceptEdits task/
+  );
+  assert.equal(asks.requests.length, 1);
+});
+
 test("runs antigravity cli as an async text task", async (t) => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "clero-antigravity-test-"));
   t.after(() => rm(workspace, { recursive: true, force: true }));
