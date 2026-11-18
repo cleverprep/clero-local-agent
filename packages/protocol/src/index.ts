@@ -93,7 +93,10 @@ export type RuntimeCapabilitySettings = {
   };
   coding_agent?: {
     enabled?: boolean;
+    /** Default harness, used when coding_agent.start_task omits provider. */
     provider?: "codex" | "claude-code" | "antigravity" | "cursor" | string;
+    /** Enabled harnesses; always contains provider. */
+    providers?: Array<"codex" | "claude-code" | "antigravity" | "cursor" | string>;
     sandbox?: "read-only" | "workspace-write" | "danger-full-access" | string;
   };
   shell?: {
@@ -391,11 +394,11 @@ export function toolRequiresLease(tool: string): boolean {
     tool === "shell.run" ||
     tool === "filesystem.create_directory" ||
     tool === "filesystem.write_file" ||
+    tool === "filesystem.write_text_file" ||
+    tool === "filesystem.open_file" ||
     tool === "filesystem.edit_file"
   ) {
     return true;
-    tool === "filesystem.write_text_file" ||
-    tool === "filesystem.open_file" ||
   }
 
   return (
@@ -582,9 +585,6 @@ export function inputSchemaForTool(tool: string): JsonSchema {
         project: stringSchema("Preferred project key/name from workspace.list_projects. Use this instead of inventing absolute paths."),
         path: stringSchema("Optional local project directory to describe.")
       });
-    case "filesystem.read_text_file":
-      return objectSchema(
-        {
     case "filesystem.list_entries":
     case "filesystem.read_binary_file":
     case "filesystem.read_mounted_text":
@@ -599,6 +599,9 @@ export function inputSchemaForTool(tool: string): JsonSchema {
         pattern: stringSchema("Search glob pattern."),
         offset: numberSchema("Directory pagination offset.")
       }, ["root", "path"]);
+    case "filesystem.read_text_file":
+      return objectSchema(
+        {
           project: stringSchema("Preferred project key/name from workspace.list_projects. Relative paths are resolved inside this project."),
           path: stringSchema("File path relative to project, or an absolute local path."),
           head: numberSchema("Return only the first N lines. Cannot be combined with tail."),
@@ -684,6 +687,10 @@ export function inputSchemaForTool(tool: string): JsonSchema {
       return objectSchema(
         {
           prompt: stringSchema("Task prompt to send to the local coding agent."),
+          provider: stringEnumSchema(
+            ["codex", "claude-code", "antigravity", "cursor"],
+            "Which enabled coding harness runs this task. Omit to use the default."
+          ),
           project: stringSchema("Preferred project key/name from workspace.list_projects. Use this instead of inventing absolute paths."),
           cwd: stringSchema("Optional allowed working directory for the task. Prefer project unless the user provided an exact path."),
           continue_session: booleanSchema("Continue the previous local coding-agent session for this agent/project when available. Defaults to false."),
@@ -822,6 +829,7 @@ export function defaultCapabilities(): Capability[] {
     capability("workspace.list_roots", "List the local filesystem roots available to the desktop runtime and its default working directory."),
     capability("workspace.list_projects", "Discover local projects under a requested directory, or the user's home directory by default."),
     capability("workspace.describe_project", "Inspect a discovered local project key/name or path and summarize markers, stack, package metadata, and git state."),
+    ...["list_entries", "read_binary_file", "read_mounted_text", "write_text_file", "open_file", "search_mounted"].map(name => capability(`filesystem.${name}` as ToolName, "Access a mounted desktop folder.")),
     capability("filesystem.read_text_file", "Read a text file from a local project through the MCP Filesystem server."),
     capability("filesystem.read_multiple_files", "Read several text files from a local project through the MCP Filesystem server."),
     capability("filesystem.list_directory", "List a directory in a local project through the MCP Filesystem server."),
@@ -829,10 +837,9 @@ export function defaultCapabilities(): Capability[] {
     capability("filesystem.search_files", "Find files and directories by glob pattern inside a selected project or narrow directory through the MCP Filesystem server."),
     capability("filesystem.create_directory", "Create a directory in a local project through the MCP Filesystem server."),
     capability("filesystem.write_file", "Create or overwrite a text file in a local project through the MCP Filesystem server."),
-    ...["list_entries", "read_binary_file", "read_mounted_text", "write_text_file", "open_file", "search_mounted"].map(name => capability(`filesystem.${name}` as ToolName, "Access a mounted desktop folder.")),
     capability("filesystem.edit_file", "Apply exact text edits to a file and return a diff through the MCP Filesystem server."),
     capability("shell.run", "Run a bounded local shell command in a discovered project. Shell permission and approval are controlled by Clero backend guardrails."),
-    capability("coding_agent.start_task", "Start a local Codex, Claude Code, Antigravity, or Cursor task in a discovered project. Prefer project over absolute cwd. Set continue_session=true to resume prior context for the same agent/project when available. Returns immediately with task_id; poll coding_agent.get_status/get_output."),
+    capability("coding_agent.start_task", "Start a local Codex, Claude Code, Antigravity, or Cursor task in a discovered project. Prefer project over absolute cwd. Pass provider to pick one of the enabled coding harnesses, or omit it for the default. Set continue_session=true to resume prior context for the same agent/project when available; without provider it continues on the harness that owns that session. Returns immediately with task_id; poll coding_agent.get_status/get_output."),
     capability("coding_agent.get_status", "Get local coding-agent task status by task_id."),
     capability("coding_agent.get_output", "Read the latest concise progress update or final result plus recent coding activity for a local coding-agent task."),
     capability("coding_agent.cancel", "Cancel a running local coding-agent task."),

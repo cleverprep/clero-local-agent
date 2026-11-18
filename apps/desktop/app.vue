@@ -368,7 +368,7 @@
             <div v-if="isCapabilityOpen('coding')" id="coding-settings" class="capability-settings">
             <label class="wide">
               Agent
-              <select v-model="config.capabilities.codex.provider">
+              <select v-model="codingProvider">
                 <option value="codex">Codex</option>
                 <option value="claude-code">Claude Code</option>
                 <option value="antigravity">Antigravity</option>
@@ -678,6 +678,14 @@
 </template>
 
 <script setup lang="ts">
+import {
+  mergeFreshCodingConfig,
+  normalizeCodingProviders,
+  reconcileCodingAccess,
+  selectSingleCodingProvider,
+  type CodingProvider
+} from "./coding-config";
+
 type ConnectionState = "offline" | "connected" | "pairing";
 type CapabilityPanel = "browser" | "coding" | "shell" | "git";
 type UpdateState = "idle" | "checking" | "available" | "current" | "installing" | "restarting" | "error";
@@ -725,7 +733,10 @@ type RuntimeConfig = {
     };
     codex: {
       enabled: boolean;
-      provider: "codex" | "claude-code" | "antigravity" | "cursor";
+      /** Default harness. */
+      provider: CodingProvider;
+      /** Enabled harnesses (set by the CLI or Clero); always contains provider. */
+      providers: CodingProvider[];
       command: string;
       model: string;
       reasoning_effort: "" | "low" | "medium" | "high" | "xhigh";
@@ -914,6 +925,20 @@ const browserEnabled = computed({
     config.capabilities.browser.enabled = enabled;
   }
 });
+
+// This screen configures one harness. Picking one here makes it the only
+// enabled harness, like `--provider` on the CLI; several harnesses are set up
+// with `clero-connector coding enable --providers`.
+const codingProvider = computed({
+  get: () => config.capabilities.codex.provider,
+  set: (provider: CodingProvider) => {
+    selectSingleCodingProvider(config.capabilities.codex, provider);
+  }
+});
+
+// The coding section as last loaded from (or saved to) the config file. Used to
+// tell the user's edits apart from changes Clero or the CLI made on disk since.
+let loadedCodingConfig: RuntimeConfig["capabilities"]["codex"] | null = null;
 
 const codexEnabled = computed({
   get: () => config.capabilities.codex.enabled && !codexUnavailable.value,
@@ -1244,6 +1269,7 @@ onBeforeUnmount(() => {
 
 async function saveConfig(showNotice = true): Promise<void> {
   forceProductionConnectionConfig();
+  await refreshCodingConfigFromDisk();
   reconcileCodingPermissionSettings();
   applyDependencyAvailability(true);
 
@@ -1387,6 +1413,8 @@ async function pairRuntime(): Promise<void> {
     forceProductionConnectionConfig();
     await refreshDependencyStatus();
     applyDependencyAvailability(true);
+    await refreshCodingConfigFromDisk();
+    reconcileCodingPermissionSettings();
     const paired = await invokeTauri<RuntimeConfig>("pair_runtime", { code, config: toRaw(config) });
     applyRuntimeConfig(paired);
     pairingCode.value = "";
@@ -1407,6 +1435,9 @@ async function startDaemon(saveFirst = true): Promise<void> {
     applyDependencyAvailability(true);
     if (saveFirst) {
       await saveConfig(false);
+    } else {
+      await refreshCodingConfigFromDisk();
+      reconcileCodingPermissionSettings();
     }
     const status = await invokeTauri<DaemonStatus>("start_daemon", { config: toRaw(config) });
     applyDaemonStatus(status);
@@ -1446,6 +1477,8 @@ async function resetBrowserSession(): Promise<void> {
 
   const wasRunning = daemonStatus.running;
   try {
+    await refreshCodingConfigFromDisk();
+    reconcileCodingPermissionSettings();
     const status = await invokeTauri<DaemonStatus>("reset_browser_session", { config: toRaw(config) });
     applyDaemonStatus(status);
     notice.value = "Browser session reset.";
@@ -1652,7 +1685,32 @@ function folderName(folder: string): string {
 
 function applyRuntimeConfig(nextConfig: RuntimeConfig): void {
   Object.assign(config, normalizeLoadedConfig(nextConfig));
+  loadedCodingConfig = structuredClone(toRaw(config.capabilities.codex));
   reconcileCodingPermissionSettings();
+}
+
+/**
+ * Before the app writes the config, picks up coding settings that changed on
+ * disk since it was loaded (e.g. harnesses enabled by Clero); fields the user
+ * edited here keep the user's value.
+ */
+async function refreshCodingConfigFromDisk(): Promise<void> {
+  if (!loadedCodingConfig) {
+    return;
+  }
+  let fresh: RuntimeConfig;
+  try {
+    fresh = normalizeLoadedConfig(await invokeTauri<RuntimeConfig>("load_config"));
+  } catch {
+    return;
+  }
+  const freshCoding = fresh.capabilities.codex;
+  config.capabilities.codex = mergeFreshCodingConfig(
+    loadedCodingConfig,
+    structuredClone(toRaw(config.capabilities.codex)),
+    freshCoding
+  );
+  loadedCodingConfig = structuredClone(freshCoding);
 }
 
 function normalizeLoadedConfig(nextConfig: RuntimeConfig): RuntimeConfig {
@@ -1667,10 +1725,16 @@ function normalizeLoadedConfig(nextConfig: RuntimeConfig): RuntimeConfig {
     ...defaultConfig().capabilities.shell,
     ...normalized.capabilities.shell
   };
+  const loadedCoding: Partial<RuntimeConfig["capabilities"]["codex"]> = normalized.capabilities.codex ?? {};
   normalized.capabilities.codex = {
     ...defaultConfig().capabilities.codex,
-    ...normalized.capabilities.codex
+    ...loadedCoding,
+    // A config without a harness list enables only its own default harness.
+    providers: Array.isArray(loadedCoding.providers) && loadedCoding.providers.length > 0
+      ? loadedCoding.providers
+      : [loadedCoding.provider ?? "codex"]
   };
+  Object.assign(normalized.capabilities.codex, normalizeCodingProviders(normalized.capabilities.codex));
   const backendWasLocal = isLocalEndpoint(normalized.backend_url);
   normalized.backend_url = PRODUCTION_BACKEND_URL;
   normalized.capabilities.browser.provider = "managed";
@@ -1714,26 +1778,9 @@ function reconcileCodingPermissionSettings(): void {
   config.capabilities.shell.timeout_ms = clampNumber(config.capabilities.shell.timeout_ms, 1000, 120000, 30000);
   config.capabilities.shell.max_output_bytes = clampNumber(config.capabilities.shell.max_output_bytes, 4096, 1000000, 200000);
 
-  if (config.capabilities.codex.provider === "claude-code") {
-    if (config.capabilities.codex.allow_workspace_write && config.capabilities.codex.claude_permission_mode === "default") {
-      config.capabilities.codex.claude_permission_mode = "acceptEdits";
-    }
-    if (config.capabilities.codex.claude_permission_mode === "acceptEdits") {
-      config.capabilities.codex.allow_workspace_write = true;
-    }
-    return;
-  }
-
-  if (config.capabilities.codex.allow_workspace_write && config.capabilities.codex.default_sandbox === "read-only") {
-    config.capabilities.codex.default_sandbox = "workspace-write";
-  }
-  if (config.capabilities.codex.default_sandbox === "workspace-write") {
-    config.capabilities.codex.allow_workspace_write = true;
-  }
-  if (config.capabilities.codex.default_sandbox === "danger-full-access") {
-    config.capabilities.codex.allow_workspace_write = true;
-    config.capabilities.codex.allow_danger_full_access = true;
-  }
+  // The loaded harness list tells the reconcile whether stored grants still
+  // belong to the enabled harnesses (see reconcileCodingAccess).
+  reconcileCodingAccess(config.capabilities.codex, loadedCodingConfig?.providers ?? null);
 }
 
 function isLocalEndpoint(value: string | undefined): boolean {
@@ -1804,6 +1851,7 @@ function defaultConfig(): RuntimeConfig {
       codex: {
         enabled: false,
         provider: "codex",
+        providers: ["codex"],
         command: "",
         model: "",
         reasoning_effort: "",

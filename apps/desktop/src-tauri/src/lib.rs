@@ -113,8 +113,12 @@ struct ShellConfig {
 struct CodexConfig {
     #[serde(default)]
     enabled: bool,
+    /// Default harness, used when a coding task does not name one.
     #[serde(default = "default_coding_provider")]
     provider: String,
+    /// Enabled harnesses. Older configs omit it; normalization fills in `[provider]`.
+    #[serde(default)]
+    providers: Vec<String>,
     #[serde(default)]
     command: String,
     #[serde(default)]
@@ -303,6 +307,7 @@ impl Default for CodexConfig {
         Self {
             enabled: false,
             provider: default_coding_provider(),
+            providers: vec![default_coding_provider()],
             command: String::new(),
             model: String::new(),
             reasoning_effort: String::new(),
@@ -354,7 +359,12 @@ fn load_config(app: AppHandle) -> Result<RuntimeConfig, String> {
     let raw = fs::read_to_string(path).map_err(|error| error.to_string())?;
     let mut config =
         serde_json::from_str::<RuntimeConfig>(&raw).map_err(|error| error.to_string())?;
-    if normalize_runtime_config(&mut config) {
+    // The file itself is the previous state, so its own harness list counts as known.
+    let (_, loaded_providers) = normalized_coding_providers(
+        &config.capabilities.codex.provider,
+        &config.capabilities.codex.providers,
+    );
+    if normalize_runtime_config(&mut config, Some(&loaded_providers)) {
         write_config(&app, &config)?;
     }
     Ok(config)
@@ -362,9 +372,70 @@ fn load_config(app: AppHandle) -> Result<RuntimeConfig, String> {
 
 #[tauri::command]
 fn save_config(app: AppHandle, mut config: RuntimeConfig) -> Result<RuntimeConfig, String> {
-    normalize_runtime_config(&mut config);
+    normalize_runtime_config_for_save(&app, &mut config);
     write_config(&app, &config)?;
     Ok(config)
+}
+
+/// The enabled harnesses in the config file on disk, if it can be read.
+fn persisted_coding_providers(app: &AppHandle) -> Option<Vec<String>> {
+    persisted_coding_providers_at(&config_path(app).ok()?)
+}
+
+fn persisted_coding_providers_at(path: &Path) -> Option<Vec<String>> {
+    let raw = fs::read_to_string(path).ok()?;
+    let value = serde_json::from_str::<serde_json::Value>(&raw).ok()?;
+    let codex = value.get("capabilities")?.get("codex")?;
+    let provider = codex
+        .get("provider")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("codex");
+    let providers: Vec<String> = codex
+        .get("providers")
+        .and_then(serde_json::Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|value| value.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(normalized_coding_providers(provider, &providers).1)
+}
+
+/// Normalizes a config that is about to replace the one on disk, comparing
+/// its coding harnesses with the persisted ones.
+fn normalize_runtime_config_for_save(app: &AppHandle, config: &mut RuntimeConfig) -> bool {
+    let previous = persisted_coding_providers(app);
+    normalize_runtime_config(config, previous.as_deref())
+}
+
+/// The shared access grants implied by the coding settings. Mirrors
+/// `derivedCodingAgentGrants` in packages/coding-agents; the test suites read
+/// packages/daemon/test/fixtures/coding-grant-cases.json. The default sandbox
+/// counts only while a sandbox harness (Codex, Cursor, Antigravity) is
+/// enabled and the Claude Code permission mode only while Claude Code is
+/// enabled, so a leftover sandbox never grants Claude Code access (a
+/// Claude-only config with a write/full sandbox and no stored grant no longer
+/// gets that access).
+fn derived_coding_grants(codex: &CodexConfig) -> (bool, bool) {
+    let (_, providers) = normalized_coding_providers(&codex.provider, &codex.providers);
+    let claude_enabled = providers.iter().any(|provider| provider == "claude-code");
+    let sandbox_harness_enabled = providers.iter().any(|provider| provider != "claude-code");
+    let sandbox = if sandbox_harness_enabled {
+        codex.default_sandbox.as_str()
+    } else {
+        ""
+    };
+    let mode = if claude_enabled {
+        codex.claude_permission_mode.as_str()
+    } else {
+        ""
+    };
+    (
+        matches!(sandbox, "workspace-write" | "danger-full-access") || mode == "acceptEdits",
+        sandbox == "danger-full-access" || mode == "bypassPermissions",
+    )
 }
 
 #[tauri::command]
@@ -411,7 +482,7 @@ async fn pair_runtime(
     code: String,
     mut config: RuntimeConfig,
 ) -> Result<RuntimeConfig, String> {
-    normalize_runtime_config(&mut config);
+    normalize_runtime_config_for_save(&app, &mut config);
     let pairing_code = code.trim();
     if pairing_code.is_empty() {
         return Err("Pairing code is required".to_string());
@@ -476,11 +547,13 @@ fn start_daemon(
     state: State<'_, DaemonSupervisor>,
     mut config: RuntimeConfig,
 ) -> Result<DaemonProcessStatus, String> {
-    normalize_runtime_config(&mut config);
+    normalize_runtime_config_for_save(&app, &mut config);
     if config.device_token.trim().is_empty() || config.websocket_url.trim().is_empty() {
         return Err("Pair the runtime before starting the daemon.".to_string());
     }
-    validate_enabled_dependencies(&config)?;
+    let dependencies = dependency_status(&config);
+    validate_enabled_dependencies_with(&config, &dependencies)?;
+    let unavailable_coding = unavailable_coding_providers(&config, &dependencies);
 
     save_config(app.clone(), config)?;
     if current_daemon_status(&state)?.running {
@@ -490,6 +563,18 @@ fn start_daemon(
     let config_path = config_path(&app)?;
     let mut command = daemon_command(&config_path)?;
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    // Skipped for this run only; the saved config keeps them enabled so a
+    // reinstall brings them back.
+    command.env(UNAVAILABLE_CODING_PROVIDERS_ENV, unavailable_coding.join(","));
+    if !unavailable_coding.is_empty() {
+        push_log_tail(
+            &state.logs,
+            format!(
+                "process: coding harnesses not installed, skipped for this run: {}",
+                unavailable_coding.join(", ")
+            ),
+        );
+    }
     begin_backend_connection(&state.backend_connection);
     set_agents_sync(&state.agents_sync, None);
     let mut child = command.spawn().map_err(|error| error.to_string())?;
@@ -535,7 +620,7 @@ fn reset_browser_session(
     state: State<'_, DaemonSupervisor>,
     mut config: RuntimeConfig,
 ) -> Result<DaemonProcessStatus, String> {
-    normalize_runtime_config(&mut config);
+    normalize_runtime_config_for_save(&app, &mut config);
     if !config.capabilities.browser.remember_session {
         return Err("Turn on browser session memory before resetting it.".to_string());
     }
@@ -564,7 +649,8 @@ fn open_browser_profile(
     mut config: RuntimeConfig,
     profile_key: String,
 ) -> Result<BrowserProfileOpenResult, String> {
-    normalize_runtime_config(&mut config);
+    // Only reads the browser settings; nothing is saved.
+    normalize_runtime_config(&mut config, None);
     if !config.capabilities.browser.remember_session {
         return Err("Turn on browser session memory before opening agent profiles.".to_string());
     }
@@ -1126,37 +1212,97 @@ fn json_bool(value: Option<&serde_json::Value>) -> bool {
 }
 
 fn validate_enabled_dependencies(config: &RuntimeConfig) -> Result<(), String> {
-    let status = dependency_status(config);
+    validate_enabled_dependencies_with(config, &dependency_status(config))
+}
+
+fn validate_enabled_dependencies_with(
+    config: &RuntimeConfig,
+    status: &DependencyStatus,
+) -> Result<(), String> {
     if config.capabilities.browser.enabled && !status.browser.available {
-        return Err(status.browser.message);
+        return Err(status.browser.message.clone());
     }
-    if config.capabilities.codex.enabled
-        && config.capabilities.codex.provider == "claude-code"
-        && !status.claude.available
-    {
-        return Err(status.claude.message);
+    validate_default_coding_dependency(config, status)
+}
+
+/// Of the coding harnesses only the default one is required; missing others
+/// are skipped for the run (see `unavailable_coding_providers`).
+fn validate_default_coding_dependency(
+    config: &RuntimeConfig,
+    status: &DependencyStatus,
+) -> Result<(), String> {
+    if !config.capabilities.codex.enabled {
+        return Ok(());
     }
-    if config.capabilities.codex.enabled
-        && config.capabilities.codex.provider == "antigravity"
-        && !status.antigravity.available
-    {
-        return Err(status.antigravity.message);
+    let (provider, _) = normalized_coding_providers(
+        &config.capabilities.codex.provider,
+        &config.capabilities.codex.providers,
+    );
+    let dependency = coding_dependency(status, &provider);
+    if dependency.available {
+        Ok(())
+    } else {
+        Err(dependency.message.clone())
     }
-    if config.capabilities.codex.enabled
-        && config.capabilities.codex.provider == "cursor"
-        && !status.cursor.available
-    {
-        return Err(status.cursor.message);
+}
+
+/// Enabled non-default harnesses whose CLI is not installed.
+fn unavailable_coding_providers(config: &RuntimeConfig, status: &DependencyStatus) -> Vec<String> {
+    if !config.capabilities.codex.enabled {
+        return Vec::new();
     }
-    if config.capabilities.codex.enabled
-        && config.capabilities.codex.provider != "claude-code"
-        && config.capabilities.codex.provider != "antigravity"
-        && config.capabilities.codex.provider != "cursor"
-        && !status.codex.available
-    {
-        return Err(status.codex.message);
+    let (provider, providers) = normalized_coding_providers(
+        &config.capabilities.codex.provider,
+        &config.capabilities.codex.providers,
+    );
+    providers
+        .into_iter()
+        .filter(|candidate| {
+            *candidate != provider && !coding_dependency(status, candidate).available
+        })
+        .collect()
+}
+
+fn coding_dependency<'a>(status: &'a DependencyStatus, provider: &str) -> &'a DependencyCheck {
+    match provider {
+        "claude-code" => &status.claude,
+        "antigravity" => &status.antigravity,
+        "cursor" => &status.cursor,
+        _ => &status.codex,
     }
-    Ok(())
+}
+
+const CODING_AGENT_PROVIDERS: [&str; 4] = ["codex", "claude-code", "antigravity", "cursor"];
+const UNAVAILABLE_CODING_PROVIDERS_ENV: &str = "CLERO_UNAVAILABLE_CODING_PROVIDERS";
+
+/// Same rules as the local agent: known harnesses only, de-duplicated in
+/// order, an empty list means only the default, and the default is always
+/// one of the enabled harnesses. A valid default missing from the list is
+/// appended (an explicit default wins over a stale list); an invalid default
+/// falls back to the first enabled harness.
+fn normalized_coding_providers(provider: &str, providers: &[String]) -> (String, Vec<String>) {
+    let mut enabled: Vec<String> = Vec::new();
+    for value in providers {
+        if CODING_AGENT_PROVIDERS.contains(&value.as_str()) && !enabled.contains(value) {
+            enabled.push(value.clone());
+        }
+    }
+    if enabled.is_empty() {
+        let fallback = if CODING_AGENT_PROVIDERS.contains(&provider) {
+            provider.to_string()
+        } else {
+            default_coding_provider()
+        };
+        return (fallback.clone(), vec![fallback]);
+    }
+    if !CODING_AGENT_PROVIDERS.contains(&provider) {
+        let default = enabled[0].clone();
+        return (default, enabled);
+    }
+    if !enabled.iter().any(|value| value == provider) {
+        enabled.push(provider.to_string());
+    }
+    (provider.to_string(), enabled)
 }
 
 fn dependency_status(config: &RuntimeConfig) -> DependencyStatus {
@@ -1586,7 +1732,16 @@ fn is_local_endpoint(value: &str) -> bool {
         || normalized.contains("[::1]")
 }
 
-fn normalize_runtime_config(config: &mut RuntimeConfig) -> bool {
+/// `previous_coding_providers` is the enabled harness list the config replaces
+/// (the one on disk), or `None` when that is unknown (missing or unreadable
+/// file). When the list changed, or is unknown, the shared coding grants are
+/// recomputed from the coding settings, so a grant given for a harness that is
+/// gone cannot carry over, and with an unknown previous list a grant never
+/// upgrades a read-only sandbox.
+fn normalize_runtime_config(
+    config: &mut RuntimeConfig,
+    previous_coding_providers: Option<&[String]>,
+) -> bool {
     let mut changed = false;
     let backend = config.backend_url.trim().trim_end_matches('/').to_string();
     let backend_was_local = is_local_endpoint(&backend);
@@ -1710,11 +1865,39 @@ fn normalize_runtime_config(config: &mut RuntimeConfig) -> bool {
         changed = true;
     }
 
-    if config.capabilities.codex.provider == "codex"
-        || config.capabilities.codex.provider == "antigravity"
-        || config.capabilities.codex.provider == "cursor"
-    {
-        if config.capabilities.codex.allow_workspace_write
+    let (coding_provider, coding_providers) = normalized_coding_providers(
+        &config.capabilities.codex.provider,
+        &config.capabilities.codex.providers,
+    );
+    if coding_provider != config.capabilities.codex.provider {
+        config.capabilities.codex.provider = coding_provider;
+        changed = true;
+    }
+    if coding_providers != config.capabilities.codex.providers {
+        config.capabilities.codex.providers = coding_providers;
+        changed = true;
+    }
+    let harnesses_known_unchanged =
+        previous_coding_providers == Some(config.capabilities.codex.providers.as_slice());
+    if !harnesses_known_unchanged {
+        let (allow_write, allow_full) = derived_coding_grants(&config.capabilities.codex);
+        if allow_write != config.capabilities.codex.allow_workspace_write
+            || allow_full != config.capabilities.codex.allow_danger_full_access
+        {
+            config.capabilities.codex.allow_workspace_write = allow_write;
+            config.capabilities.codex.allow_danger_full_access = allow_full;
+            changed = true;
+        }
+    }
+
+    // Single-harness Codex/Cursor/Antigravity configs keep the old reconcile
+    // between the shared grants and the sandbox. With several harnesses the
+    // shared grants widen nobody, so they never change the sandbox either.
+    let single_sandbox_harness = config.capabilities.codex.providers.len() == 1
+        && config.capabilities.codex.provider != "claude-code";
+    if single_sandbox_harness {
+        if harnesses_known_unchanged
+            && config.capabilities.codex.allow_workspace_write
             && config.capabilities.codex.default_sandbox == "read-only"
         {
             config.capabilities.codex.default_sandbox = "workspace-write".to_string();
@@ -1833,4 +2016,319 @@ fn default_shell_timeout_ms() -> u32 {
 
 fn default_shell_max_output_bytes() -> u32 {
     200_000
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RuntimeConfig;
+
+    fn coding_config(value: serde_json::Value) -> RuntimeConfig {
+        serde_json::from_value(serde_json::json!({ "capabilities": { "codex": value } })).unwrap()
+    }
+
+    fn list(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
+    fn dependency(available: bool, label: &str) -> super::DependencyCheck {
+        super::DependencyCheck {
+            available,
+            label: label.to_string(),
+            path: None,
+            version: None,
+            message: format!("{label} is not installed"),
+        }
+    }
+
+    #[test]
+    fn coding_harness_list_is_normalized_and_backward_compatible() {
+        let mut legacy =
+            coding_config(serde_json::json!({"enabled": true, "provider": "claude-code"}));
+        assert!(legacy.capabilities.codex.providers.is_empty());
+        let loaded = list(&["claude-code"]);
+        assert!(super::normalize_runtime_config(&mut legacy, Some(&loaded)));
+        let saved = serde_json::to_value(&legacy).unwrap();
+        assert_eq!(saved["capabilities"]["codex"]["provider"], "claude-code");
+        assert_eq!(
+            saved["capabilities"]["codex"]["providers"],
+            serde_json::json!(["claude-code"])
+        );
+
+        let mut multi = coding_config(serde_json::json!({
+            "enabled": true,
+            "provider": "antigravity",
+            "providers": ["cursor", "bogus", "codex", "cursor"]
+        }));
+        let previous = list(&["cursor", "codex", "antigravity"]);
+        super::normalize_runtime_config(&mut multi, Some(&previous));
+        // The explicit default wins over a list that does not contain it.
+        assert_eq!(multi.capabilities.codex.provider, "antigravity");
+        assert_eq!(
+            multi.capabilities.codex.providers,
+            vec!["cursor", "codex", "antigravity"]
+        );
+        // A save keeps the harness list instead of dropping the unknown field.
+        let saved = serde_json::to_value(&multi).unwrap();
+        assert_eq!(
+            saved["capabilities"]["codex"]["providers"],
+            serde_json::json!(["cursor", "codex", "antigravity"])
+        );
+
+        assert_eq!(
+            super::normalized_coding_providers("bogus", &[]),
+            ("codex".to_string(), list(&["codex"]))
+        );
+        assert_eq!(
+            super::normalized_coding_providers("codex", &list(&["codex", "claude-code"])),
+            ("codex".to_string(), list(&["codex", "claude-code"]))
+        );
+        assert_eq!(
+            super::normalized_coding_providers("bogus", &list(&["cursor", "codex"])),
+            ("cursor".to_string(), list(&["cursor", "codex"]))
+        );
+    }
+
+    /// Same table as the TypeScript `derivedCodingAgentGrants` test.
+    #[test]
+    fn derived_coding_grants_match_the_shared_cases() {
+        let cases: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+            "../../../../packages/daemon/test/fixtures/coding-grant-cases.json"
+        ))
+        .unwrap();
+        assert!(cases.len() >= 10);
+        for case in cases {
+            let config = coding_config(case.clone());
+            let expected = (
+                case["allow_workspace_write"].as_bool().unwrap(),
+                case["allow_danger_full_access"].as_bool().unwrap(),
+            );
+            assert_eq!(
+                super::derived_coding_grants(&config.capabilities.codex),
+                expected,
+                "{}",
+                case["name"]
+            );
+        }
+    }
+
+    #[test]
+    fn several_harnesses_never_flip_the_sandbox_from_a_shared_grant() {
+        let mut config = coding_config(serde_json::json!({
+            "enabled": true,
+            "provider": "codex",
+            "providers": ["codex", "cursor"],
+            "default_sandbox": "read-only",
+            "allow_workspace_write": true,
+            "allow_danger_full_access": true
+        }));
+        let previous = list(&["codex", "cursor"]);
+        super::normalize_runtime_config(&mut config, Some(&previous));
+        assert_eq!(config.capabilities.codex.default_sandbox, "read-only");
+
+        let mut both = coding_config(serde_json::json!({
+            "enabled": true,
+            "provider": "codex",
+            "providers": ["codex", "claude-code"],
+            "claude_permission_mode": "acceptEdits",
+            "default_sandbox": "read-only",
+            "allow_workspace_write": true
+        }));
+        let previous = list(&["codex", "claude-code"]);
+        super::normalize_runtime_config(&mut both, Some(&previous));
+        assert_eq!(both.capabilities.codex.default_sandbox, "read-only");
+    }
+
+    #[test]
+    fn a_changed_harness_list_drops_grants_of_the_removed_harness() {
+        // Claude bypassPermissions produced the shared grants while both were enabled.
+        let mut config = coding_config(serde_json::json!({
+            "enabled": true,
+            "provider": "codex",
+            "providers": ["codex"],
+            "claude_permission_mode": "bypassPermissions",
+            "default_sandbox": "read-only",
+            "allow_workspace_write": true,
+            "allow_danger_full_access": true
+        }));
+        let previous = list(&["codex", "claude-code"]);
+        super::normalize_runtime_config(&mut config, Some(&previous));
+        assert!(!config.capabilities.codex.allow_workspace_write);
+        assert!(!config.capabilities.codex.allow_danger_full_access);
+        assert_eq!(config.capabilities.codex.default_sandbox, "read-only");
+
+        let mut claude = coding_config(serde_json::json!({
+            "enabled": true,
+            "provider": "claude-code",
+            "providers": ["claude-code"],
+            "claude_permission_mode": "bypassPermissions",
+            "default_sandbox": "read-only",
+            "allow_workspace_write": true,
+            "allow_danger_full_access": false
+        }));
+        let previous = list(&["claude-code", "codex"]);
+        super::normalize_runtime_config(&mut claude, Some(&previous));
+        // Same rule as TypeScript: bypassPermissions grants full access, not write.
+        assert!(!claude.capabilities.codex.allow_workspace_write);
+        assert!(claude.capabilities.codex.allow_danger_full_access);
+
+        // Unchanged single-harness list: an explicit grant keeps working as before.
+        let mut single = coding_config(serde_json::json!({
+            "enabled": true,
+            "provider": "codex",
+            "providers": ["codex"],
+            "default_sandbox": "read-only",
+            "allow_workspace_write": true
+        }));
+        let previous = list(&["codex"]);
+        super::normalize_runtime_config(&mut single, Some(&previous));
+        assert!(single.capabilities.codex.allow_workspace_write);
+        assert_eq!(single.capabilities.codex.default_sandbox, "workspace-write");
+    }
+
+    #[test]
+    fn the_default_sandbox_never_grants_claude_code_access() {
+        // [codex, claude-code] with a full-access sandbox shrunk to [claude-code].
+        let mut shrink = coding_config(serde_json::json!({
+            "enabled": true,
+            "provider": "claude-code",
+            "providers": ["claude-code"],
+            "claude_permission_mode": "default",
+            "default_sandbox": "danger-full-access",
+            "allow_workspace_write": true,
+            "allow_danger_full_access": true
+        }));
+        let previous = list(&["codex", "claude-code"]);
+        super::normalize_runtime_config(&mut shrink, Some(&previous));
+        assert!(!shrink.capabilities.codex.allow_workspace_write);
+        assert!(!shrink.capabilities.codex.allow_danger_full_access);
+
+        // Codex alone with full access swapped to Claude Code alone.
+        let mut swap = coding_config(serde_json::json!({
+            "enabled": true,
+            "provider": "claude-code",
+            "providers": ["claude-code"],
+            "default_sandbox": "danger-full-access",
+            "allow_workspace_write": true,
+            "allow_danger_full_access": true
+        }));
+        let previous = list(&["codex"]);
+        super::normalize_runtime_config(&mut swap, Some(&previous));
+        assert!(!swap.capabilities.codex.allow_workspace_write);
+        assert!(!swap.capabilities.codex.allow_danger_full_access);
+        assert_eq!(swap.capabilities.codex.default_sandbox, "danger-full-access");
+
+        // Claude-only with a leftover workspace-write sandbox and an unknown previous list.
+        let mut leftover = coding_config(serde_json::json!({
+            "enabled": true,
+            "provider": "claude-code",
+            "providers": ["claude-code"],
+            "default_sandbox": "workspace-write"
+        }));
+        super::normalize_runtime_config(&mut leftover, None);
+        assert!(!leftover.capabilities.codex.allow_workspace_write);
+    }
+
+    #[test]
+    fn saving_with_claude_unticked_does_not_widen_codex_from_the_file_on_disk() {
+        let directory = std::env::temp_dir().join(format!(
+            "clero-coding-grants-{}-{}",
+            std::process::id(),
+            super::now_ms().unwrap_or_default()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("config.json");
+        std::fs::write(
+            &path,
+            serde_json::json!({"capabilities": {"codex": {
+                "enabled": true,
+                "provider": "codex",
+                "providers": ["codex", "claude-code"],
+                "claude_permission_mode": "acceptEdits",
+                "default_sandbox": "read-only",
+                "allow_workspace_write": true
+            }}})
+            .to_string(),
+        )
+        .unwrap();
+        // What the UI hands save_config after the harness list shrinks to Codex.
+        let mut config = coding_config(serde_json::json!({
+            "enabled": true,
+            "provider": "codex",
+            "providers": ["codex"],
+            "claude_permission_mode": "acceptEdits",
+            "default_sandbox": "read-only",
+            "allow_workspace_write": true
+        }));
+        let previous = super::persisted_coding_providers_at(&path);
+        assert_eq!(previous, Some(list(&["codex", "claude-code"])));
+        super::normalize_runtime_config(&mut config, previous.as_deref());
+        assert_eq!(config.capabilities.codex.default_sandbox, "read-only");
+        assert!(!config.capabilities.codex.allow_workspace_write);
+
+        // Missing (or unreadable) file: provenance is unknown, so grants are
+        // recomputed from the settings and never upgrade the sandbox.
+        std::fs::remove_dir_all(&directory).unwrap();
+        let missing = super::persisted_coding_providers_at(&path);
+        assert_eq!(missing, None);
+        let mut unknown = coding_config(serde_json::json!({
+            "enabled": true,
+            "provider": "codex",
+            "providers": ["codex"],
+            "default_sandbox": "read-only",
+            "allow_workspace_write": true
+        }));
+        super::normalize_runtime_config(&mut unknown, missing.as_deref());
+        assert_eq!(unknown.capabilities.codex.default_sandbox, "read-only");
+        assert!(!unknown.capabilities.codex.allow_workspace_write);
+
+        let mut unknown_writable = coding_config(serde_json::json!({
+            "enabled": true,
+            "provider": "codex",
+            "providers": ["codex"],
+            "default_sandbox": "workspace-write"
+        }));
+        super::normalize_runtime_config(&mut unknown_writable, None);
+        assert!(unknown_writable.capabilities.codex.allow_workspace_write);
+    }
+
+    #[test]
+    fn only_the_default_coding_harness_must_be_installed() {
+        let config = coding_config(serde_json::json!({
+            "enabled": true,
+            "provider": "claude-code",
+            "providers": ["codex", "claude-code", "cursor", "antigravity"]
+        }));
+        let status = super::DependencyStatus {
+            browser: dependency(true, "Chrome"),
+            codex: dependency(false, "Codex"),
+            claude: dependency(true, "Claude Code"),
+            antigravity: dependency(true, "Antigravity"),
+            cursor: dependency(false, "Cursor"),
+        };
+        assert!(super::validate_default_coding_dependency(&config, &status).is_ok());
+        assert_eq!(
+            super::unavailable_coding_providers(&config, &status),
+            list(&["codex", "cursor"])
+        );
+        // The saved config is untouched, so a reinstall brings them back.
+        assert_eq!(config.capabilities.codex.providers.len(), 4);
+
+        let missing_default = coding_config(serde_json::json!({
+            "enabled": true,
+            "provider": "cursor",
+            "providers": ["cursor", "claude-code"]
+        }));
+        assert_eq!(
+            super::validate_default_coding_dependency(&missing_default, &status),
+            Err("Cursor is not installed".to_string())
+        );
+
+        let disabled = coding_config(serde_json::json!({
+            "enabled": false,
+            "provider": "cursor",
+            "providers": ["cursor"]
+        }));
+        assert!(super::validate_default_coding_dependency(&disabled, &status).is_ok());
+        assert!(super::unavailable_coding_providers(&disabled, &status).is_empty());
+    }
 }

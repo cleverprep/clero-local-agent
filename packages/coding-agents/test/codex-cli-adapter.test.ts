@@ -13,8 +13,10 @@ import {
   ClaudeCodeAdapter,
   CodexCliAdapter,
   CursorCliAdapter,
+  findStoredCodingSession,
   normalizeCodingTaskActions,
   type CodingAgentAdapter,
+  type CodingSessionState,
   type CodingTaskEvent
 } from "../src/index.ts";
 
@@ -157,6 +159,47 @@ test("resumes codex exec when continue_session uses the same session key", async
     "thread_fake",
     "-"
   ]);
+});
+
+test("a rebuilt adapter sharing the session store resumes the previous session", async (t) => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "clero-codex-test-"));
+  t.after(() => rm(workspace, { recursive: true, force: true }));
+  const fakeCodex = await createFakeCodex(workspace, 0);
+  const sessions = new Map<string, CodingSessionState>();
+  const context = { requestId: "req_1", leaseId: "lease_1", agentId: "agent_1", taskId: "task_1" };
+  const first = new CodexCliAdapter({
+    workspacePolicy: new WorkspacePolicy({ allowedDirectories: [workspace] }),
+    command: fakeCodex,
+    sessions
+  });
+  const started = await first.startTask({ prompt: "first turn", cwd: workspace, continue_session: true }, context);
+  await waitForTerminalStatus(first, stringField(started, "task_id"));
+  assert.equal(sessions.size, 1);
+
+  const resolveCwd = () => realpath(workspace);
+  const match = findStoredCodingSession(
+    { prompt: "next", cwd: workspace, continue_session: true },
+    context,
+    () => [...sessions.values()][0]!.cwd,
+    sessions
+  );
+  assert.equal(match?.provider_session_id, "thread_fake");
+  assert.equal(match?.session_key, `agent_1:${await resolveCwd()}`);
+  assert.equal(
+    findStoredCodingSession({ prompt: "next", cwd: workspace }, context, () => workspace, sessions),
+    undefined,
+    "only continue_session calls resume"
+  );
+
+  const rebuilt = new CodexCliAdapter({
+    workspacePolicy: new WorkspacePolicy({ allowedDirectories: [workspace] }),
+    command: fakeCodex,
+    sessions
+  });
+  const resumed = await rebuilt.startTask({ prompt: "second turn", cwd: workspace, continue_session: true }, context);
+  assert.equal(resumed.resumed_session, true);
+  assert.equal(resumed.provider_session_id, "thread_fake");
+  await waitForTerminalStatus(rebuilt, stringField(resumed, "task_id"));
 });
 
 test("resumes an explicit provider session after the connector restarts", async (t) => {

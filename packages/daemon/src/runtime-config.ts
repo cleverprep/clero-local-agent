@@ -3,12 +3,14 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { BrowserViewport } from "@clero-local-agent/browser";
-import type {
-  ClaudeCodePermissionMode,
-  ClaudeCodeReasoningEffort,
-  CodingAgentProvider,
-  CodexReasoningEffort,
-  CodexSandbox
+import {
+  derivedCodingAgentGrants,
+  normalizeCodingAgentProviders,
+  type ClaudeCodePermissionMode,
+  type ClaudeCodeReasoningEffort,
+  type CodingAgentProvider,
+  type CodexReasoningEffort,
+  type CodexSandbox
 } from "@clero-local-agent/coding-agents";
 import type { ShellAccess } from "@clero-local-agent/shell-tools";
 import {
@@ -61,7 +63,10 @@ export type LocalRuntimeConfig = {
     };
     codex?: {
       enabled?: boolean;
+      /** Default harness. */
       provider?: CodingAgentProvider;
+      /** Enabled harnesses; normalized so it always contains provider. */
+      providers?: CodingAgentProvider[];
       command?: string;
       model?: string;
       reasoning_effort?: CodexReasoningEffort;
@@ -127,6 +132,7 @@ export function defaultRuntimeConfig(): LocalRuntimeConfig {
       codex: {
         enabled: false,
         provider: "codex",
+        providers: ["codex"],
         command: "",
         model: "",
         reasoning_effort: undefined,
@@ -194,9 +200,11 @@ export async function saveRuntimeConfig(configPath: string, config: LocalRuntime
 
 export function codingAgentConfigFromRuntimeConfig(config: LocalRuntimeConfig): JsonObject {
   const coding = config.capabilities?.codex ?? {};
+  const { provider, providers } = normalizeCodingAgentProviders(coding.provider, coding.providers);
   return {
     enabled: coding.enabled !== false,
-    provider: coding.provider ?? "codex",
+    provider,
+    providers,
     command: coding.command ?? "",
     model: coding.model ?? "",
     reasoning_effort: coding.reasoning_effort ?? "",
@@ -222,8 +230,11 @@ export function updateCodingAgentRuntimeConfig(
   config.capabilities ??= {};
   config.capabilities.codex ??= {};
   const coding = config.capabilities.codex;
-  coding.enabled = configBoolean(input.enabled, true);
-  coding.provider = configCodingProvider(input.provider);
+  // A payload without a boolean `enabled` keeps the current on/off state.
+  coding.enabled = configBoolean(input.enabled, coding.enabled !== false);
+  const { provider, providers } = normalizeCodingAgentProviders(input.provider, input.providers);
+  coding.provider = provider;
+  coding.providers = providers;
   coding.command = configString(input.command);
   coding.model = configString(input.model);
   coding.reasoning_effort = configCodexReasoning(input.reasoning_effort);
@@ -237,16 +248,41 @@ export function updateCodingAgentRuntimeConfig(
   coding.claude_reasoning_effort = configClaudeReasoning(input.claude_reasoning_effort);
   coding.claude_permission_mode = configClaudePermission(input.claude_permission_mode);
   coding.default_sandbox = configSandbox(input.default_sandbox);
-  coding.allow_workspace_write =
-    configBoolean(input.allow_workspace_write, false) ||
-    coding.default_sandbox === "workspace-write" ||
-    coding.default_sandbox === "danger-full-access" ||
-    (coding.provider === "claude-code" && coding.claude_permission_mode === "acceptEdits");
-  coding.allow_danger_full_access =
-    configBoolean(input.allow_danger_full_access, false) ||
-    coding.default_sandbox === "danger-full-access" ||
-    (coding.provider === "claude-code" && coding.claude_permission_mode === "bypassPermissions");
+  // `input` is the full replacement (see applyCodingAgentConfigUpdate for how
+  // stored grants are carried over); grants the settings imply are added.
+  const derived = derivedCodingAgentGrants(coding);
+  coding.allow_workspace_write = configBoolean(input.allow_workspace_write, false) || derived.allow_workspace_write;
+  coding.allow_danger_full_access = configBoolean(input.allow_danger_full_access, false) || derived.allow_danger_full_access;
   return codingAgentConfigFromRuntimeConfig(config);
+}
+
+/**
+ * Applies a set_coding_agent_config payload on top of the current settings,
+ * like before multi-harness support: omitted fields keep their stored values
+ * and the stored access grants are kept (then widened by what the settings
+ * imply). A payload that names provider without providers comes from a
+ * backend that predates multi-harness support: its provider is then the only
+ * enabled one. When the enabled harness list changes, both grants are
+ * recomputed from the enabled harnesses' own settings only: stored grants and
+ * any grants in the payload (often just an echo of the old state) are ignored,
+ * so a grant given for one harness never carries over to another.
+ */
+export function applyCodingAgentConfigUpdate(config: LocalRuntimeConfig, input: JsonObject): JsonObject {
+  const current = codingAgentConfigFromRuntimeConfig(config);
+  const previousProviders = current.providers;
+  if (
+    Object.prototype.hasOwnProperty.call(input, "provider") &&
+    !Object.prototype.hasOwnProperty.call(input, "providers")
+  ) {
+    delete current.providers;
+  }
+  const merged = { ...current, ...input };
+  const nextProviders = normalizeCodingAgentProviders(merged.provider, merged.providers).providers;
+  if (JSON.stringify(nextProviders) !== JSON.stringify(previousProviders)) {
+    delete merged.allow_workspace_write;
+    delete merged.allow_danger_full_access;
+  }
+  return updateCodingAgentRuntimeConfig(config, merged);
 }
 
 export function defaultRuntimeConfigPath(): string {
@@ -281,10 +317,20 @@ export function capabilityOptionsFromConfig(
   config: LocalRuntimeConfig,
   overrides: RuntimeCapabilityOverrides = {}
 ): LocalRuntimeCapabilityOptions {
-  const codexSandbox = config.capabilities?.codex?.default_sandbox;
+  const { provider, providers } = normalizeCodingAgentProviders(
+    config.capabilities?.codex?.provider,
+    config.capabilities?.codex?.providers
+  );
+  // Single-harness access: the stored grants plus what the settings imply (as
+  // before multi-harness support, except that the default sandbox only counts
+  // while a sandbox harness is enabled, so a leftover sandbox never grants
+  // Claude Code access; see derivedCodingAgentGrants). With several harnesses
+  // enabled codingHarnessAccess ignores these and uses each harness's own
+  // setting instead.
+  const sandboxHarnessEnabled = providers.some((enabled) => enabled !== "claude-code");
+  const codexSandbox = sandboxHarnessEnabled ? config.capabilities?.codex?.default_sandbox : undefined;
   const claudePermissionMode = config.capabilities?.codex?.claude_permission_mode;
-  const claudeAllowWorkspaceWrite =
-    config.capabilities?.codex?.provider === "claude-code" && claudePermissionMode === "acceptEdits";
+  const claudeAllowWorkspaceWrite = providers.includes("claude-code") && claudePermissionMode === "acceptEdits";
   const codexAllowWorkspaceWrite =
     config.capabilities?.codex?.allow_workspace_write === true ||
     claudeAllowWorkspaceWrite ||
@@ -322,7 +368,8 @@ export function capabilityOptionsFromConfig(
     },
     codex: {
       enabled: config.capabilities?.codex?.enabled,
-      provider: config.capabilities?.codex?.provider,
+      provider,
+      providers,
       command: config.capabilities?.codex?.command,
       model: config.capabilities?.codex?.model,
       reasoningEffort: config.capabilities?.codex?.reasoning_effort,
@@ -443,16 +490,31 @@ export function mergeRuntimeConfig(base: LocalRuntimeConfig, override: LocalRunt
         ...base.capabilities?.shell,
         ...override.capabilities?.shell
       },
-      codex: {
-        ...base.capabilities?.codex,
-        ...override.capabilities?.codex
-      },
+      codex: mergeCodingAgentConfig(base.capabilities?.codex, override.capabilities?.codex),
       git: {
         ...base.capabilities?.git,
         ...override.capabilities?.git
       }
     }
   };
+}
+
+export type CodingAgentRuntimeConfig = NonNullable<NonNullable<LocalRuntimeConfig["capabilities"]>["codex"]>;
+
+function mergeCodingAgentConfig(
+  base: CodingAgentRuntimeConfig | undefined,
+  override: CodingAgentRuntimeConfig | undefined
+): CodingAgentRuntimeConfig {
+  const merged: CodingAgentRuntimeConfig = { ...base, ...override };
+  // A config without its own harness list (files written before multi-harness
+  // support) enables only its default harness, not the base list.
+  const providers = override && Object.prototype.hasOwnProperty.call(override, "providers")
+    ? override.providers
+    : override?.provider !== undefined ? undefined : base?.providers;
+  const normalized = normalizeCodingAgentProviders(merged.provider, providers);
+  merged.provider = normalized.provider;
+  merged.providers = normalized.providers;
+  return merged;
 }
 
 function parseAgentsSyncSnapshot(value: unknown): AgentsSyncSnapshot {
@@ -521,12 +583,6 @@ function configString(value: unknown): string {
 
 function configBoolean(value: unknown, fallback: boolean): boolean {
   return typeof value === "boolean" ? value : fallback;
-}
-
-function configCodingProvider(value: unknown): CodingAgentProvider {
-  return value === "claude-code" || value === "antigravity" || value === "cursor"
-    ? value
-    : "codex";
 }
 
 function configSandbox(value: unknown): CodexSandbox {

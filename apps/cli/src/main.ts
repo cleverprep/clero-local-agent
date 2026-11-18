@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import {
+  applyCodingAgentConfigUpdate,
   capabilitiesFromConfig,
   capabilityOptionsFromConfig,
   codingAgentConfigFromRuntimeConfig,
@@ -18,11 +19,12 @@ import {
   loadRuntimeConfig,
   resolveDeviceToken,
   saveRuntimeConfig,
-  updateCodingAgentRuntimeConfig,
   type AgentsSyncSnapshot,
   type LocalRuntimeConfig
 } from "@clero-local-agent/daemon";
-import type { ClaudeCodePermissionMode, CodingAgentProvider, CodexSandbox } from "@clero-local-agent/coding-agents";
+import { getBoolean, getString, getStrings, type CliArgs } from "./args.ts";
+import { applyCodingFlags, codingProvidersArg } from "./coding-flags.ts";
+import { isCodingAgentProvider, type CodingAgentProvider } from "@clero-local-agent/coding-agents";
 import type { BrowserViewport } from "@clero-local-agent/browser";
 import type { ShellAccess } from "@clero-local-agent/shell-tools";
 import type { SyncedAgent } from "@clero-local-agent/protocol";
@@ -31,9 +33,6 @@ const DEVICE_TOKEN_ACCOUNT = "device_token";
 const DEFAULT_CONNECTOR_BASE_URL = "https://media.clero.so/local-agent/latest";
 const DEFAULT_HEADLESS_BROWSER_VIEWPORT: BrowserViewport = { width: 1440, height: 900 };
 const CONNECTOR_VERSION = "0.1.51";
-
-type CliValue = string | string[] | boolean;
-type CliArgs = Record<string, CliValue>;
 
 type ParsedArgs = {
   command: string;
@@ -77,26 +76,6 @@ function appendArg(args: CliArgs, key: string, value: string | boolean): void {
   args[key] = [String(existing), String(value)];
 }
 
-function getString(args: CliArgs, key: string): string | undefined {
-  const value = args[key];
-  if (Array.isArray(value)) {
-    return value.at(-1);
-  }
-  return typeof value === "string" ? value : undefined;
-}
-
-function getStrings(args: CliArgs, key: string): string[] {
-  const value = args[key];
-  if (Array.isArray(value)) {
-    return value;
-  }
-  return typeof value === "string" ? [value] : [];
-}
-
-function getBoolean(args: CliArgs, key: string): boolean {
-  return args[key] === true;
-}
-
 function nonEmptyString(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
@@ -106,7 +85,7 @@ function printHelp(): void {
   console.log(`clero-connector
 
 Usage:
-  clero-connector setup --code <connection-code> [--backend-url https://clero.so] [--allowed-dir <path>] [--coding-provider codex|claude-code|antigravity|cursor]
+  clero-connector setup --code <connection-code> [--backend-url https://clero.so] [--allowed-dir <path>] [--coding-provider codex|claude-code|antigravity|cursor] [--coding-providers codex,claude-code]
   clero-connector daemon [--config <path>]
   clero-connector pair --code <connection-code> [--backend-url <url>] [--save]
   clero-connector capabilities [--config <path>]
@@ -118,7 +97,11 @@ Usage:
   clero-connector browser status|enable|disable [--browser-channel chromium|chrome|chrome-beta|msedge] [--browser-width 1440 --browser-height 900]
   clero-connector browser-debug status|enable|disable [--browser-debug-command npx] [--browser-debug-arg <arg>] [--browser-debug-url http://127.0.0.1:9222]
   clero-connector shell status|enable|disable [--shell-access read-only|workspace-write|danger-full-access] [--shell-timeout-ms 30000]
-  clero-connector coding status|enable|disable [--provider codex|claude-code|antigravity|cursor] [--sandbox read-only|workspace-write|danger-full-access]
+  clero-connector coding status|enable|disable [--provider codex|claude-code|antigravity|cursor] [--providers codex,claude-code] [--sandbox read-only|workspace-write|danger-full-access]
+
+Coding harnesses:
+  --providers / --coding-providers sets every enabled harness (comma-separated or repeated).
+  --provider / --coding-provider alone enables only that harness; with --providers it picks the default.
 
 Compatibility:
   clero-local-agent is still supported as an alias for clero-connector.
@@ -603,14 +586,13 @@ async function runDaemon(args: CliArgs, runtimeConfig: LocalRuntimeConfig, confi
     codingAgentConfiguration: {
       get: () => codingAgentConfigFromRuntimeConfig(runtimeConfig),
       set: async (config) => {
-        const saved = updateCodingAgentRuntimeConfig(runtimeConfig, {
-          ...codingAgentConfigFromRuntimeConfig(runtimeConfig),
-          ...config
-        });
+        const saved = applyCodingAgentConfigUpdate(runtimeConfig, config);
         await saveRuntimeConfig(configPath, runtimeConfig);
         return saved;
       }
     },
+    // Set by the desktop app for enabled non-default harnesses that are not installed.
+    unavailableCodingProviders: unavailableCodingProvidersFromEnvironment(),
     capabilities: capabilityOptionsFromConfig(
       runtimeConfig,
       capabilityOverrides(args)
@@ -626,6 +608,13 @@ async function runDaemon(args: CliArgs, runtimeConfig: LocalRuntimeConfig, confi
     await daemon.stop();
     process.exit(0);
   });
+}
+
+function unavailableCodingProvidersFromEnvironment(): CodingAgentProvider[] {
+  return (process.env.CLERO_UNAVAILABLE_CODING_PROVIDERS ?? "")
+    .split(",")
+    .map(value => value.trim())
+    .filter(isCodingAgentProvider);
 }
 
 async function pairWithBackend(
@@ -676,7 +665,12 @@ function applyCommonConfigFlags(config: LocalRuntimeConfig, args: CliArgs): Loca
   applyCodingFlags(
     next,
     args,
-    Boolean(getString(args, "coding-provider") || getString(args, "provider") || getBoolean(args, "enable-coding"))
+    Boolean(
+      getString(args, "coding-provider") ||
+      getString(args, "provider") ||
+      codingProvidersArg(args) ||
+      getBoolean(args, "enable-coding")
+    )
   );
   applyGitFlags(next, args);
   return next;
@@ -799,65 +793,6 @@ function applyShellFlags(config: LocalRuntimeConfig, args: CliArgs): void {
   }
 }
 
-function applyCodingFlags(config: LocalRuntimeConfig, args: CliArgs, enableIfConfigured: boolean): void {
-  config.capabilities ??= {};
-  config.capabilities.codex ??= {};
-  const coding = config.capabilities.codex;
-
-  if (enableIfConfigured) {
-    coding.enabled = true;
-  }
-  if (getBoolean(args, "disable-coding")) {
-    coding.enabled = false;
-  }
-  const provider = getString(args, "coding-provider") ?? getString(args, "provider");
-  if (provider) {
-    coding.provider = codingProviderArg(provider);
-  }
-  const sandbox = getString(args, "sandbox");
-  if (sandbox) {
-    coding.default_sandbox = sandboxArg(sandbox);
-  }
-  const command = getString(args, "coding-command") ?? getString(args, "command");
-  if (command) {
-    if (coding.provider === "claude-code") {
-      coding.claude_command = command;
-    } else if (coding.provider === "antigravity") {
-      coding.antigravity_command = command;
-    } else if (coding.provider === "cursor") {
-      coding.cursor_command = command;
-    } else {
-      coding.command = command;
-    }
-  }
-  const model = getString(args, "model");
-  if (model) {
-    if (coding.provider === "claude-code") {
-      coding.claude_model = model;
-    } else if (coding.provider === "cursor") {
-      coding.cursor_model = model;
-    } else {
-      coding.model = model;
-    }
-  }
-  if (getBoolean(args, "allow-workspace-write")) {
-    coding.allow_workspace_write = true;
-  }
-  if (getBoolean(args, "deny-workspace-write")) {
-    coding.allow_workspace_write = false;
-  }
-  if (getBoolean(args, "allow-danger-full-access")) {
-    coding.allow_danger_full_access = true;
-  }
-  if (getBoolean(args, "deny-danger-full-access")) {
-    coding.allow_danger_full_access = false;
-  }
-  const permissionMode = getString(args, "claude-permission-mode");
-  if (permissionMode) {
-    coding.claude_permission_mode = claudePermissionModeArg(permissionMode);
-  }
-}
-
 function applyGitFlags(config: LocalRuntimeConfig, args: CliArgs): void {
   config.capabilities ??= {};
   config.capabilities.git ??= {};
@@ -896,6 +831,7 @@ function localStatus(
       shell_access: runtimeConfig.capabilities?.shell?.default_access,
       coding: runtimeConfig.capabilities?.codex?.enabled !== false,
       coding_provider: runtimeConfig.capabilities?.codex?.provider,
+      coding_providers: runtimeConfig.capabilities?.codex?.providers,
       git_read: runtimeConfig.capabilities?.git?.read_enabled !== false,
       git_write: capabilities.git?.writeEnabled !== false
     }
@@ -1080,22 +1016,6 @@ function browserChannelArg(value: string | undefined): "chromium" | "chrome" | "
   throw new Error("--browser-channel must be chromium, chrome, chrome-beta, or msedge");
 }
 
-function codingProviderArg(value: string): CodingAgentProvider {
-  if (value === "codex" || value === "claude-code" || value === "antigravity" || value === "cursor") {
-    return value;
-  }
-
-  throw new Error("--coding-provider must be codex, claude-code, antigravity, or cursor");
-}
-
-function sandboxArg(value: string): CodexSandbox {
-  if (value === "read-only" || value === "workspace-write" || value === "danger-full-access") {
-    return value;
-  }
-
-  throw new Error("--sandbox must be read-only, workspace-write, or danger-full-access");
-}
-
 function shellAccessArg(value: string): ShellAccess {
   if (value === "read-only" || value === "workspace-write" || value === "danger-full-access") {
     return value;
@@ -1110,21 +1030,6 @@ function positiveIntegerArg(value: string, label: string, min: number, max: numb
     throw new Error(`${label} must be an integer from ${min} to ${max}`);
   }
   return parsed;
-}
-
-function claudePermissionModeArg(value: string): ClaudeCodePermissionMode {
-  if (
-    value === "default" ||
-    value === "acceptEdits" ||
-    value === "plan" ||
-    value === "auto" ||
-    value === "dontAsk" ||
-    value === "bypassPermissions"
-  ) {
-    return value;
-  }
-
-  throw new Error("--claude-permission-mode must be default, acceptEdits, plan, auto, dontAsk, or bypassPermissions");
 }
 
 main().catch((error: unknown) => {

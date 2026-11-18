@@ -1,7 +1,8 @@
-export { createDaemon, LocalRuntimeDaemon, type LocalRuntimeDaemonOptions } from "./daemon.ts";
+export { codingHarnessAccess, createDaemon, LocalRuntimeDaemon, type LocalRuntimeDaemonOptions } from "./daemon.ts";
 export { LeaseManager, type AcquireLeaseInput, type AcquireLeaseResult } from "./lease-manager.ts";
 export { createPairingClient, PairingClient } from "./pairing-client.ts";
 export {
+  applyCodingAgentConfigUpdate,
   capabilityOptionsFromConfig,
   capabilitiesFromConfig,
   codingAgentConfigFromRuntimeConfig,
@@ -15,6 +16,7 @@ export {
   saveRuntimeConfig,
   updateCodingAgentRuntimeConfig,
   type AgentsSyncSnapshot,
+  type CodingAgentRuntimeConfig,
   type LocalRuntimeConfig
 } from "./runtime-config.ts";
 export { createTokenStore, FileTokenStore, MacOSKeychainTokenStore, type TokenStore } from "./token-store.ts";
