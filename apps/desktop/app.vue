@@ -368,7 +368,7 @@
             <div v-if="isCapabilityOpen('coding')" id="coding-settings" class="capability-settings">
             <label class="wide">
               Agent
-              <select v-model="config.capabilities.codex.provider">
+              <select v-model="codingProvider">
                 <option value="codex">Codex</option>
                 <option value="claude-code">Claude Code</option>
                 <option value="antigravity">Antigravity</option>
@@ -454,7 +454,7 @@
               </label>
               <label>
                 Permissions
-                <select v-model="config.capabilities.codex.claude_permission_mode">
+                <select v-model="claudePermissionMode">
                   <option value="default">Default</option>
                   <option value="plan">Plan</option>
                   <option value="acceptEdits">Accept edits</option>
@@ -506,9 +506,28 @@
                 Antigravity command
                 <input v-model="config.capabilities.codex.antigravity_command" spellcheck="false" placeholder="Auto-detected" />
               </label>
+              <label>
+                Model
+                <input
+                  v-model="config.capabilities.codex.antigravity_model"
+                  spellcheck="false"
+                  placeholder="model id from agy models"
+                />
+              </label>
+              <label>
+                Effort
+                <select v-model="config.capabilities.codex.antigravity_reasoning_effort">
+                  <option value="">Auto</option>
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                  <option value="xhigh">Extra high</option>
+                  <option value="max">Max</option>
+                </select>
+              </label>
               <div class="settings-tip wide">
-                <strong>Model is managed in Antigravity.</strong>
-                <span>Open the CLI with <span class="command-token">agy</span>, then type <span class="command-token">/model</span> to show models and select the default reasoning model.</span>
+                <strong>Leave both on Auto to use the model chosen in Antigravity.</strong>
+                <span>Use a base model with an effort (<span class="command-token">gemini-4-hydrogen</span> + High), or a full id from <span class="command-token">agy models</span> (<span class="command-token">gemini-4-hydrogen-high</span>) with effort on Auto.</span>
               </div>
               <label>
                 Sandbox
@@ -524,6 +543,8 @@
               <input v-model="fullLocalAccessEnabled" type="checkbox" />
               Allow full local access
             </label>
+            <p v-if="fullAccessHint" class="settings-tip wide">{{ fullAccessHint }}</p>
+            <p v-if="otherHarnessAccessNote" class="settings-tip wide">{{ otherHarnessAccessNote }}</p>
 
             <div class="folder-tools wide">
               <div class="folder-tools-header">
@@ -655,6 +676,7 @@
                 <input v-model="writeAccessEnabled" type="checkbox" :disabled="writeActionsUnavailable" />
                 Commit and push with approval
               </label>
+              <p v-if="writeAccessNote" class="settings-tip wide">{{ writeAccessNote }}</p>
             </div>
           </Transition>
         </article>
@@ -678,6 +700,22 @@
 </template>
 
 <script setup lang="ts">
+import {
+  effectiveCodingAccess,
+  CODING_PROVIDER_LABELS,
+  fullAccessDefaultHint,
+  gitWriteOnlyNote,
+  mergeCodingConfigFromDisk,
+  normalizeCodingProviders,
+  otherHarnessAccess,
+  reconcileCodingAccess,
+  selectSingleCodingProvider,
+  setFullLocalAccess,
+  setWriteAccess,
+  syncGrantsWithSettings,
+  type CodingProvider
+} from "./coding-config";
+
 type ConnectionState = "offline" | "connected" | "pairing";
 type CapabilityPanel = "browser" | "coding" | "shell" | "git";
 type UpdateState = "idle" | "checking" | "available" | "current" | "installing" | "restarting" | "error";
@@ -725,11 +763,16 @@ type RuntimeConfig = {
     };
     codex: {
       enabled: boolean;
-      provider: "codex" | "claude-code" | "antigravity" | "cursor";
+      /** Default harness. */
+      provider: CodingProvider;
+      /** Enabled harnesses (set by the CLI or Clero); always contains provider. */
+      providers: CodingProvider[];
       command: string;
       model: string;
       reasoning_effort: "" | "low" | "medium" | "high" | "xhigh";
       antigravity_command: string;
+      antigravity_model: string;
+      antigravity_reasoning_effort: "" | "low" | "medium" | "high" | "xhigh" | "max";
       cursor_command: string;
       cursor_model: string;
       cursor_model_custom: string;
@@ -915,6 +958,28 @@ const browserEnabled = computed({
   }
 });
 
+// This screen configures one harness. Picking one here makes it the only
+// enabled harness, like `--provider` on the CLI; several harnesses are set up
+// with `clero-connector coding enable --providers`.
+const codingProvider = computed({
+  get: () => config.capabilities.codex.provider,
+  set: (provider: CodingProvider) => {
+    selectSingleCodingProvider(config.capabilities.codex, provider);
+  }
+});
+
+// The coding section as last loaded from (or saved to) the config file. Used to
+// tell the user's edits apart from changes Clero or the CLI made on disk since.
+const loadedCodingConfig = shallowRef<RuntimeConfig["capabilities"]["codex"] | null>(null);
+// Set when the enabled list on disk changed under the user's unsaved edits;
+// that save is then reconciled as a changed list. Cleared when a config is applied.
+const codingListChangedOnDisk = ref(false);
+
+// The enabled list the access controls compare against (null: treat as changed).
+function codingListAtLoad(): readonly string[] | null {
+  return codingListChangedOnDisk.value ? null : loadedCodingConfig.value?.providers ?? null;
+}
+
 const codexEnabled = computed({
   get: () => config.capabilities.codex.enabled && !codexUnavailable.value,
   set: (enabled: boolean) => {
@@ -926,37 +991,52 @@ const codexEnabled = computed({
   }
 });
 
+// Access the daemon actually enforces for the harness shown in the Agent picker.
+const shownHarnessAccess = computed(() =>
+  effectiveCodingAccess(config.capabilities.codex, config.capabilities.codex.provider)
+);
+
 const writeAccessEnabled = computed({
   get: () =>
     !writeActionsUnavailable.value &&
-    (config.capabilities.codex.allow_workspace_write || config.capabilities.git.write_enabled),
+    (config.capabilities.git.write_enabled || shownHarnessAccess.value.write),
   set: (enabled: boolean) => {
     if (enabled && writeActionsUnavailable.value) {
       notice.value = selectedCodingDependency.value.message;
       return;
     }
-    config.capabilities.codex.allow_workspace_write = enabled;
     config.capabilities.git.write_enabled = enabled;
     if (enabled) {
       config.capabilities.codex.enabled = true;
-      if (config.capabilities.codex.provider === "claude-code") {
-        config.capabilities.codex.claude_permission_mode = "acceptEdits";
-      } else {
-        config.capabilities.codex.default_sandbox = "workspace-write";
-      }
-    } else {
-      if (
-        config.capabilities.codex.default_sandbox === "workspace-write" ||
-        config.capabilities.codex.default_sandbox === "danger-full-access"
-      ) {
-        config.capabilities.codex.default_sandbox = "read-only";
-      }
-      config.capabilities.codex.allow_danger_full_access = false;
-      if (config.capabilities.codex.claude_permission_mode === "acceptEdits") {
-        config.capabilities.codex.claude_permission_mode = "default";
-      }
     }
+    setWriteAccess(config.capabilities.codex, enabled, codingListAtLoad());
   }
+});
+
+const claudePermissionMode = computed({
+  get: () => config.capabilities.codex.claude_permission_mode,
+  set: (mode: RuntimeConfig["capabilities"]["codex"]["claude_permission_mode"]) => {
+    config.capabilities.codex.claude_permission_mode = mode;
+    syncGrantsWithSettings(config.capabilities.codex, codingListAtLoad());
+  }
+});
+
+// Checking full access with several harnesses (or a changed harness list) sets the default for every task.
+const fullAccessHint = computed(() => fullAccessDefaultHint(config.capabilities.codex, codingListAtLoad()));
+
+// The write control also covers git writes; say so when the harness itself has no write access.
+const writeAccessNote = computed(() =>
+  writeActionsUnavailable.value ? "" : gitWriteOnlyNote(config.capabilities.codex, config.capabilities.git.write_enabled)
+);
+
+// Enabled harnesses these controls do not govern that still have write or full access.
+const otherHarnessAccessNote = computed(() => {
+  const others = otherHarnessAccess(config.capabilities.codex);
+  if (others.length === 0) return "";
+  const described = others.map(
+    (access) => `${CODING_PROVIDER_LABELS[access.provider]} (${access.full ? "full access" : "write access"})`
+  );
+  return `Also allowed by their own settings: ${described.join(", ")}.`;
 });
 
 const codexSandbox = computed({
@@ -975,21 +1055,20 @@ const codexSandbox = computed({
     if (sandbox === "read-only") {
       config.capabilities.codex.allow_workspace_write = false;
     }
+    syncGrantsWithSettings(config.capabilities.codex, codingListAtLoad());
   }
 });
 
+// Shows and changes the full access the daemon enforces for the shown harness
+// (see setFullLocalAccess for what is written).
 const fullLocalAccessEnabled = computed({
-  get: () => config.capabilities.codex.allow_danger_full_access,
+  get: () => shownHarnessAccess.value.full,
   set: (enabled: boolean) => {
-    config.capabilities.codex.allow_danger_full_access = enabled;
     if (enabled) {
       config.capabilities.codex.enabled = true;
-      config.capabilities.codex.allow_workspace_write = true;
-      return;
     }
-    if (config.capabilities.codex.default_sandbox === "danger-full-access") {
-      config.capabilities.codex.default_sandbox = "workspace-write";
-    }
+    // Unchecking leaves write access; the write control removes it.
+    setFullLocalAccess(config.capabilities.codex, enabled, codingListAtLoad());
   }
 });
 
@@ -1244,6 +1323,7 @@ onBeforeUnmount(() => {
 
 async function saveConfig(showNotice = true): Promise<void> {
   forceProductionConnectionConfig();
+  await refreshCodingConfigFromDisk();
   reconcileCodingPermissionSettings();
   applyDependencyAvailability(true);
 
@@ -1387,6 +1467,8 @@ async function pairRuntime(): Promise<void> {
     forceProductionConnectionConfig();
     await refreshDependencyStatus();
     applyDependencyAvailability(true);
+    await refreshCodingConfigFromDisk();
+    reconcileCodingPermissionSettings();
     const paired = await invokeTauri<RuntimeConfig>("pair_runtime", { code, config: toRaw(config) });
     applyRuntimeConfig(paired);
     pairingCode.value = "";
@@ -1407,6 +1489,9 @@ async function startDaemon(saveFirst = true): Promise<void> {
     applyDependencyAvailability(true);
     if (saveFirst) {
       await saveConfig(false);
+    } else {
+      await refreshCodingConfigFromDisk();
+      reconcileCodingPermissionSettings();
     }
     const status = await invokeTauri<DaemonStatus>("start_daemon", { config: toRaw(config) });
     applyDaemonStatus(status);
@@ -1446,6 +1531,8 @@ async function resetBrowserSession(): Promise<void> {
 
   const wasRunning = daemonStatus.running;
   try {
+    await refreshCodingConfigFromDisk();
+    reconcileCodingPermissionSettings();
     const status = await invokeTauri<DaemonStatus>("reset_browser_session", { config: toRaw(config) });
     applyDaemonStatus(status);
     notice.value = "Browser session reset.";
@@ -1652,7 +1739,34 @@ function folderName(folder: string): string {
 
 function applyRuntimeConfig(nextConfig: RuntimeConfig): void {
   Object.assign(config, normalizeLoadedConfig(nextConfig));
+  loadedCodingConfig.value = structuredClone(toRaw(config.capabilities.codex));
+  codingListChangedOnDisk.value = false;
   reconcileCodingPermissionSettings();
+}
+
+/**
+ * Before the app writes the config, picks up coding settings that changed on
+ * disk since it was loaded (e.g. harnesses enabled by Clero); fields the user
+ * edited here keep the user's value.
+ */
+async function refreshCodingConfigFromDisk(): Promise<void> {
+  const loaded = loadedCodingConfig.value;
+  if (!loaded) {
+    return;
+  }
+  let fresh: RuntimeConfig;
+  try {
+    fresh = normalizeLoadedConfig(await invokeTauri<RuntimeConfig>("load_config"));
+  } catch {
+    return;
+  }
+  const freshCoding = fresh.capabilities.codex;
+  const merged = mergeCodingConfigFromDisk(loaded, structuredClone(toRaw(config.capabilities.codex)), freshCoding);
+  config.capabilities.codex = merged.config;
+  loadedCodingConfig.value = structuredClone(freshCoding);
+  if (merged.listChanged) {
+    codingListChangedOnDisk.value = true;
+  }
 }
 
 function normalizeLoadedConfig(nextConfig: RuntimeConfig): RuntimeConfig {
@@ -1667,10 +1781,16 @@ function normalizeLoadedConfig(nextConfig: RuntimeConfig): RuntimeConfig {
     ...defaultConfig().capabilities.shell,
     ...normalized.capabilities.shell
   };
+  const loadedCoding: Partial<RuntimeConfig["capabilities"]["codex"]> = normalized.capabilities.codex ?? {};
   normalized.capabilities.codex = {
     ...defaultConfig().capabilities.codex,
-    ...normalized.capabilities.codex
+    ...loadedCoding,
+    // A config without a harness list enables only its own default harness.
+    providers: Array.isArray(loadedCoding.providers) && loadedCoding.providers.length > 0
+      ? loadedCoding.providers
+      : [loadedCoding.provider ?? "codex"]
   };
+  Object.assign(normalized.capabilities.codex, normalizeCodingProviders(normalized.capabilities.codex));
   const backendWasLocal = isLocalEndpoint(normalized.backend_url);
   normalized.backend_url = PRODUCTION_BACKEND_URL;
   normalized.capabilities.browser.provider = "managed";
@@ -1714,26 +1834,9 @@ function reconcileCodingPermissionSettings(): void {
   config.capabilities.shell.timeout_ms = clampNumber(config.capabilities.shell.timeout_ms, 1000, 120000, 30000);
   config.capabilities.shell.max_output_bytes = clampNumber(config.capabilities.shell.max_output_bytes, 4096, 1000000, 200000);
 
-  if (config.capabilities.codex.provider === "claude-code") {
-    if (config.capabilities.codex.allow_workspace_write && config.capabilities.codex.claude_permission_mode === "default") {
-      config.capabilities.codex.claude_permission_mode = "acceptEdits";
-    }
-    if (config.capabilities.codex.claude_permission_mode === "acceptEdits") {
-      config.capabilities.codex.allow_workspace_write = true;
-    }
-    return;
-  }
-
-  if (config.capabilities.codex.allow_workspace_write && config.capabilities.codex.default_sandbox === "read-only") {
-    config.capabilities.codex.default_sandbox = "workspace-write";
-  }
-  if (config.capabilities.codex.default_sandbox === "workspace-write") {
-    config.capabilities.codex.allow_workspace_write = true;
-  }
-  if (config.capabilities.codex.default_sandbox === "danger-full-access") {
-    config.capabilities.codex.allow_workspace_write = true;
-    config.capabilities.codex.allow_danger_full_access = true;
-  }
+  // The loaded harness list tells the reconcile whether stored grants still
+  // belong to the enabled harnesses (see reconcileCodingAccess).
+  reconcileCodingAccess(config.capabilities.codex, codingListAtLoad());
 }
 
 function isLocalEndpoint(value: string | undefined): boolean {
@@ -1804,10 +1907,13 @@ function defaultConfig(): RuntimeConfig {
       codex: {
         enabled: false,
         provider: "codex",
+        providers: ["codex"],
         command: "",
         model: "",
         reasoning_effort: "",
         antigravity_command: "",
+        antigravity_model: "",
+        antigravity_reasoning_effort: "",
         cursor_command: "",
         cursor_model: "",
         cursor_model_custom: "",

@@ -21,14 +21,23 @@ import {
   ClaudeCodeAdapter,
   CodexCliAdapter,
   CursorCliAdapter,
+  CODING_AGENT_GRANT_RULES_VERSION,
+  CODING_AGENT_PROVIDERS,
   CodingAgentTools,
+  codingAgentCommand,
   codingTaskEventItemType,
+  detectCodingAgents,
+  findStoredCodingSession,
+  isCodingAgentProvider,
+  normalizeCodingAgentProviders,
   type ClaudeCodePermissionMode,
+  type AntigravityReasoningEffort,
   type ClaudeCodeReasoningEffort,
   type CodingAgentAdapter,
   type CodingAgentProvider,
   type CodexReasoningEffort,
   type CodexSandbox,
+  type CodingSessionState,
   type CodingTask,
   type CodingTaskEvent
 } from "@clero-local-agent/coding-agents";
@@ -39,7 +48,13 @@ import {
 } from "@clero-local-agent/filesystem";
 import { GitTools } from "@clero-local-agent/git-tools";
 import { ShellTools, type ShellAccess } from "@clero-local-agent/shell-tools";
-import { ToolRegistry, toolCallArguments, toolCallRunContext } from "@clero-local-agent/mcp-runtime";
+import {
+  ToolExecutionError,
+  ToolRegistry,
+  toolCallArguments,
+  toolCallRunContext,
+  type ToolExecutionContext
+} from "@clero-local-agent/mcp-runtime";
 import {
   errorControlResult,
   isAgentsSyncMessage,
@@ -92,6 +107,8 @@ export type LocalRuntimeDaemonOptions = {
     get: () => Promise<JsonObject> | JsonObject;
     set: (config: JsonObject) => Promise<JsonObject>;
   };
+  /** Enabled non-default harnesses the host found missing; skipped for this run only. */
+  unavailableCodingProviders?: CodingAgentProvider[];
   capabilities?: LocalRuntimeCapabilityOptions;
 };
 
@@ -119,11 +136,16 @@ export type LocalRuntimeCapabilityOptions = {
   };
   codex?: {
     enabled?: boolean;
+    /** Default harness, used when coding_agent.start_task omits provider. */
     provider?: CodingAgentProvider;
+    /** Enabled harnesses. Missing means only the default harness. */
+    providers?: CodingAgentProvider[];
     command?: string;
     model?: string;
     reasoningEffort?: CodexReasoningEffort;
     antigravityCommand?: string;
+    antigravityModel?: string;
+    antigravityReasoningEffort?: AntigravityReasoningEffort;
     cursorCommand?: string;
     cursorModel?: string;
     claudeCommand?: string;
@@ -131,7 +153,9 @@ export type LocalRuntimeCapabilityOptions = {
     claudeReasoningEffort?: ClaudeCodeReasoningEffort;
     claudePermissionMode?: ClaudeCodePermissionMode;
     defaultSandbox?: CodexSandbox;
+    /** Shared write grant as configured; see codingHarnessAccess for each harness's effective access. */
     allowWorkspaceWrite?: boolean;
+    /** Shared full-access grant as configured; see codingHarnessAccess for each harness's effective access. */
     allowDangerFullAccess?: boolean;
   };
   git?: {
@@ -160,38 +184,316 @@ type BackendErrorMessage = {
   task_id?: string;
 };
 
-class MutableCodingAgentAdapter implements CodingAgentAdapter {
-  private current: CodingAgentAdapter;
-  private readonly tasks = new Map<string, CodingAgentAdapter>();
+type CodingAgentCapabilityOptions = NonNullable<LocalRuntimeCapabilityOptions["codex"]>;
 
-  constructor(adapter: CodingAgentAdapter) {
-    this.current = adapter;
+/**
+ * Effective sandbox/permission access for one harness.
+ *
+ * With one harness enabled this is the previous single-provider behaviour:
+ * the shared allowWorkspaceWrite/allowDangerFullAccess grants apply as given
+ * (undefined stays undefined so adapters ask for approval). With several
+ * harnesses enabled each harness gets access only from its own setting — the
+ * default sandbox for Codex/Cursor/Antigravity, the permission mode for
+ * Claude Code — and the shared grants widen nobody.
+ */
+export function codingHarnessAccess(
+  provider: CodingAgentProvider,
+  config: CodingAgentCapabilityOptions | undefined
+): { allowWorkspaceWrite?: boolean; allowDangerFullAccess?: boolean } {
+  if (!config || normalizeCodingAgentProviders(config.provider, config.providers).providers.length <= 1) {
+    return { allowWorkspaceWrite: config?.allowWorkspaceWrite, allowDangerFullAccess: config?.allowDangerFullAccess };
+  }
+  if (provider === "claude-code") {
+    const mode = config.claudePermissionMode;
+    return {
+      allowWorkspaceWrite: mode === "acceptEdits" || mode === "bypassPermissions",
+      allowDangerFullAccess: mode === "bypassPermissions"
+    };
+  }
+  const sandbox = config.defaultSandbox;
+  return {
+    allowWorkspaceWrite: sandbox === "workspace-write" || sandbox === "danger-full-access",
+    allowDangerFullAccess: sandbox === "danger-full-access"
+  };
+}
+
+type CodingHarnessAdapter = {
+  adapter: CodingAgentAdapter;
+  signature: string;
+  retired: boolean;
+  disposed: boolean;
+  running: Set<string>;
+  pendingStarts: number;
+};
+
+export type CodingAgentRouterOptions = {
+  create: (provider: CodingAgentProvider, sessions: Map<string, CodingSessionState>) => CodingAgentAdapter;
+  /** Settings fingerprint; a harness whose fingerprint changes gets a fresh adapter. */
+  signature: (provider: CodingAgentProvider) => string;
+  /** Resolves the project directory of a start_task call, for session lookup. */
+  resolveProjectDirectory: (candidate?: string) => string;
+  /** Task ids kept for status/output routing; older finished tasks are forgotten. */
+  maxTrackedTasks?: number;
+};
+
+const DEFAULT_MAX_TRACKED_CODING_TASKS = 1_000;
+
+/**
+ * Runs each coding task on one of the enabled harnesses. Adapters are created
+ * on first use. A harness that is disabled or reconfigured keeps its old
+ * adapter alive until that adapter's running tasks finish; status, output and
+ * cancel always reach the adapter that started the task. Resumable sessions
+ * are kept per harness here and survive adapter rebuilds.
+ */
+export class CodingAgentRouter implements CodingAgentAdapter {
+  private defaultProvider: CodingAgentProvider = "codex";
+  private enabledProviders: CodingAgentProvider[] = ["codex"];
+  private readonly options: CodingAgentRouterOptions;
+  private readonly active = new Map<CodingAgentProvider, CodingHarnessAdapter>();
+  private readonly sessions = new Map<CodingAgentProvider, Map<string, CodingSessionState>>();
+  private readonly tasks = new Map<string, CodingHarnessAdapter>();
+  private readonly finishedBeforeStart = new Set<string>();
+  private readonly undisposed = new Set<CodingHarnessAdapter>();
+  private disposed = false;
+
+  constructor(options: CodingAgentRouterOptions) {
+    this.options = options;
   }
 
-  replace(adapter: CodingAgentAdapter): void {
-    this.current = adapter;
+  get provider(): CodingAgentProvider {
+    return this.defaultProvider;
   }
 
-  async startTask(args: JsonObject, context: Parameters<CodingAgentAdapter["startTask"]>[1]): Promise<JsonObject> {
-    const adapter = this.current;
-    const result = await adapter.startTask(args, context);
-    const taskId = typeof result.task_id === "string" ? result.task_id : "";
-    if (taskId) {
-      this.tasks.set(taskId, adapter);
+  get providers(): CodingAgentProvider[] {
+    return [...this.enabledProviders];
+  }
+
+  configure(provider: CodingAgentProvider | undefined, providers: CodingAgentProvider[] | undefined): void {
+    const normalized = normalizeCodingAgentProviders(provider, providers);
+    this.defaultProvider = normalized.provider;
+    this.enabledProviders = normalized.providers;
+    for (const [harnessProvider, harness] of [...this.active]) {
+      if (!this.enabledProviders.includes(harnessProvider) || harness.signature !== this.options.signature(harnessProvider)) {
+        this.active.delete(harnessProvider);
+        harness.retired = true;
+        this.disposeIfIdle(harness);
+      }
     }
-    return result;
   }
 
-  getStatus(taskId: string): Promise<JsonObject> {
-    return (this.tasks.get(taskId) ?? this.current).getStatus(taskId);
+  async startTask(args: JsonObject, context: ToolExecutionContext): Promise<JsonObject> {
+    if (this.disposed) {
+      throw new Error("The local runtime is stopping and cannot start another coding task.");
+    }
+    const target = this.resolveTarget(args, context);
+    const harness = this.harness(target.provider);
+    harness.pendingStarts += 1;
+    let result: JsonObject;
+    try {
+      result = await harness.adapter.startTask(args, context);
+    } catch (error: unknown) {
+      harness.pendingStarts -= 1;
+      this.startsSettled();
+      this.disposeIfIdle(harness);
+      throw error;
+    }
+    harness.pendingStarts -= 1;
+    const taskId = typeof result.task_id === "string" ? result.task_id : "";
+    if (this.disposed) {
+      if (taskId) {
+        await harness.adapter.cancel(taskId);
+      }
+      await harness.adapter.dispose?.();
+      throw new Error("The local runtime stopped before the coding task could start.");
+    }
+    if (taskId) {
+      const finishedEarly = this.finishedBeforeStart.delete(taskId);
+      if (result.status === "running" && !finishedEarly) {
+        harness.running.add(taskId);
+      }
+      this.trackTask(taskId, harness);
+    }
+    this.startsSettled();
+    this.disposeIfIdle(harness);
+    return target.warning ? { ...result, session_warning: target.warning } : result;
   }
 
-  getOutput(taskId: string): Promise<JsonObject> {
-    return (this.tasks.get(taskId) ?? this.current).getOutput(taskId);
+  /** Called when a task reaches a terminal state, so a retired adapter can be released. */
+  taskFinished(taskId: string): void {
+    if (this.disposed) {
+      return;
+    }
+    const harness = this.tasks.get(taskId);
+    if (!harness) {
+      // The adapter reported the end before startTask returned the task id.
+      this.finishedBeforeStart.add(taskId);
+      return;
+    }
+    harness.running.delete(taskId);
+    this.disposeIfIdle(harness);
   }
 
-  cancel(taskId: string): Promise<JsonObject> {
-    return (this.tasks.get(taskId) ?? this.current).cancel(taskId);
+  async getStatus(taskId: string): Promise<JsonObject> {
+    return this.taskAdapter(taskId).getStatus(taskId);
+  }
+
+  async getOutput(taskId: string, args?: JsonObject): Promise<JsonObject> {
+    return this.taskAdapter(taskId).getOutput(taskId, args);
+  }
+
+  async cancel(taskId: string): Promise<JsonObject> {
+    return this.taskAdapter(taskId).cancel(taskId);
+  }
+
+  // Intentionally not called from LocalRuntimeDaemon.stop() in this repo (stop never cancelled coding tasks; the desktop app kills the daemon process).
+  async dispose(): Promise<void> {
+    this.disposed = true;
+    const tasks = [...this.tasks.entries()];
+    this.tasks.clear();
+    await Promise.all(tasks.map(([taskId, harness]) => harness.adapter.cancel(taskId)));
+    const harnesses = [...this.undisposed];
+    this.undisposed.clear();
+    this.active.clear();
+    this.finishedBeforeStart.clear();
+    await Promise.all(harnesses.map(harness => {
+      harness.disposed = true;
+      return harness.adapter.dispose?.();
+    }));
+  }
+
+  private resolveTarget(
+    args: JsonObject,
+    context: ToolExecutionContext
+  ): { provider: CodingAgentProvider; warning?: string } {
+    const requested = args.provider;
+    let explicit: CodingAgentProvider | undefined;
+    if (requested !== undefined && requested !== null && requested !== "") {
+      if (!isCodingAgentProvider(requested)) {
+        throw new ToolExecutionError(
+          "invalid_arguments",
+          `provider must be one of ${CODING_AGENT_PROVIDERS.join(", ")}. Enabled coding harnesses: ${this.enabledProviders.join(", ")}.`,
+          { enabled_providers: this.enabledProviders, default_provider: this.defaultProvider }
+        );
+      }
+      if (!this.enabledProviders.includes(requested)) {
+        throw new ToolExecutionError(
+          "invalid_arguments",
+          `The ${requested} coding harness is not enabled on this computer. Enabled coding harnesses: ${this.enabledProviders.join(", ")} (default: ${this.defaultProvider}).`,
+          { provider: requested, enabled_providers: this.enabledProviders, default_provider: this.defaultProvider }
+        );
+      }
+      explicit = requested;
+    }
+    const owner = this.sessionOwner(args, context);
+    if (owner && !this.enabledProviders.includes(owner.provider)) {
+      if (stringArg(args, "provider_session_id")) {
+        throw new ToolExecutionError(
+          "invalid_arguments",
+          `This coding session belongs to the ${owner.provider} harness, which is not enabled on this computer. Enabled coding harnesses: ${this.enabledProviders.join(", ")}.`,
+          { provider: owner.provider, enabled_providers: this.enabledProviders, default_provider: this.defaultProvider }
+        );
+      }
+      // The latest session for this agent/project ran on a harness that is
+      // not available now (switched by an older backend, disabled, or not
+      // installed). Start fresh, as before multi-harness support, instead of
+      // resuming an older session another harness kept under the same key.
+      const provider = explicit ?? this.defaultProvider;
+      this.sessions.get(provider)?.delete(owner.sessionKey);
+      return {
+        provider,
+        warning: `The previous coding session for this project belonged to the ${owner.provider} harness, which is not enabled on this computer; started a new ${provider} session instead.`
+      };
+    }
+    // Sessions no harness knows (e.g. a provider_session_id from before a
+    // restart) continue on the default harness, as before.
+    return { provider: explicit ?? owner?.provider ?? this.defaultProvider };
+  }
+
+  /** The harness, enabled or not, holding the most recent stored session this task would continue. */
+  private sessionOwner(
+    args: JsonObject,
+    context: ToolExecutionContext
+  ): { provider: CodingAgentProvider; sessionKey: string } | undefined {
+    if (args.continue_session !== true) {
+      return undefined;
+    }
+    let cwd: string | undefined;
+    const resolveCwd = () => {
+      cwd ??= this.options.resolveProjectDirectory(stringArg(args, "project") || stringArg(args, "cwd"));
+      return cwd;
+    };
+    let owner: { provider: CodingAgentProvider; sessionKey: string } | undefined;
+    let ownerUpdatedAt = "";
+    for (const [provider, sessions] of this.sessions) {
+      const match = findStoredCodingSession(args, context, resolveCwd, sessions);
+      if (match && (owner === undefined || match.updated_at > ownerUpdatedAt)) {
+        owner = { provider, sessionKey: match.session_key };
+        ownerUpdatedAt = match.updated_at;
+      }
+    }
+    return owner;
+  }
+
+  private harness(provider: CodingAgentProvider): CodingHarnessAdapter {
+    const existing = this.active.get(provider);
+    if (existing) {
+      return existing;
+    }
+    let sessions = this.sessions.get(provider);
+    if (!sessions) {
+      sessions = new Map();
+      this.sessions.set(provider, sessions);
+    }
+    const harness: CodingHarnessAdapter = {
+      adapter: this.options.create(provider, sessions),
+      signature: this.options.signature(provider),
+      retired: false,
+      disposed: false,
+      running: new Set(),
+      pendingStarts: 0
+    };
+    this.active.set(provider, harness);
+    this.undisposed.add(harness);
+    return harness;
+  }
+
+  private taskAdapter(taskId: string): CodingAgentAdapter {
+    const harness = this.tasks.get(taskId);
+    if (!harness) {
+      throw new ToolExecutionError("not_found", `Unknown coding task: ${taskId}`, { task_id: taskId });
+    }
+    return harness.adapter;
+  }
+
+  private trackTask(taskId: string, harness: CodingHarnessAdapter): void {
+    this.tasks.set(taskId, harness);
+    const limit = this.options.maxTrackedTasks ?? DEFAULT_MAX_TRACKED_CODING_TASKS;
+    // Forget the oldest finished tasks; running tasks stay reachable.
+    for (const [trackedId, tracked] of this.tasks) {
+      if (this.tasks.size <= limit) {
+        break;
+      }
+      if (!tracked.running.has(trackedId)) {
+        this.tasks.delete(trackedId);
+      }
+    }
+  }
+
+  private startsSettled(): void {
+    // Early terminal notices only matter while a start is still awaiting.
+    if ([...this.undisposed].every(harness => harness.pendingStarts === 0)) {
+      this.finishedBeforeStart.clear();
+    }
+  }
+
+  private disposeIfIdle(harness: CodingHarnessAdapter): void {
+    if (!harness.retired || harness.disposed || harness.running.size > 0 || harness.pendingStarts > 0) {
+      return;
+    }
+    harness.disposed = true;
+    this.undisposed.delete(harness);
+    // The adapter stays reachable through `tasks` for status/output of its finished tasks.
+    harness.adapter.dispose?.().catch(() => undefined);
   }
 }
 
@@ -217,7 +519,7 @@ export class LocalRuntimeDaemon {
   private readonly pendingLocalTaskCompletions = new Map<string, PendingLocalTaskCompletion>();
   private browserDebugAdapter: BrowserDebugAdapter | null = null;
   private filesystemMcpClient: FilesystemMcpClient | null = null;
-  private codingAgentAdapter: MutableCodingAgentAdapter | null = null;
+  private codingAgentAdapter: CodingAgentRouter | null = null;
   private codingAgentTools: CodingAgentTools | null = null;
 
   constructor(options: LocalRuntimeDaemonOptions) {
@@ -505,8 +807,8 @@ export class LocalRuntimeDaemon {
           headless: this.options.browserHeadless === true
         },
         coding_agent: {
-          enabled: this.options.capabilities?.codex?.enabled !== false,
-          provider: this.options.capabilities?.codex?.provider ?? "codex",
+          enabled: this.codingAgentEnabled(),
+          ...this.runnableCodingProviders(),
           sandbox: this.options.capabilities?.codex?.defaultSandbox ?? "read-only"
         },
         shell: {
@@ -885,7 +1187,11 @@ export class LocalRuntimeDaemon {
         try {
           return okControlResult(
             message.request_id,
-            await this.options.codingAgentConfiguration.get()
+            withDetectedCodingAgents({
+              ...(await this.options.codingAgentConfiguration.get()),
+              // The effective on/off state, the same value the heartbeat reports.
+              enabled: this.codingAgentEnabled()
+            })
           );
         } catch (error: unknown) {
           return errorControlResult(
@@ -904,10 +1210,22 @@ export class LocalRuntimeDaemon {
           );
         }
         try {
-          const saved = await this.options.codingAgentConfiguration.set(args);
+          // `detected` and `grant_rules` are read-only; a client echoing them back must not store them.
+          const input: JsonObject = { ...args };
+          delete input.detected;
+          delete input.grant_rules;
+          // Only an explicit `enabled` switches coding on or off; any other
+          // change (a model, a harness) keeps the current state.
+          if (!Object.prototype.hasOwnProperty.call(input, "enabled")) {
+            input.enabled = this.codingAgentEnabled();
+          }
+          const saved = await this.options.codingAgentConfiguration.set(input);
           this.applyCodingAgentConfiguration(saved);
           this.sendHeartbeat();
-          return okControlResult(message.request_id, saved);
+          return okControlResult(
+            message.request_id,
+            withDetectedCodingAgents({ ...saved, enabled: this.codingAgentEnabled() })
+          );
         } catch (error: unknown) {
           return errorControlResult(
             message.request_id,
@@ -970,9 +1288,13 @@ export class LocalRuntimeDaemon {
       defaultMaxOutputBytes: this.options.capabilities?.shell?.defaultMaxOutputBytes,
       shell: this.options.capabilities?.shell?.shell
     });
-    this.codingAgentAdapter = new MutableCodingAgentAdapter(
-      this.createCodingAgentAdapter(workspacePolicy, approvalProvider)
-    );
+    this.codingAgentAdapter = new CodingAgentRouter({
+      create: (provider, sessions) => this.createCodingAgentAdapter(provider, sessions),
+      signature: provider => JSON.stringify(codingHarnessSettings(provider, this.options.capabilities?.codex)),
+      resolveProjectDirectory: candidate => workspacePolicy.resolveProjectDirectory(candidate)
+    });
+    const enabledCoding = this.runnableCodingProviders();
+    this.codingAgentAdapter.configure(enabledCoding.provider, enabledCoding.providers);
     const codingAgentTools = new CodingAgentTools(this.codingAgentAdapter);
     this.codingAgentTools = codingAgentTools;
     const gitTools = new GitTools({ workspacePolicy, approvalProvider });
@@ -1021,7 +1343,7 @@ export class LocalRuntimeDaemon {
   }
 
   private applyCodingAgentConfiguration(config: JsonObject): void {
-    const provider = codingAgentProviderArg(config.provider);
+    const { provider, providers } = normalizeCodingAgentProviders(config.provider, config.providers);
     const defaultSandbox = codingAgentSandboxArg(config.default_sandbox);
     const reasoningEffort = codexReasoningEffortArg(config.reasoning_effort);
     const claudeReasoningEffort = claudeReasoningEffortArg(config.claude_reasoning_effort);
@@ -1037,10 +1359,13 @@ export class LocalRuntimeDaemon {
     const nextConfig: NonNullable<LocalRuntimeCapabilityOptions["codex"]> = {
       enabled: config.enabled !== false,
       provider,
+      providers,
       command: stringValue(config.command),
       model: stringValue(config.model),
       reasoningEffort,
       antigravityCommand: stringValue(config.antigravity_command),
+      antigravityModel: stringValue(config.antigravity_model),
+      antigravityReasoningEffort: antigravityReasoningEffortArg(config.antigravity_reasoning_effort),
       cursorCommand: stringValue(config.cursor_command),
       cursorModel,
       claudeCommand: stringValue(config.claude_command),
@@ -1053,14 +1378,10 @@ export class LocalRuntimeDaemon {
     };
     this.options.capabilities ??= {};
     this.options.capabilities.codex = nextConfig;
-
-    const workspacePolicy = new WorkspacePolicy({
-      allowedDirectories: this.options.allowedDirectories,
-      allowedFileDirectories: [os.tmpdir(), "/tmp"]
-    });
-    this.codingAgentAdapter?.replace(
-      this.createCodingAgentAdapter(workspacePolicy, this.createApprovalProvider())
-    );
+    // Harnesses whose settings changed or that were disabled get retired;
+    // their running tasks finish on the old adapter.
+    const runnable = this.runnableCodingProviders();
+    this.codingAgentAdapter?.configure(runnable.provider, runnable.providers);
 
     const definitions = this.codingAgentTools?.definitions() ?? [];
     if (nextConfig.enabled !== false) {
@@ -1074,6 +1395,27 @@ export class LocalRuntimeDaemon {
     for (const definition of definitions) {
       this.registry.unregister(definition.name);
     }
+  }
+
+  /** Whether coding-agent tools are on; the heartbeat's `coding_agent.enabled`. */
+  private codingAgentEnabled(): boolean {
+    return this.options.capabilities?.codex?.enabled !== false;
+  }
+
+  /**
+   * The configured harnesses minus non-default ones the host reported as not
+   * installed for this run. Adapter access still follows the configured list.
+   */
+  private runnableCodingProviders(): { provider: CodingAgentProvider; providers: CodingAgentProvider[] } {
+    const configured = normalizeCodingAgentProviders(
+      this.options.capabilities?.codex?.provider,
+      this.options.capabilities?.codex?.providers
+    );
+    const unavailable = this.options.unavailableCodingProviders ?? [];
+    return {
+      provider: configured.provider,
+      providers: configured.providers.filter(provider => provider === configured.provider || !unavailable.includes(provider))
+    };
   }
 
   private createApprovalProvider(): ApprovalProvider {
@@ -1096,7 +1438,15 @@ export class LocalRuntimeDaemon {
     return websocketProvider;
   }
 
-  private createCodingAgentAdapter(workspacePolicy: WorkspacePolicy, approvalProvider: ApprovalProvider): CodingAgentAdapter {
+  private createCodingAgentAdapter(
+    provider: CodingAgentProvider,
+    sessions: Map<string, CodingSessionState>
+  ): CodingAgentAdapter {
+    const workspacePolicy = new WorkspacePolicy({
+      allowedDirectories: this.options.allowedDirectories,
+      allowedFileDirectories: [os.tmpdir(), "/tmp"]
+    });
+    const approvalProvider = this.createApprovalProvider();
     const callbacks = {
       onTaskHeartbeat: (task: CodingTask) => {
         if (task.lease_id) {
@@ -1146,44 +1496,50 @@ export class LocalRuntimeDaemon {
           this.leaseManager.releaseLease(task.lease_id);
         }
         this.sendCodingTaskCompletion(task);
+        this.codingAgentAdapter?.taskFinished(task.task_id);
       }
     };
-    const codingConfig = this.options.capabilities?.codex;
-    if (codingConfig?.provider === "claude-code") {
+    const settings = codingHarnessSettings(provider, this.options.capabilities?.codex);
+    if (provider === "claude-code") {
       return new ClaudeCodeAdapter({
         workspacePolicy,
         approvalProvider,
-        command: codingConfig.claudeCommand || process.env.CLERO_LOCAL_AGENT_CLAUDE_BIN,
-        defaultModel: codingConfig.claudeModel,
-        defaultReasoningEffort: codingConfig.claudeReasoningEffort,
-        permissionMode: codingConfig.claudePermissionMode,
-        allowWorkspaceWrite: codingConfig.allowWorkspaceWrite,
-        allowBypassPermissions: codingConfig.allowDangerFullAccess,
+        sessions,
+        command: settings.command,
+        defaultModel: settings.model,
+        defaultReasoningEffort: settings.claudeReasoningEffort,
+        permissionMode: settings.permissionMode,
+        allowWorkspaceWrite: settings.allowWorkspaceWrite,
+        allowBypassPermissions: settings.allowDangerFullAccess,
         ...callbacks
       });
     }
 
-    if (codingConfig?.provider === "antigravity") {
+    if (provider === "antigravity") {
       return new AntigravityCliAdapter({
         workspacePolicy,
         approvalProvider,
-        command: codingConfig.antigravityCommand || process.env.CLERO_LOCAL_AGENT_ANTIGRAVITY_BIN,
-        defaultSandbox: codingConfig.defaultSandbox,
-        allowWorkspaceWrite: codingConfig.allowWorkspaceWrite,
-        allowDangerFullAccess: codingConfig.allowDangerFullAccess,
+        sessions,
+        command: settings.command,
+        defaultModel: settings.model,
+        defaultReasoningEffort: settings.antigravityReasoningEffort,
+        defaultSandbox: settings.defaultSandbox,
+        allowWorkspaceWrite: settings.allowWorkspaceWrite,
+        allowDangerFullAccess: settings.allowDangerFullAccess,
         ...callbacks
       });
     }
 
-    if (codingConfig?.provider === "cursor") {
+    if (provider === "cursor") {
       return new CursorCliAdapter({
         workspacePolicy,
         approvalProvider,
-        command: codingConfig.cursorCommand || process.env.CLERO_LOCAL_AGENT_CURSOR_BIN,
-        defaultModel: codingConfig.cursorModel,
-        defaultSandbox: codingConfig.defaultSandbox,
-        allowWorkspaceWrite: codingConfig.allowWorkspaceWrite,
-        allowDangerFullAccess: codingConfig.allowDangerFullAccess,
+        sessions,
+        command: settings.command,
+        defaultModel: settings.model,
+        defaultSandbox: settings.defaultSandbox,
+        allowWorkspaceWrite: settings.allowWorkspaceWrite,
+        allowDangerFullAccess: settings.allowDangerFullAccess,
         ...callbacks
       });
     }
@@ -1191,12 +1547,13 @@ export class LocalRuntimeDaemon {
     return new CodexCliAdapter({
       workspacePolicy,
       approvalProvider,
-      command: codingConfig?.command || process.env.CLERO_LOCAL_AGENT_CODEX_BIN,
-      defaultModel: codingConfig?.model,
-      defaultReasoningEffort: codingConfig?.reasoningEffort,
-      defaultSandbox: codingConfig?.defaultSandbox,
-      allowWorkspaceWrite: codingConfig?.allowWorkspaceWrite,
-      allowDangerFullAccess: codingConfig?.allowDangerFullAccess,
+      sessions,
+      command: settings.command,
+      defaultModel: settings.model,
+      defaultReasoningEffort: settings.reasoningEffort,
+      defaultSandbox: settings.defaultSandbox,
+      allowWorkspaceWrite: settings.allowWorkspaceWrite,
+      allowDangerFullAccess: settings.allowDangerFullAccess,
       ...callbacks
     });
   }
@@ -1224,6 +1581,73 @@ export class LocalRuntimeDaemon {
   }
 }
 
+type CodingHarnessSettings = {
+  command?: string;
+  model?: string;
+  reasoningEffort?: CodexReasoningEffort;
+  claudeReasoningEffort?: ClaudeCodeReasoningEffort;
+  antigravityReasoningEffort?: AntigravityReasoningEffort;
+  permissionMode?: ClaudeCodePermissionMode;
+  defaultSandbox?: CodexSandbox;
+  allowWorkspaceWrite?: boolean;
+  allowDangerFullAccess?: boolean;
+};
+
+/** The settings one harness's adapter is built from; nothing from other harnesses. */
+function codingHarnessSettings(
+  provider: CodingAgentProvider,
+  config: CodingAgentCapabilityOptions | undefined
+): CodingHarnessSettings {
+  const access = codingHarnessAccess(provider, config);
+  if (provider === "claude-code") {
+    return {
+      command: codingAgentCommand("claude-code", config?.claudeCommand),
+      model: config?.claudeModel,
+      claudeReasoningEffort: config?.claudeReasoningEffort,
+      permissionMode: config?.claudePermissionMode,
+      ...access
+    };
+  }
+  if (provider === "antigravity") {
+    return {
+      command: codingAgentCommand("antigravity", config?.antigravityCommand),
+      model: config?.antigravityModel,
+      antigravityReasoningEffort: config?.antigravityReasoningEffort,
+      defaultSandbox: config?.defaultSandbox,
+      ...access
+    };
+  }
+  if (provider === "cursor") {
+    return {
+      command: codingAgentCommand("cursor", config?.cursorCommand),
+      model: config?.cursorModel,
+      defaultSandbox: config?.defaultSandbox,
+      ...access
+    };
+  }
+  return {
+    command: codingAgentCommand("codex", config?.command),
+    model: config?.model,
+    reasoningEffort: config?.reasoningEffort,
+    defaultSandbox: config?.defaultSandbox,
+    ...access
+  };
+}
+
+/**
+ * Adds the read-only fields of a coding-agent config response: `detected`
+ * (which harness commands resolve to an executable right now) and
+ * `grant_rules` (CODING_AGENT_GRANT_RULES_VERSION). Computed fresh each time
+ * and never stored.
+ */
+function withDetectedCodingAgents(config: JsonObject): JsonObject {
+  return {
+    ...config,
+    detected: detectCodingAgents(config) as unknown as JsonValue,
+    grant_rules: CODING_AGENT_GRANT_RULES_VERSION
+  };
+}
+
 function stringArg(args: JsonObject, key: string): string | undefined {
   const value = args[key];
   return typeof value === "string" ? value : undefined;
@@ -1240,12 +1664,6 @@ function selectedCodingAgentModel(
   return selected === "custom" ? stringValue(custom) : stringValue(selected);
 }
 
-function codingAgentProviderArg(value: JsonValue | undefined): CodingAgentProvider {
-  return value === "claude-code" || value === "antigravity" || value === "cursor"
-    ? value
-    : "codex";
-}
-
 function codingAgentSandboxArg(value: JsonValue | undefined): CodexSandbox {
   return value === "workspace-write" || value === "danger-full-access"
     ? value
@@ -1259,6 +1677,16 @@ function codexReasoningEffortArg(value: JsonValue | undefined): CodexReasoningEf
 }
 
 function claudeReasoningEffortArg(value: JsonValue | undefined): ClaudeCodeReasoningEffort | undefined {
+  return value === "low" ||
+    value === "medium" ||
+    value === "high" ||
+    value === "xhigh" ||
+    value === "max"
+    ? value
+    : undefined;
+}
+
+function antigravityReasoningEffortArg(value: JsonValue | undefined): AntigravityReasoningEffort | undefined {
   return value === "low" ||
     value === "medium" ||
     value === "high" ||

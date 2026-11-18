@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { accessSync, constants as fsConstants, statSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -14,6 +15,46 @@ export type CodexSandbox = "read-only" | "workspace-write" | "danger-full-access
 export type CodexReasoningEffort = "low" | "medium" | "high" | "xhigh";
 export type ClaudeCodePermissionMode = "default" | "acceptEdits" | "plan" | "auto" | "dontAsk" | "bypassPermissions";
 export type ClaudeCodeReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max";
+export type AntigravityReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max";
+
+export const CODING_AGENT_PROVIDERS: readonly CodingAgentProvider[] = ["codex", "claude-code", "antigravity", "cursor"];
+
+export function isCodingAgentProvider(value: unknown): value is CodingAgentProvider {
+  return typeof value === "string" && (CODING_AGENT_PROVIDERS as readonly string[]).includes(value);
+}
+
+/**
+ * Normalizes the default harness and the enabled harness list together.
+ * Unknown values are dropped, duplicates are removed in order, a missing or
+ * empty list means only the default harness, and the default always belongs
+ * to the list: a valid default that is missing from the list is appended (an
+ * explicit default wins over a stale list); an invalid default falls back to
+ * the first enabled harness.
+ */
+export function normalizeCodingAgentProviders(
+  provider: unknown,
+  providers: unknown
+): { provider: CodingAgentProvider; providers: CodingAgentProvider[] } {
+  const enabled: CodingAgentProvider[] = [];
+  if (Array.isArray(providers)) {
+    for (const value of providers) {
+      if (isCodingAgentProvider(value) && !enabled.includes(value)) {
+        enabled.push(value);
+      }
+    }
+  }
+  if (enabled.length === 0) {
+    const fallback = isCodingAgentProvider(provider) ? provider : "codex";
+    return { provider: fallback, providers: [fallback] };
+  }
+  if (!isCodingAgentProvider(provider)) {
+    return { provider: enabled[0]!, providers: enabled };
+  }
+  if (!enabled.includes(provider)) {
+    enabled.push(provider);
+  }
+  return { provider, providers: enabled };
+}
 
 export type CodingTaskActionKind = "command" | "file_change" | "read" | "search" | "plan" | "tool";
 export type CodingTaskActionPhase = "started" | "completed";
@@ -79,11 +120,214 @@ export type CodingTask = {
   cursor_chat_id?: string;
 };
 
+/**
+ * The shared access grants (`allow_workspace_write`, `allow_danger_full_access`)
+ * implied by the coding settings:
+ * - the default sandbox counts only while a sandbox harness (Codex, Cursor,
+ *   Antigravity) is enabled: workspace-write gives write, danger-full-access
+ *   gives write and full access;
+ * - the Claude Code permission mode counts only while Claude Code is enabled:
+ *   acceptEdits gives write, bypassPermissions gives full access.
+ * The sandbox is not a Claude Code setting, so it never grants Claude Code
+ * access. Consequence: a Claude-only config with a leftover write/full sandbox
+ * and no stored grant no longer gets that access (older versions derived it).
+ * The desktop app mirrors this in `derived_coding_grants`
+ * (apps/desktop/src-tauri/src/lib.rs) and apps/desktop/coding-config.ts; all
+ * three test suites read the shared cases in
+ * packages/daemon/test/fixtures/coding-grant-cases.json.
+ */
+/**
+ * Version of the coding-grant rules this connector applies, reported to Clero
+ * as the read-only `grant_rules` field of the coding-agent config responses.
+ * Bump it whenever the grant derivation (derivedCodingAgentGrants) or the
+ * grants-on-list-change behaviour changes.
+ * 2: default_sandbox counts only when a sandbox harness is enabled; Claude mode
+ *    counts only when claude-code is enabled; stored and payload grants are
+ *    dropped and recomputed when the enabled list changes.
+ */
+export const CODING_AGENT_GRANT_RULES_VERSION = 2;
+
+export function derivedCodingAgentGrants(settings: {
+  provider?: unknown;
+  providers?: unknown;
+  default_sandbox?: string;
+  claude_permission_mode?: string;
+}): { allow_workspace_write: boolean; allow_danger_full_access: boolean } {
+  const { providers } = normalizeCodingAgentProviders(settings.provider, settings.providers);
+  const claudeEnabled = providers.includes("claude-code");
+  const sandboxHarnessEnabled = providers.some(provider => provider !== "claude-code");
+  const sandbox = sandboxHarnessEnabled ? settings.default_sandbox : undefined;
+  const permissionMode = claudeEnabled ? settings.claude_permission_mode : undefined;
+  return {
+    allow_workspace_write:
+      sandbox === "workspace-write" ||
+      sandbox === "danger-full-access" ||
+      permissionMode === "acceptEdits",
+    allow_danger_full_access:
+      sandbox === "danger-full-access" ||
+      permissionMode === "bypassPermissions"
+  };
+}
+
+export type CodingSessionMatch = {
+  session_key: string;
+  provider_session_id: string;
+  updated_at: string;
+};
+
+/** The executable each adapter runs when no command is configured. */
+export const DEFAULT_CODING_AGENT_COMMANDS: Readonly<Record<CodingAgentProvider, string>> = {
+  codex: "codex",
+  "claude-code": "claude",
+  antigravity: "agy",
+  cursor: "agent"
+};
+
+/** Environment variables the daemon falls back to when no command is configured. */
+export const CODING_AGENT_COMMAND_ENV: Readonly<Record<CodingAgentProvider, string>> = {
+  codex: "CLERO_LOCAL_AGENT_CODEX_BIN",
+  "claude-code": "CLERO_LOCAL_AGENT_CLAUDE_BIN",
+  antigravity: "CLERO_LOCAL_AGENT_ANTIGRAVITY_BIN",
+  cursor: "CLERO_LOCAL_AGENT_CURSOR_BIN"
+};
+
+/** The command the daemon runs for a harness: configured, else the env override, else the default name. */
+export function codingAgentCommand(
+  provider: CodingAgentProvider,
+  configured: string | undefined,
+  env: NodeJS.ProcessEnv = process.env
+): string {
+  return configured?.trim() || env[CODING_AGENT_COMMAND_ENV[provider]]?.trim() || DEFAULT_CODING_AGENT_COMMANDS[provider];
+}
+
+export type CodingAgentCommandResolution = { installed: boolean; path: string | null };
+
+export type CodingAgentCommandLookup = {
+  env?: NodeJS.ProcessEnv;
+  platform?: NodeJS.Platform;
+};
+
+/**
+ * The files Node's child_process.spawn (no shell, as the adapters use it) could
+ * run for a command, in lookup order, without touching the filesystem.
+ * Empty when the answer would depend on the task: a relative path (adapters
+ * spawn in the task's directory, Cursor's create-chat in none) or, on Windows,
+ * a bare name found only in the task's directory. `~` is not expanded, as
+ * spawn does not expand it. A bare name is looked up on PATH; on Windows a
+ * name with an extension is tried as is, then with .COM and .EXE (libuv's
+ * search), quoted PATH entries are unquoted, and .cmd/.bat files are never
+ * candidates because Node refuses to spawn them without a shell.
+ */
+export function codingAgentCommandCandidates(command: string, lookup: CodingAgentCommandLookup = {}): string[] {
+  const env = lookup.env ?? process.env;
+  const windows = (lookup.platform ?? process.platform) === "win32";
+  const paths = windows ? path.win32 : path.posix;
+  const trimmed = command.trim();
+  if (!trimmed || (windows && /\.(cmd|bat)$/i.test(trimmed))) {
+    return [];
+  }
+
+  const extensions = windows ? windowsCommandExtensions(trimmed) : [""];
+  const hasSeparator = trimmed.includes("/") || (windows && (trimmed.includes("\\") || trimmed.includes(":")));
+  if (hasSeparator) {
+    return paths.isAbsolute(trimmed) ? extensions.map(extension => paths.normalize(trimmed) + extension) : [];
+  }
+  const directories = (pathEnvironment(env, windows) ?? "")
+    .split(windows ? ";" : ":")
+    .map(directory => (windows ? unquotePathEntry(directory) : directory))
+    .filter(directory => directory && paths.isAbsolute(directory));
+  return directories.flatMap(directory => extensions.map(extension => paths.join(directory, trimmed) + extension));
+}
+
+/**
+ * Resolves a coding-agent command the way the adapters spawn it (see
+ * codingAgentCommandCandidates): the first candidate that is a regular file,
+ * with an executable bit outside Windows. Nothing is executed.
+ */
+export function resolveCodingAgentCommand(
+  command: string,
+  lookup: CodingAgentCommandLookup = {}
+): CodingAgentCommandResolution {
+  const windows = (lookup.platform ?? process.platform) === "win32";
+  for (const candidate of codingAgentCommandCandidates(command, lookup)) {
+    if (isExecutableFile(candidate, windows)) {
+      return { installed: true, path: candidate };
+    }
+  }
+  return { installed: false, path: null };
+}
+
+export type DetectedCodingAgent = {
+  provider: CodingAgentProvider;
+  installed: boolean;
+  command: string;
+  path: string | null;
+};
+
+/**
+ * One entry per harness, in canonical order, for the commands configured in
+ * a coding-agent config (`command`, `claude_command`, `antigravity_command`,
+ * `cursor_command`).
+ */
+export function detectCodingAgents(
+  config: { command?: unknown; claude_command?: unknown; antigravity_command?: unknown; cursor_command?: unknown },
+  lookup: CodingAgentCommandLookup = {}
+): DetectedCodingAgent[] {
+  const configured: Record<CodingAgentProvider, unknown> = {
+    codex: config.command,
+    "claude-code": config.claude_command,
+    antigravity: config.antigravity_command,
+    cursor: config.cursor_command
+  };
+  return CODING_AGENT_PROVIDERS.map(provider => {
+    const value = configured[provider];
+    const command = codingAgentCommand(provider, typeof value === "string" ? value : undefined, lookup.env);
+    return { provider, command, ...resolveCodingAgentCommand(command, lookup) };
+  });
+}
+
+function pathEnvironment(env: NodeJS.ProcessEnv, windows: boolean): string | undefined {
+  if (!windows) {
+    return env.PATH;
+  }
+  const key = Object.keys(env).find(name => name.toUpperCase() === "PATH");
+  return key ? env[key] : undefined;
+}
+
+function unquotePathEntry(entry: string): string {
+  const trimmed = entry.trim();
+  const quote = trimmed[0];
+  if ((quote === '"' || quote === "'") && trimmed.length >= 2 && trimmed.endsWith(quote)) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed.replace(/^["']|["']$/g, "");
+}
+
+function windowsCommandExtensions(command: string): string[] {
+  // Node's spawn (libuv) tries a name that has an extension as is, then .com and .exe.
+  return path.win32.extname(command) ? ["", ".COM", ".EXE"] : [".COM", ".EXE"];
+}
+
+function isExecutableFile(candidate: string, windows: boolean): boolean {
+  try {
+    if (!statSync(candidate).isFile()) {
+      return false;
+    }
+    if (!windows) {
+      accessSync(candidate, fsConstants.X_OK);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export interface CodingAgentAdapter {
   startTask(args: JsonObject, context: ToolExecutionContext): Promise<JsonObject>;
   getStatus(taskId: string): Promise<JsonObject>;
   getOutput(taskId: string, args?: JsonObject): Promise<JsonObject>;
   cancel(taskId: string): Promise<JsonObject>;
+  dispose?(): Promise<void>;
 }
 
 export class CodingAgentTools {
@@ -97,7 +341,7 @@ export class CodingAgentTools {
     return [
       {
         name: "coding_agent.start_task",
-        description: "Start a non-interactive local Codex, Claude Code, Antigravity, or Cursor task in a discovered project. Prefer project over absolute cwd.",
+        description: "Start a non-interactive local Codex, Claude Code, Antigravity, or Cursor task in a discovered project. Prefer project over absolute cwd. Pass provider to choose one of the enabled coding harnesses; omit it to use the default.",
         handler: (args, context) => this.adapter.startTask(args, context)
       },
       {
@@ -130,6 +374,8 @@ export type CodexCliAdapterOptions = {
   allowDangerFullAccess?: boolean;
   maxEvents?: number;
   maxOutputBytes?: number;
+  /** Session store to use; pass the same map to a rebuilt adapter to keep its resumable sessions. */
+  sessions?: Map<string, CodingSessionState>;
   onTaskHeartbeat?: (task: CodingTask) => void;
   onTaskEvent?: (task: CodingTask, event: CodingTaskEvent) => void;
   onTaskTerminal?: (task: CodingTask) => void;
@@ -146,6 +392,8 @@ export type ClaudeCodeAdapterOptions = {
   allowBypassPermissions?: boolean;
   maxEvents?: number;
   maxOutputBytes?: number;
+  /** Session store to use; pass the same map to a rebuilt adapter to keep its resumable sessions. */
+  sessions?: Map<string, CodingSessionState>;
   onTaskHeartbeat?: (task: CodingTask) => void;
   onTaskEvent?: (task: CodingTask, event: CodingTaskEvent) => void;
   onTaskTerminal?: (task: CodingTask) => void;
@@ -155,11 +403,17 @@ export type AntigravityCliAdapterOptions = {
   workspacePolicy: WorkspacePolicy;
   approvalProvider?: ApprovalProvider;
   command?: string;
+  /** Passed as `agy --model`; unset keeps the CLI's own model. */
+  defaultModel?: string;
+  /** Passed as `agy --effort`; unset keeps the model's own level. */
+  defaultReasoningEffort?: AntigravityReasoningEffort;
   defaultSandbox?: CodexSandbox;
   allowWorkspaceWrite?: boolean;
   allowDangerFullAccess?: boolean;
   maxEvents?: number;
   maxOutputBytes?: number;
+  /** Session store to use; pass the same map to a rebuilt adapter to keep its resumable sessions. */
+  sessions?: Map<string, CodingSessionState>;
   onTaskHeartbeat?: (task: CodingTask) => void;
   onTaskEvent?: (task: CodingTask, event: CodingTaskEvent) => void;
   onTaskTerminal?: (task: CodingTask) => void;
@@ -175,6 +429,8 @@ export type CursorCliAdapterOptions = {
   allowDangerFullAccess?: boolean;
   maxEvents?: number;
   maxOutputBytes?: number;
+  /** Session store to use; pass the same map to a rebuilt adapter to keep its resumable sessions. */
+  sessions?: Map<string, CodingSessionState>;
   onTaskHeartbeat?: (task: CodingTask) => void;
   onTaskEvent?: (task: CodingTask, event: CodingTaskEvent) => void;
   onTaskTerminal?: (task: CodingTask) => void;
@@ -198,7 +454,7 @@ type ApprovalMetadata = {
   reason?: string;
 };
 
-type CodingSessionState = {
+export type CodingSessionState = {
   providerSessionId: string;
   cwd: string;
   updatedAt: string;
@@ -229,22 +485,24 @@ const CLAUDE_PERMISSION_MODES: ClaudeCodePermissionMode[] = [
   "bypassPermissions"
 ];
 const CLAUDE_REASONING_EFFORT_VALUES: ClaudeCodeReasoningEffort[] = ["low", "medium", "high", "xhigh", "max"];
+const ANTIGRAVITY_REASONING_EFFORT_VALUES: AntigravityReasoningEffort[] = ["low", "medium", "high", "xhigh", "max"];
 const DEFAULT_MAX_EVENTS = 1_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 1_000_000;
 
 export class CodexCliAdapter implements CodingAgentAdapter {
   private readonly command: string;
   private readonly tasks = new Map<string, StoredCodingTask>();
-  private readonly sessions = new Map<string, CodingSessionState>();
+  private readonly sessions: Map<string, CodingSessionState>;
   private readonly options: CodexCliAdapterOptions;
   private readonly maxEvents: number;
   private readonly maxOutputBytes: number;
 
   constructor(options: CodexCliAdapterOptions) {
     this.options = options;
-    this.command = options.command ?? "codex";
+    this.command = options.command ?? DEFAULT_CODING_AGENT_COMMANDS.codex;
     this.maxEvents = options.maxEvents ?? DEFAULT_MAX_EVENTS;
     this.maxOutputBytes = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
+    this.sessions = options.sessions ?? new Map();
   }
 
   async startTask(args: JsonObject, context: ToolExecutionContext): Promise<JsonObject> {
@@ -692,16 +950,17 @@ export class CodexCliAdapter implements CodingAgentAdapter {
 export class AntigravityCliAdapter implements CodingAgentAdapter {
   private readonly command: string;
   private readonly tasks = new Map<string, StoredCodingTask>();
-  private readonly sessions = new Map<string, CodingSessionState>();
+  private readonly sessions: Map<string, CodingSessionState>;
   private readonly options: AntigravityCliAdapterOptions;
   private readonly maxEvents: number;
   private readonly maxOutputBytes: number;
 
   constructor(options: AntigravityCliAdapterOptions) {
     this.options = options;
-    this.command = options.command ?? "agy";
+    this.command = options.command ?? DEFAULT_CODING_AGENT_COMMANDS.antigravity;
     this.maxEvents = options.maxEvents ?? DEFAULT_MAX_EVENTS;
     this.maxOutputBytes = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
+    this.sessions = options.sessions ?? new Map();
   }
 
   async startTask(args: JsonObject, context: ToolExecutionContext): Promise<JsonObject> {
@@ -714,7 +973,10 @@ export class AntigravityCliAdapter implements CodingAgentAdapter {
     const taskId = `antigravity_${randomUUID()}`;
     const antigravityLogFile = antigravityCliLogFile();
     const antigravityLogStartByte = await fileSize(antigravityLogFile);
-    const cliArgs = this.antigravityArgs(sandbox, sessionPlan);
+    const model = optionalString(args, "model") ?? this.options.defaultModel;
+    const reasoningEffort =
+      antigravityReasoningEffortArg(args, "reasoning_effort") ?? this.options.defaultReasoningEffort;
+    const cliArgs = this.antigravityArgs(sandbox, sessionPlan, model, reasoningEffort);
     const child = this.spawnAntigravityProcess(cliArgs, cwd);
 
     const task: StoredCodingTask = {
@@ -722,6 +984,8 @@ export class AntigravityCliAdapter implements CodingAgentAdapter {
       request_id: context.requestId,
       provider: "antigravity",
       status: "running",
+      model,
+      reasoning_effort: reasoningEffort,
       cwd,
       sandbox,
       permission_mode: this.permissionModeFromSandbox(sandbox),
@@ -858,10 +1122,21 @@ export class AntigravityCliAdapter implements CodingAgentAdapter {
     return this.publicTask(task);
   }
 
-  private antigravityArgs(sandbox: CodexSandbox, sessionPlan: CodingSessionPlan): string[] {
+  private antigravityArgs(
+    sandbox: CodexSandbox,
+    sessionPlan: CodingSessionPlan,
+    model?: string,
+    reasoningEffort?: AntigravityReasoningEffort
+  ): string[] {
     const cliArgs: string[] = [];
     if (sessionPlan.resumed && sessionPlan.providerSessionId) {
       cliArgs.push("--conversation", sessionPlan.providerSessionId);
+    }
+    if (model) {
+      cliArgs.push("--model", model);
+    }
+    if (reasoningEffort) {
+      cliArgs.push("--effort", reasoningEffort);
     }
     if (sandbox === "danger-full-access") {
       cliArgs.push("--dangerously-skip-permissions");
@@ -1150,16 +1425,17 @@ export class AntigravityCliAdapter implements CodingAgentAdapter {
 export class CursorCliAdapter implements CodingAgentAdapter {
   private readonly command: string;
   private readonly tasks = new Map<string, StoredCodingTask>();
-  private readonly sessions = new Map<string, CodingSessionState>();
+  private readonly sessions: Map<string, CodingSessionState>;
   private readonly options: CursorCliAdapterOptions;
   private readonly maxEvents: number;
   private readonly maxOutputBytes: number;
 
   constructor(options: CursorCliAdapterOptions) {
     this.options = options;
-    this.command = options.command ?? "agent";
+    this.command = options.command ?? DEFAULT_CODING_AGENT_COMMANDS.cursor;
     this.maxEvents = options.maxEvents ?? DEFAULT_MAX_EVENTS;
     this.maxOutputBytes = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
+    this.sessions = options.sessions ?? new Map();
   }
 
   async startTask(args: JsonObject, context: ToolExecutionContext): Promise<JsonObject> {
@@ -1652,16 +1928,17 @@ export class CursorCliAdapter implements CodingAgentAdapter {
 export class ClaudeCodeAdapter implements CodingAgentAdapter {
   private readonly command: string;
   private readonly tasks = new Map<string, StoredCodingTask>();
-  private readonly sessions = new Map<string, CodingSessionState>();
+  private readonly sessions: Map<string, CodingSessionState>;
   private readonly options: ClaudeCodeAdapterOptions;
   private readonly maxEvents: number;
   private readonly maxOutputBytes: number;
 
   constructor(options: ClaudeCodeAdapterOptions) {
     this.options = options;
-    this.command = options.command ?? "claude";
+    this.command = options.command ?? DEFAULT_CODING_AGENT_COMMANDS["claude-code"];
     this.maxEvents = options.maxEvents ?? DEFAULT_MAX_EVENTS;
     this.maxOutputBytes = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
+    this.sessions = options.sessions ?? new Map();
   }
 
   async startTask(args: JsonObject, context: ToolExecutionContext): Promise<JsonObject> {
@@ -1843,6 +2120,20 @@ export class ClaudeCodeAdapter implements CodingAgentAdapter {
         permission_mode: permissionMode,
         cwd
       });
+    }
+
+    // The local full-access setting is the approval, as for a Codex/Cursor/Antigravity
+    // danger-full-access task (agent-started tasks have no one-time user approval to
+    // give), but only when the user chose bypass for Claude Code itself: its configured
+    // permission mode on this computer is bypassPermissions. A full-access grant alone
+    // (an explicit --allow-danger-full-access, or one left over from another harness)
+    // still asks for approval, as before.
+    if (permissionMode === "bypassPermissions" && this.options.permissionMode === "bypassPermissions") {
+      return {
+        required: true,
+        approved: true,
+        reason: "Approved by local full-access setting"
+      };
     }
 
     if (!this.options.approvalProvider) {
@@ -2155,6 +2446,17 @@ function claudeReasoningEffortArg(args: JsonObject, key: string): ClaudeCodeReas
   throw new Error(`${key} must be one of ${CLAUDE_REASONING_EFFORT_VALUES.join(", ")}`);
 }
 
+function antigravityReasoningEffortArg(args: JsonObject, key: string): AntigravityReasoningEffort | undefined {
+  const value = args[key];
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  if (ANTIGRAVITY_REASONING_EFFORT_VALUES.includes(value as AntigravityReasoningEffort)) {
+    return value as AntigravityReasoningEffort;
+  }
+  throw new Error(`${key} must be one of ${ANTIGRAVITY_REASONING_EFFORT_VALUES.join(", ")}`);
+}
+
 function codingSessionPlan(
   args: JsonObject,
   context: ToolExecutionContext,
@@ -2175,6 +2477,46 @@ function codingSessionPlan(
     providerSessionId,
     resumed: continueSession && Boolean(providerSessionId)
   };
+}
+
+/**
+ * The stored session in `sessions` that a start_task call with these
+ * arguments would resume, using the same key rules as the adapters.
+ * `resolveCwd` is only called when the key depends on the project directory;
+ * an unresolvable project yields no match (startTask reports that error).
+ */
+export function findStoredCodingSession(
+  args: JsonObject,
+  context: ToolExecutionContext,
+  resolveCwd: () => string,
+  sessions: Map<string, CodingSessionState>
+): CodingSessionMatch | undefined {
+  if (!booleanArg(args, "continue_session") || sessions.size === 0) {
+    return undefined;
+  }
+  const explicitProviderSessionId = optionalString(args, "provider_session_id");
+  if (explicitProviderSessionId) {
+    for (const [key, state] of sessions) {
+      if (state.providerSessionId === explicitProviderSessionId) {
+        return { session_key: key, provider_session_id: state.providerSessionId, updated_at: state.updatedAt };
+      }
+    }
+    return undefined;
+  }
+  let key = optionalString(args, "session_key");
+  if (!key) {
+    let cwd: string;
+    try {
+      cwd = resolveCwd();
+    } catch {
+      return undefined;
+    }
+    key = codingSessionPlan(args, context, cwd, sessions).key;
+  }
+  const stored = key ? sessions.get(key) : undefined;
+  return key && stored
+    ? { session_key: key, provider_session_id: stored.providerSessionId, updated_at: stored.updatedAt }
+    : undefined;
 }
 
 function rememberCodingSession(

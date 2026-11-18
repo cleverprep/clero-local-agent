@@ -66,7 +66,9 @@ Risky actions require local approval. For MVP this includes:
 - `git.pull`
 - `git.abort_pull`
 - `shell.run` when requesting `workspace-write` or `danger-full-access`
-- coding-agent modes that can modify files or run with elevated sandbox permissions
+- coding-agent modes that can modify files or run with elevated sandbox permissions, unless the local settings already grant that access
+
+For coding agents the local setting is the approval: when the computer's settings allow a mode, a task in that mode starts without a one-time prompt, whether the mode is the harness's default or requested by the task. This covers Codex, Cursor, and Antigravity `workspace-write` / `danger-full-access` and Claude Code `acceptEdits`. Claude Code `bypassPermissions` starts without a prompt only when Claude Code's own permission mode on this computer is `bypassPermissions` and the settings allow bypass (its own mode with several harnesses enabled, or the stored full-access grant with Claude Code alone; another harness's sandbox never allows it). A per-task bypass request on a computer whose Claude Code mode is something else still needs a one-time approval even when a full-access grant is stored (for example one left over from Codex), so an agent without one is denied. A mode the settings do not allow is refused outright, and Claude Code `auto` and `dontAsk` still ask for approval.
 
 Read-only operations such as `git.status`, `git.diff`, browser snapshots, and status checks should avoid unnecessary prompts.
 
@@ -81,6 +83,14 @@ The optional `browser_debug` capability bridges to Chrome DevTools MCP. It can e
 ## Coding Agents
 
 Codex, Claude Code, Antigravity, and Cursor adapters execute local CLI processes. Sandbox and approval settings must be visible to the user before enabling the capability.
+
+Several harnesses can be enabled at once; a task picks one with `provider` or runs on the default. With one harness enabled, access follows that harness's setting plus the shared `allow_workspace_write` / `allow_danger_full_access` grants, but stored shared grants are only kept while the enabled list stays the same. With more than one enabled, each harness gets access only from its own setting (the default sandbox for Codex, Cursor, and Antigravity; the permission mode for Claude Code), and the shared grants widen no harness.
+
+Whenever the enabled list changes (Clero's `set_coding_agent_config`, the CLI's `--provider` / `--providers`, or the desktop app's Agent picker), both shared grants are recomputed from the enabled harnesses' own settings: stored grants and any grants echoed in a remote payload are discarded, and no sandbox or Claude Code mode is upgraded from a shared grant. Explicit local CLI `--allow-*` / `--deny-*` flags in the same command still apply afterwards. This recompute is deliberate and can grant access: switching to Claude Code while its permission mode is `bypassPermissions` gives it full access, and switching to Codex, Cursor, or Antigravity (only those) with a `workspace-write` or `danger-full-access` default sandbox gives that access, because those are the user's own explicit settings for that harness.
+
+The grants a config implies follow one rule everywhere they are derived (daemon, CLI, desktop app): the default sandbox counts only while at least one sandbox harness (Codex, Cursor, Antigravity) is enabled, and the Claude Code permission mode counts only while Claude Code is enabled. The sandbox is not a Claude Code setting, so it never grants Claude Code write or bypass access. As a result, a Claude Code-only config with a leftover `workspace-write` or `danger-full-access` sandbox and no stored grant no longer gets that access at startup (older versions derived it from the sandbox); an explicitly stored grant is still honoured while the enabled list is unchanged.
+
+Remote configuration never switches coding on as a side effect: `get_coding_agent_config` reports the running on/off state (the same value as the heartbeat), and a `set_coding_agent_config` payload without `enabled` keeps the current state; only an explicit `enabled: true` or `false` changes it.
 
 Default posture:
 
