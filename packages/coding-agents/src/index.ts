@@ -15,6 +15,7 @@ export type CodexSandbox = "read-only" | "workspace-write" | "danger-full-access
 export type CodexReasoningEffort = "low" | "medium" | "high" | "xhigh";
 export type ClaudeCodePermissionMode = "default" | "acceptEdits" | "plan" | "auto" | "dontAsk" | "bypassPermissions";
 export type ClaudeCodeReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max";
+export type AntigravityReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max";
 
 export const CODING_AGENT_PROVIDERS: readonly CodingAgentProvider[] = ["codex", "claude-code", "antigravity", "cursor"];
 
@@ -402,6 +403,10 @@ export type AntigravityCliAdapterOptions = {
   workspacePolicy: WorkspacePolicy;
   approvalProvider?: ApprovalProvider;
   command?: string;
+  /** Passed as `agy --model`; unset keeps the CLI's own model. */
+  defaultModel?: string;
+  /** Passed as `agy --effort`; unset keeps the model's own level. */
+  defaultReasoningEffort?: AntigravityReasoningEffort;
   defaultSandbox?: CodexSandbox;
   allowWorkspaceWrite?: boolean;
   allowDangerFullAccess?: boolean;
@@ -480,6 +485,7 @@ const CLAUDE_PERMISSION_MODES: ClaudeCodePermissionMode[] = [
   "bypassPermissions"
 ];
 const CLAUDE_REASONING_EFFORT_VALUES: ClaudeCodeReasoningEffort[] = ["low", "medium", "high", "xhigh", "max"];
+const ANTIGRAVITY_REASONING_EFFORT_VALUES: AntigravityReasoningEffort[] = ["low", "medium", "high", "xhigh", "max"];
 const DEFAULT_MAX_EVENTS = 1_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 1_000_000;
 
@@ -967,7 +973,10 @@ export class AntigravityCliAdapter implements CodingAgentAdapter {
     const taskId = `antigravity_${randomUUID()}`;
     const antigravityLogFile = antigravityCliLogFile();
     const antigravityLogStartByte = await fileSize(antigravityLogFile);
-    const cliArgs = this.antigravityArgs(sandbox, sessionPlan);
+    const model = optionalString(args, "model") ?? this.options.defaultModel;
+    const reasoningEffort =
+      antigravityReasoningEffortArg(args, "reasoning_effort") ?? this.options.defaultReasoningEffort;
+    const cliArgs = this.antigravityArgs(sandbox, sessionPlan, model, reasoningEffort);
     const child = this.spawnAntigravityProcess(cliArgs, cwd);
 
     const task: StoredCodingTask = {
@@ -975,6 +984,8 @@ export class AntigravityCliAdapter implements CodingAgentAdapter {
       request_id: context.requestId,
       provider: "antigravity",
       status: "running",
+      model,
+      reasoning_effort: reasoningEffort,
       cwd,
       sandbox,
       permission_mode: this.permissionModeFromSandbox(sandbox),
@@ -1111,10 +1122,21 @@ export class AntigravityCliAdapter implements CodingAgentAdapter {
     return this.publicTask(task);
   }
 
-  private antigravityArgs(sandbox: CodexSandbox, sessionPlan: CodingSessionPlan): string[] {
+  private antigravityArgs(
+    sandbox: CodexSandbox,
+    sessionPlan: CodingSessionPlan,
+    model?: string,
+    reasoningEffort?: AntigravityReasoningEffort
+  ): string[] {
     const cliArgs: string[] = [];
     if (sessionPlan.resumed && sessionPlan.providerSessionId) {
       cliArgs.push("--conversation", sessionPlan.providerSessionId);
+    }
+    if (model) {
+      cliArgs.push("--model", model);
+    }
+    if (reasoningEffort) {
+      cliArgs.push("--effort", reasoningEffort);
     }
     if (sandbox === "danger-full-access") {
       cliArgs.push("--dangerously-skip-permissions");
@@ -2408,6 +2430,17 @@ function claudeReasoningEffortArg(args: JsonObject, key: string): ClaudeCodeReas
     return value as ClaudeCodeReasoningEffort;
   }
   throw new Error(`${key} must be one of ${CLAUDE_REASONING_EFFORT_VALUES.join(", ")}`);
+}
+
+function antigravityReasoningEffortArg(args: JsonObject, key: string): AntigravityReasoningEffort | undefined {
+  const value = args[key];
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  if (ANTIGRAVITY_REASONING_EFFORT_VALUES.includes(value as AntigravityReasoningEffort)) {
+    return value as AntigravityReasoningEffort;
+  }
+  throw new Error(`${key} must be one of ${ANTIGRAVITY_REASONING_EFFORT_VALUES.join(", ")}`);
 }
 
 function codingSessionPlan(

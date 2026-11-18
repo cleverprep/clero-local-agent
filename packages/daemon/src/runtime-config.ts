@@ -7,6 +7,7 @@ import {
   derivedCodingAgentGrants,
   normalizeCodingAgentProviders,
   type ClaudeCodePermissionMode,
+  type AntigravityReasoningEffort,
   type ClaudeCodeReasoningEffort,
   type CodingAgentProvider,
   type CodexReasoningEffort,
@@ -71,6 +72,8 @@ export type LocalRuntimeConfig = {
       model?: string;
       reasoning_effort?: CodexReasoningEffort;
       antigravity_command?: string;
+      antigravity_model?: string;
+      antigravity_reasoning_effort?: AntigravityReasoningEffort;
       cursor_command?: string;
       cursor_model?: string;
       cursor_model_custom?: string;
@@ -137,6 +140,8 @@ export function defaultRuntimeConfig(): LocalRuntimeConfig {
         model: "",
         reasoning_effort: undefined,
         antigravity_command: "",
+        antigravity_model: "",
+        antigravity_reasoning_effort: undefined,
         cursor_command: "",
         cursor_model: "",
         cursor_model_custom: "",
@@ -209,6 +214,8 @@ export function codingAgentConfigFromRuntimeConfig(config: LocalRuntimeConfig): 
     model: coding.model ?? "",
     reasoning_effort: coding.reasoning_effort ?? "",
     antigravity_command: coding.antigravity_command ?? "",
+    antigravity_model: coding.antigravity_model ?? "",
+    antigravity_reasoning_effort: coding.antigravity_reasoning_effort ?? "",
     cursor_command: coding.cursor_command ?? "",
     cursor_model: coding.cursor_model ?? "",
     cursor_model_custom: coding.cursor_model_custom ?? "",
@@ -239,6 +246,8 @@ export function updateCodingAgentRuntimeConfig(
   coding.model = configString(input.model);
   coding.reasoning_effort = configCodexReasoning(input.reasoning_effort);
   coding.antigravity_command = configString(input.antigravity_command);
+  coding.antigravity_model = configString(input.antigravity_model);
+  coding.antigravity_reasoning_effort = configAntigravityReasoning(input.antigravity_reasoning_effort);
   coding.cursor_command = configString(input.cursor_command);
   coding.cursor_model = configString(input.cursor_model);
   coding.cursor_model_custom = configString(input.cursor_model_custom);
@@ -374,6 +383,8 @@ export function capabilityOptionsFromConfig(
       model: config.capabilities?.codex?.model,
       reasoningEffort: config.capabilities?.codex?.reasoning_effort,
       antigravityCommand: config.capabilities?.codex?.antigravity_command,
+      antigravityModel: config.capabilities?.codex?.antigravity_model,
+      antigravityReasoningEffort: config.capabilities?.codex?.antigravity_reasoning_effort,
       cursorCommand: config.capabilities?.codex?.cursor_command,
       cursorModel: cursorModelFromConfig(config),
       claudeCommand: config.capabilities?.codex?.claude_command,
@@ -598,6 +609,16 @@ function configCodexReasoning(value: unknown): CodexReasoningEffort | undefined 
 }
 
 function configClaudeReasoning(value: unknown): ClaudeCodeReasoningEffort | undefined {
+  return value === "low" ||
+    value === "medium" ||
+    value === "high" ||
+    value === "xhigh" ||
+    value === "max"
+    ? value
+    : undefined;
+}
+
+function configAntigravityReasoning(value: unknown): AntigravityReasoningEffort | undefined {
   return value === "low" ||
     value === "medium" ||
     value === "high" ||

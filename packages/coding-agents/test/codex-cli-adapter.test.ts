@@ -562,6 +562,38 @@ test("runs antigravity cli as an async text task", async (t) => {
   assert.deepEqual(args, ["--sandbox"]);
 });
 
+test("passes the configured antigravity model and reasoning effort to the cli", async (t) => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "clero-antigravity-test-"));
+  t.after(() => rm(workspace, { recursive: true, force: true }));
+  const adapter = new AntigravityCliAdapter({
+    workspacePolicy: new WorkspacePolicy({ allowedDirectories: [workspace] }),
+    command: await createFakeAntigravity(workspace, 0),
+    defaultModel: "gemini-4-hydrogen",
+    defaultReasoningEffort: "high"
+  });
+  const context = { requestId: "req_1", leaseId: "lease_1", agentId: "agent_1", taskId: "task_1" };
+  const startedArgs = async (taskArgs: JsonObject): Promise<string[]> => {
+    const start = await adapter.startTask({ prompt: "inspect repo", cwd: workspace, ...taskArgs }, context);
+    const taskId = stringField(start, "task_id");
+    await waitForTerminalStatus(adapter, taskId);
+    const output = await adapter.getOutput(taskId, { include_events: true, include_raw: true });
+    const started = eventArray(output.events).find((event) => event.type === "process.started");
+    assert.ok(started);
+    return stringArrayField(objectField(started, "data"), "args");
+  };
+
+  assert.deepEqual(await startedArgs({}), ["--model", "gemini-4-hydrogen", "--effort", "high", "--sandbox"]);
+  // A task may name its own model and effort.
+  assert.deepEqual(await startedArgs({ model: "gemini-4-argon", reasoning_effort: "low" }), [
+    "--model",
+    "gemini-4-argon",
+    "--effort",
+    "low",
+    "--sandbox"
+  ]);
+  await assert.rejects(startedArgs({ reasoning_effort: "extreme" }), /reasoning_effort must be one of/);
+});
+
 test("runs cursor agent as an async stream-json task", async (t) => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "clero-cursor-test-"));
   t.after(() => rm(workspace, { recursive: true, force: true }));

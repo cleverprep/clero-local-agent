@@ -128,6 +128,10 @@ struct CodexConfig {
     #[serde(default)]
     antigravity_command: String,
     #[serde(default)]
+    antigravity_model: String,
+    #[serde(default)]
+    antigravity_reasoning_effort: String,
+    #[serde(default)]
     cursor_command: String,
     #[serde(default)]
     cursor_model: String,
@@ -312,6 +316,8 @@ impl Default for CodexConfig {
             model: String::new(),
             reasoning_effort: String::new(),
             antigravity_command: String::new(),
+            antigravity_model: String::new(),
+            antigravity_reasoning_effort: String::new(),
             cursor_command: String::new(),
             cursor_model: String::new(),
             cursor_model_custom: String::new(),

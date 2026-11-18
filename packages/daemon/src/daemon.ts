@@ -31,6 +31,7 @@ import {
   isCodingAgentProvider,
   normalizeCodingAgentProviders,
   type ClaudeCodePermissionMode,
+  type AntigravityReasoningEffort,
   type ClaudeCodeReasoningEffort,
   type CodingAgentAdapter,
   type CodingAgentProvider,
@@ -143,6 +144,8 @@ export type LocalRuntimeCapabilityOptions = {
     model?: string;
     reasoningEffort?: CodexReasoningEffort;
     antigravityCommand?: string;
+    antigravityModel?: string;
+    antigravityReasoningEffort?: AntigravityReasoningEffort;
     cursorCommand?: string;
     cursorModel?: string;
     claudeCommand?: string;
@@ -1361,6 +1364,8 @@ export class LocalRuntimeDaemon {
       model: stringValue(config.model),
       reasoningEffort,
       antigravityCommand: stringValue(config.antigravity_command),
+      antigravityModel: stringValue(config.antigravity_model),
+      antigravityReasoningEffort: antigravityReasoningEffortArg(config.antigravity_reasoning_effort),
       cursorCommand: stringValue(config.cursor_command),
       cursorModel,
       claudeCommand: stringValue(config.claude_command),
@@ -1516,6 +1521,8 @@ export class LocalRuntimeDaemon {
         approvalProvider,
         sessions,
         command: settings.command,
+        defaultModel: settings.model,
+        defaultReasoningEffort: settings.antigravityReasoningEffort,
         defaultSandbox: settings.defaultSandbox,
         allowWorkspaceWrite: settings.allowWorkspaceWrite,
         allowDangerFullAccess: settings.allowDangerFullAccess,
@@ -1579,6 +1586,7 @@ type CodingHarnessSettings = {
   model?: string;
   reasoningEffort?: CodexReasoningEffort;
   claudeReasoningEffort?: ClaudeCodeReasoningEffort;
+  antigravityReasoningEffort?: AntigravityReasoningEffort;
   permissionMode?: ClaudeCodePermissionMode;
   defaultSandbox?: CodexSandbox;
   allowWorkspaceWrite?: boolean;
@@ -1603,6 +1611,8 @@ function codingHarnessSettings(
   if (provider === "antigravity") {
     return {
       command: codingAgentCommand("antigravity", config?.antigravityCommand),
+      model: config?.antigravityModel,
+      antigravityReasoningEffort: config?.antigravityReasoningEffort,
       defaultSandbox: config?.defaultSandbox,
       ...access
     };
@@ -1667,6 +1677,16 @@ function codexReasoningEffortArg(value: JsonValue | undefined): CodexReasoningEf
 }
 
 function claudeReasoningEffortArg(value: JsonValue | undefined): ClaudeCodeReasoningEffort | undefined {
+  return value === "low" ||
+    value === "medium" ||
+    value === "high" ||
+    value === "xhigh" ||
+    value === "max"
+    ? value
+    : undefined;
+}
+
+function antigravityReasoningEffortArg(value: JsonValue | undefined): AntigravityReasoningEffort | undefined {
   return value === "low" ||
     value === "medium" ||
     value === "high" ||

@@ -506,9 +506,28 @@
                 Antigravity command
                 <input v-model="config.capabilities.codex.antigravity_command" spellcheck="false" placeholder="Auto-detected" />
               </label>
+              <label>
+                Model
+                <input
+                  v-model="config.capabilities.codex.antigravity_model"
+                  spellcheck="false"
+                  placeholder="model id from agy models"
+                />
+              </label>
+              <label>
+                Effort
+                <select v-model="config.capabilities.codex.antigravity_reasoning_effort">
+                  <option value="">Auto</option>
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                  <option value="xhigh">Extra high</option>
+                  <option value="max">Max</option>
+                </select>
+              </label>
               <div class="settings-tip wide">
-                <strong>Model is managed in Antigravity.</strong>
-                <span>Open the CLI with <span class="command-token">agy</span>, then type <span class="command-token">/model</span> to show models and select the default reasoning model.</span>
+                <strong>Leave both on Auto to use the model chosen in Antigravity.</strong>
+                <span>Use a base model with an effort (<span class="command-token">gemini-4-hydrogen</span> + High), or a full id from <span class="command-token">agy models</span> (<span class="command-token">gemini-4-hydrogen-high</span>) with effort on Auto.</span>
               </div>
               <label>
                 Sandbox
@@ -752,6 +771,8 @@ type RuntimeConfig = {
       model: string;
       reasoning_effort: "" | "low" | "medium" | "high" | "xhigh";
       antigravity_command: string;
+      antigravity_model: string;
+      antigravity_reasoning_effort: "" | "low" | "medium" | "high" | "xhigh" | "max";
       cursor_command: string;
       cursor_model: string;
       cursor_model_custom: string;
@@ -1891,6 +1912,8 @@ function defaultConfig(): RuntimeConfig {
         model: "",
         reasoning_effort: "",
         antigravity_command: "",
+        antigravity_model: "",
+        antigravity_reasoning_effort: "",
         cursor_command: "",
         cursor_model: "",
         cursor_model_custom: "",

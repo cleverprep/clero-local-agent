@@ -64,6 +64,8 @@ export function applyCodingFlags(config: LocalRuntimeConfig, args: CliArgs, enab
       coding.claude_model = model;
     } else if (coding.provider === "cursor") {
       coding.cursor_model = model;
+    } else if (coding.provider === "antigravity") {
+      coding.antigravity_model = model;
     } else {
       coding.model = model;
     }

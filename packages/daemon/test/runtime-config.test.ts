@@ -160,6 +160,8 @@ test("maps runtime config to daemon capability options", () => {
     model: "",
     reasoningEffort: undefined,
     antigravityCommand: "",
+    antigravityModel: "",
+    antigravityReasoningEffort: undefined,
     cursorCommand: "",
     cursorModel: "",
     claudeCommand: "",
@@ -205,6 +207,34 @@ test("updates connector coding-agent configuration without replacing unrelated r
   assert.equal(config.capabilities?.codex?.cursor_command, "/opt/cursor/agent");
   assert.equal(config.capabilities?.codex?.cursor_model, "composer-1");
   assert.equal(config.capabilities?.browser?.enabled, false);
+});
+
+test("stores the antigravity model and reasoning effort and passes them to its adapter", () => {
+  const config = defaultRuntimeConfig();
+  assert.equal(codingAgentConfigFromRuntimeConfig(config).antigravity_model, "");
+  assert.equal(codingAgentConfigFromRuntimeConfig(config).antigravity_reasoning_effort, "");
+
+  const saved = applyCodingAgentConfigUpdate(config, {
+    provider: "antigravity",
+    providers: ["antigravity"],
+    antigravity_model: "gemini-4-hydrogen",
+    antigravity_reasoning_effort: "high"
+  });
+  assert.equal(saved.antigravity_model, "gemini-4-hydrogen");
+  assert.equal(saved.antigravity_reasoning_effort, "high");
+  const options = capabilityOptionsFromConfig(config).codex;
+  assert.equal(options?.antigravityModel, "gemini-4-hydrogen");
+  assert.equal(options?.antigravityReasoningEffort, "high");
+
+  // A payload that omits them (an older backend) keeps the stored values.
+  const kept = applyCodingAgentConfigUpdate(config, { default_sandbox: "workspace-write" });
+  assert.equal(kept.antigravity_model, "gemini-4-hydrogen");
+  assert.equal(kept.antigravity_reasoning_effort, "high");
+
+  // An empty value means the CLI's own model; an unknown effort is dropped.
+  const cleared = applyCodingAgentConfigUpdate(config, { antigravity_model: "", antigravity_reasoning_effort: "extreme" });
+  assert.equal(cleared.antigravity_model, "");
+  assert.equal(cleared.antigravity_reasoning_effort, "");
 });
 
 test("enables managed browser session persistence by default", () => {
